@@ -1,0 +1,32 @@
+[project]
+name = "ai-contract-reviewer"
+version = "0.1.0"
+description = "AI Contract Reviewer - Multi-agent system for contract analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain",
+    "langgraph",
+    "langchain_openai",
+    "langchain-community",
+    "langfuse",
+    "fastapi",
+    "uvicorn",
+    "streamlit",
+    "pydantic>=2.0",
+    "pymupdf",
+    "redis",
+    "supabase",
+    "python-dotenv",
+    "azure-ai-documentintelligence",
+    "azure-search-documents",
+    "azure-identity",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx",
+    "ruff",
+    "mypy",
+]
