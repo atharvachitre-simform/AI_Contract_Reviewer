@@ -66,3 +66,12 @@ logs/
 
 # Docker
 .dockerignore
+
+# Project summary
+project_summary.md
+HOW_TO_RUN.md
+
+
+# Local data folder for initial development
+data
+next_steps.md
