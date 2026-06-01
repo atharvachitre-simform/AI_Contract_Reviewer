@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from ..agents.clause_extractor import extract_clauses
 from ..agents.obligation_finder import find_obligations
@@ -36,7 +37,16 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 
-	def run(self, contract_text: str, *, contract_id: str | None = None, source_file: str | None = None, trace_id: str | None = None) -> ContractReviewState:
+	def run(
+		self,
+		contract_text: str,
+		*,
+		contract_id: str | None = None,
+		source_file: str | None = None,
+		trace_id: str | None = None,
+		llm_client: Any | None = None,
+		memory_context: dict[str, Any] | None = None,
+	) -> ContractReviewState:
 		trace_id = trace_id or str(uuid.uuid4())
 		state = ContractReviewState(
 			contract_id=contract_id,
@@ -60,7 +70,12 @@ class ContractReviewWorkflow:
 			"started",
 			trace_id=trace_id,
 		)
-		clause_extraction = extract_clauses(contract_text, source_file=source_file)
+		clause_extraction = extract_clauses(
+			contract_text,
+			source_file=source_file,
+			llm_client=llm_client,
+			memory_context=memory_context,
+		)
 		state.clause_extraction = clause_extraction
 		state.metadata = clause_extraction.metadata
 		state.api_trace[-1]["status"] = "completed"
@@ -161,7 +176,22 @@ class ContractReviewWorkflow:
 		return state
 
 
-def run_contract_review(contract_text: str, *, contract_id: str | None = None, source_file: str | None = None, trace_id: str | None = None) -> ContractReviewState:
+def run_contract_review(
+	contract_text: str,
+	*,
+	contract_id: str | None = None,
+	source_file: str | None = None,
+	trace_id: str | None = None,
+	llm_client: Any | None = None,
+	memory_context: dict[str, Any] | None = None,
+) -> ContractReviewState:
 	"""Convenience function for running the full workflow."""
 
-	return ContractReviewWorkflow().run(contract_text, contract_id=contract_id, source_file=source_file, trace_id=trace_id)
+	return ContractReviewWorkflow().run(
+		contract_text,
+		contract_id=contract_id,
+		source_file=source_file,
+		trace_id=trace_id,
+		llm_client=llm_client,
+		memory_context=memory_context,
+	)

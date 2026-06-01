@@ -17,7 +17,7 @@ Multi-agent system for intelligent contract analysis and review using LangGraph 
 - **PyMuPDF** - PDF text extraction
 - **Pydantic v2** - Data validation
 - **Docker** - Containerization
-- **uv** - Python package manager
+- **uv** - preferred Python package manager for project setup and command execution
 
 ## Setup Instructions
 
@@ -26,7 +26,7 @@ Multi-agent system for intelligent contract analysis and review using LangGraph 
    cd AI_Contract_Reviewer
    ```
 
-2. **Create and activate virtual environment:**
+2. **Create and activate a virtual environment:**
    ```bash
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
@@ -35,6 +35,16 @@ Multi-agent system for intelligent contract analysis and review using LangGraph 
 3. **Install dependencies:**
    ```bash
    uv sync
+   ```
+
+   If you do not have `uv` installed, use the standard Python fallback:
+   ```bash
+   pip install -e .
+   ```
+
+   If you want to use Azure OpenAI with the native Azure SDK wrappers, install the optional package:
+   ```bash
+   .venv/bin/python3 -m pip install azure-ai-openai
    ```
 
 4. **Configure environment variables:**
@@ -46,6 +56,12 @@ Multi-agent system for intelligent contract analysis and review using LangGraph 
 ## Running the Application
 
 ### Local Development
+
+```bash
+python -m uvicorn main:app --reload
+```
+
+If you have the `uv` package manager installed, you can also run:
 
 ```bash
 uv run python main.py
