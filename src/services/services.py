@@ -8,13 +8,19 @@ Orchestrates interactions with:
 - Supabase (Persistent storage)
 - LangFuse (Tracing)
 """
+from __future__ import annotations
+
 from typing import Optional, Any
-import logging
+import io
 import json
+import logging
+import uuid
 from pathlib import Path
 
 import fitz
+from dotenv import load_dotenv
 
+from .azure_clients import AzureClientFactory, MemoryStore
 from .langfuse_tracer import LangFuseTracer
 from ..agents.clause_extractor import extract_clauses
 from ..agents.obligation_finder import find_obligations
@@ -25,6 +31,8 @@ from ..agents.risk_scorer import score_risks
 from ..models import ContractReviewState, ProcessingStatus
 from ..workflows.workflow import run_contract_review
 
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,13 +41,10 @@ class ContractReviewService:
 
     def __init__(self):
         """Initialize the contract review service."""
-        # TODO: Initialize Azure OpenAI client
-        # TODO: Initialize Azure Search client
-        # TODO: Initialize Azure Document Intelligence client
-        # TODO: Initialize Redis client
-        # TODO: Initialize Supabase client
         self.tracer = LangFuseTracer()
         self.current_trace_id: str | None = None
+        self.azure = AzureClientFactory()
+        self.memory = MemoryStore(self.azure)
 
     def _trace(self, step: str, description: str, payload: Any | None = None, status: str = "started", trace_id: str | None = None) -> None:
         self.tracer.trace(
@@ -49,6 +54,41 @@ class ContractReviewService:
             status=status,
             trace_id=trace_id or self.current_trace_id,
         )
+
+    def _resolve_contract_text(self, contract_text: str, source_blob_path: str | None = None) -> str:
+        if contract_text:
+            return contract_text
+        if source_blob_path:
+            try:
+                return self.azure.extract_text_from_blob(source_blob_path)
+            except Exception as error:
+                self._trace("resolve_contract_text", "Failed to fetch blob and extract text.", {"blob_path": source_blob_path, "error": str(error)}, "failed")
+                raise
+        raise ValueError("Either contract_text or source_blob_path must be provided.")
+
+    def _resolve_memory_context(self, contract_id: str | None = None, session_id: str | None = None) -> dict[str, Any]:
+        if contract_id:
+            memory = self.memory.get_memory_summary(session_id or contract_id, long_term_key=contract_id)
+            return memory
+        if session_id:
+            memory = self.memory.get_memory_summary(session_id)
+            return memory
+        return {}
+
+    def _save_memory(self, contract_id: str | None, session_id: str, results: ContractReviewState) -> None:
+        self.memory.save_short_term_memory(session_id, {
+            "contract_id": contract_id,
+            "trace_id": results.trace_id,
+            "final_report": results.final_report.model_dump(mode="json") if results.final_report else {},
+            "summary": results.final_report.report_summary if results.final_report else "",
+        })
+        if contract_id:
+            self.memory.save_long_term_memory(contract_id, {
+                "contract_id": contract_id,
+                "review_summary": results.final_report.report_summary if results.final_report else "",
+                "overall_risk": results.final_report.overall_risk_level.value if results.final_report else None,
+                "red_flags": [flag.pattern_name for flag in results.red_flag_detection.red_flags] if results.red_flag_detection else [],
+            })
 
     def extract_clauses(self, contract_text: str) -> dict[str, Any]:
         """Extract key clauses from contract text.
@@ -181,33 +221,42 @@ class ContractReviewService:
             return result.model_dump()
         raise ValueError("Incomplete analysis results for report assembly")
 
-    def process_contract(self, contract_text: str, contract_id: str | None = None) -> ContractReviewState:
+    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None) -> ContractReviewState:
         """End-to-end contract review process.
         
-        Orchestrates all agents in sequence:
-        1. Extract clauses (sequential)
-        2-5. Risk scoring, obligations, red flags, plain English (parallel)
-        6. Assemble report (sequential)
-        
         Args:
-            contract_text: The full contract text to review
-            contract_id: Optional external contract identifier
-            
+            contract_text: The full contract text to review.
+            contract_id: Optional external contract identifier.
+            source_blob_path: Optional Azure Blob path for the source contract.
+
         Returns:
-            ContractReviewState with complete analysis results
+            ContractReviewState with complete analysis results.
         """
+        contract_text = self._resolve_contract_text(contract_text, source_blob_path)
+        session_id = contract_id or str(uuid.uuid4())
+        memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
+
         logger.info("Starting contract review process")
-        self.current_trace_id = self.tracer.create_trace_id(seed=contract_id)
+        self.current_trace_id = self.tracer.create_trace_id(seed=contract_id or session_id)
         self._trace(
             "process_contract",
             "Begin end-to-end contract review.",
-            {"text_length": len(contract_text), "contract_id": contract_id},
+            {"text_length": len(contract_text), "contract_id": contract_id, "blob_path": source_blob_path},
             "started",
             self.current_trace_id,
         )
         try:
-            state = run_contract_review(contract_text, trace_id=self.current_trace_id, contract_id=contract_id)
+            state = run_contract_review(
+                contract_text,
+                trace_id=self.current_trace_id,
+                contract_id=contract_id,
+                source_file=source_blob_path,
+                llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
+                memory_context=memory_context,
+            )
             state.trace_id = self.current_trace_id
+            state.short_term_memory = memory_context
+            self._save_memory(contract_id, session_id, state)
             self._trace(
                 "process_contract",
                 "End-to-end contract review completed.",
@@ -245,21 +294,43 @@ class ContractReviewService:
             List of relevant documents
         """
         logger.info(f"Retrieving from knowledge base - index: {index_name}, query: {query}")
-        # Local scaffold fallback: search static CUAD files or return a lightweight hit.
-        return [{"index": index_name, "query": query, "result": "Knowledge base integration not yet configured."}]
+        if self.azure.search_endpoint and self.azure.search_api_key:
+            try:
+                return self.azure.search_documents(query, index_name)
+            except Exception as err:
+                logger.warning(f"Azure Search query failed: {err}")
+        return [{"index": index_name, "query": query, "result": "Knowledge base integration is not configured or failed."}]
 
     def extract_from_pdf(self, pdf_path: str) -> str:
         """Extract text from PDF document.
         
-        Uses Azure Document Intelligence for OCR if needed, falls back to PyMuPDF.
+        Uses Azure Document Intelligence for OCR if available, falls back to PyMuPDF.
         
         Args:
-            pdf_path: Path to PDF file
+            pdf_path: Local path or blob path to PDF file
             
         Returns:
             Extracted text content
         """
         logger.info(f"Extracting text from PDF: {pdf_path}")
+        is_local_file = Path(pdf_path).exists()
+        can_extract_blob = bool(self.azure.blob_service_client and self.azure.container_name and pdf_path.startswith("contracts/"))
+        if self.azure.document_intelligence_client and (is_local_file or can_extract_blob):
+            try:
+                return self.azure.extract_text_from_blob(pdf_path)
+            except Exception as err:
+                logger.warning(f"Azure Document Intelligence extraction failed, falling back to local extraction: {err}")
+
+        if pdf_path.startswith("http") or pdf_path.startswith("contracts/"):
+            try:
+                raw_bytes = self.azure.download_blob_bytes(pdf_path)
+                document = fitz.open(stream=raw_bytes, filetype="pdf")
+                pages = [page.get_text("text") for page in document]
+                document.close()
+                return "\n\n".join(pages)
+            except Exception:
+                pass
+
         doc = fitz.open(pdf_path)
         try:
             pages = [page.get_text("text") for page in doc]

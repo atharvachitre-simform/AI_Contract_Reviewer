@@ -68,10 +68,8 @@ logs/
 .dockerignore
 
 # Project summary
-project_summary.md
-HOW_TO_RUN.md
+*.md
 
 
 # Local data folder for initial development
 data
-next_steps.md

@@ -19,6 +19,7 @@ dependencies = [
     "supabase",
     "python-dotenv",
     "azure-ai-documentintelligence",
+    "azure-storage-blob",
     "azure-search-documents",
     "azure-identity",
 ]
@@ -30,3 +31,10 @@ dev = [
     "ruff",
     "mypy",
 ]
+
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,1 +1,76 @@
-"""Clause Extractor Agent prompt template."""
+"""Clause Extractor Agent prompt template and builder."""
+
+from __future__ import annotations
+
+from typing import Any
+import json
+
+SYSTEM_INSTRUCTION = (
+    "You are a contract analysis agent. Your task is to extract structured clauses and contract metadata from the provided contract text. "
+    "Keep working until the extraction is complete, and return only valid JSON with no extra commentary."
+)
+
+OUTPUT_SCHEMA = {
+    "clauses": [
+        {
+            "clause_type": "string",
+            "raw_text": "string",
+            "section_reference": "string",
+            "confidence": 0.0,
+            "normalized_text": "string",
+            "cuad_category": "string or null",
+        }
+    ],
+    "metadata": {
+        "document_name": "string or null",
+        "contract_type": "string or null",
+        "parties": ["string"],
+        "agreement_date": "string or null",
+        "effective_date": "string or null",
+        "expiration_date": "string or null",
+        "renewal_term": "string or null",
+        "notice_period_to_terminate_renewal": "string or null",
+        "governing_law": "string or null",
+    },
+}
+
+PROMPT_GUIDELINES = (
+    "- Extract all relevant clauses and metadata from the contract text.\n"
+    "- For each clause, include clause_type, raw_text, section_reference, confidence, normalized_text, and cuad_category.\n"
+    "- Use null for missing metadata values and empty arrays for missing lists.\n"
+    "- Confidence must be a number between 0.0 and 1.0.\n"
+    "- Return exactly one JSON object that matches the schema."
+)
+
+WORKFLOW_STEPS = (
+    "1. Read the full contract text.\n"
+    "2. Identify distinct clauses and label their section locations.\n"
+    "3. Populate metadata fields from the document.\n"
+    "4. Output the result as one JSON object matching the schema.\n"
+)
+
+
+def build_clause_extractor_prompt(contract_text: str, source_file: str | None = None, memory_context: dict[str, Any] | None = None) -> str:
+    """Build a prompt for the clause extractor agent."""
+    metadata_section = f"Document source: {source_file}\n\n" if source_file else ""
+    memory_section = ""
+    if memory_context:
+        serialized = json.dumps(memory_context, ensure_ascii=False, indent=2)
+        memory_section = (
+            "Memory context:\n"
+            f"{serialized}\n\n"
+        )
+
+    return (
+        f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        "INSTRUCTIONS:\n"
+        f"{PROMPT_GUIDELINES}\n\n"
+        "WORKFLOW:\n"
+        f"{WORKFLOW_STEPS}\n"
+        "OUTPUT_SCHEMA:\n"
+        f"{json.dumps(OUTPUT_SCHEMA, indent=2)}\n\n"
+        f"{metadata_section}"
+        f"{memory_section}"
+        "CONTRACT_TEXT:\n"
+        f"{contract_text.strip()}"
+    )
