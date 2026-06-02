@@ -37,6 +37,7 @@ class ClauseExtractorState(TypedDict):
     metadata: ContractMetadata
     clauses: list[ClauseSpan]
     cuad_labels: dict[str, CUADClauseLabel]
+    reference_clauses: list[dict[str, Any]]
     llm_attempt_success: bool
     heuristic_backup_used: bool
     confidence_score: float
@@ -56,8 +57,25 @@ def normalize_text_node(state: ClauseExtractorState) -> ClauseExtractorState:
     return state
 
 
+def retrieve_reference_clauses_node(state: ClauseExtractorState, retriever: Any | None = None) -> ClauseExtractorState:
+    """Step 1.5: Retrieve reference clauses from knowledge base for RAG context."""
+    state["reference_clauses"] = []
+    if retriever is None:
+        return state
+    
+    try:
+        contract_type = state["metadata"].contract_type or "general"
+        query = f"clauses in {contract_type} contracts"
+        references = retriever.retrieve_from_knowledge_base(query, "contracts")
+        state["reference_clauses"] = references if isinstance(references, list) else []
+    except Exception as e:
+        state["error_messages"].append(f"Reference retrieval error: {str(e)}")
+    
+    return state
+
+
 def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None) -> ClauseExtractorState:
-    """Step 2: Attempt LLM-based extraction with confidence tracking."""
+    """Step 2: Attempt LLM-based extraction with confidence tracking and RAG context."""
     if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
         state["llm_attempt_success"] = False
         return state
@@ -67,6 +85,7 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
             state["cleaned_text"],
             source_file=state["source_file"],
             memory_context=memory_context,
+            reference_clauses=state["reference_clauses"],
         )
         llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=1200)
         
@@ -206,19 +225,21 @@ def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
     )
 
 
-def create_clause_extraction_graph(llm_client: Any | None = None, memory_context: dict[str, Any] | None = None):
+def create_clause_extraction_graph(llm_client: Any | None = None, memory_context: dict[str, Any] | None = None, retriever: Any | None = None):
     """Create the LangGraph workflow for clause extraction."""
     workflow = StateGraph(ClauseExtractorState)
     
     # Add nodes
     workflow.add_node("normalize", normalize_text_node)
+    workflow.add_node("retrieve_references", lambda state: retrieve_reference_clauses_node(state, retriever))
     workflow.add_node("llm_extract", lambda state: llm_extraction_node(state, llm_client, memory_context))
     workflow.add_node("heuristic_extract", heuristic_extraction_node)
     workflow.add_node("validate_confidence", confidence_validation_node)
     
     # Add edges
     workflow.set_entry_point("normalize")
-    workflow.add_edge("normalize", "llm_extract")
+    workflow.add_edge("normalize", "retrieve_references")
+    workflow.add_edge("retrieve_references", "llm_extract")
     workflow.add_edge("llm_extract", "heuristic_extract")
     workflow.add_edge("heuristic_extract", "validate_confidence")
     workflow.add_edge("validate_confidence", END)
@@ -239,13 +260,14 @@ class ClauseExtractorAgent:
         source_file: str | None = None,
         llm_client: Any | None = None,
         memory_context: dict[str, Any] | None = None,
+        retriever: Any | None = None,
     ) -> ClauseExtractorOutput:
-        """Extract clauses using LangGraph workflow."""
+        """Extract clauses using LangGraph workflow with RAG context."""
         # Use provided client or instance client
         client = llm_client or self.llm_client
         
         # Create graph
-        graph = create_clause_extraction_graph(client, memory_context)
+        graph = create_clause_extraction_graph(client, memory_context, retriever)
         
         # Initial state
         initial_state: ClauseExtractorState = {
@@ -255,6 +277,7 @@ class ClauseExtractorAgent:
             "metadata": ContractMetadata(),
             "clauses": [],
             "cuad_labels": {},
+            "reference_clauses": [],
             "llm_attempt_success": False,
             "heuristic_backup_used": False,
             "confidence_score": 0.0,
@@ -359,12 +382,14 @@ def extract_clauses(
     source_file: str | None = None,
     llm_client: Any | None = None,
     memory_context: dict[str, Any] | None = None,
+    retriever: Any | None = None,
 ) -> ClauseExtractorOutput:
-    """Extract clauses using LangGraph workflow with confidence tracking."""
+    """Extract clauses using LangGraph workflow with confidence tracking and RAG."""
     agent = ClauseExtractorAgent(llm_client=llm_client)
     return agent.extract(
         contract_text,
         source_file=source_file,
         llm_client=llm_client,
         memory_context=memory_context,
+        retriever=retriever,
     )

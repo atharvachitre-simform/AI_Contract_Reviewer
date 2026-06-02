@@ -50,8 +50,8 @@ WORKFLOW_STEPS = (
 )
 
 
-def build_clause_extractor_prompt(contract_text: str, source_file: str | None = None, memory_context: dict[str, Any] | None = None) -> str:
-    """Build a prompt for the clause extractor agent."""
+def build_clause_extractor_prompt(contract_text: str, source_file: str | None = None, memory_context: dict[str, Any] | None = None, reference_clauses: list[dict[str, Any]] | None = None) -> str:
+    """Build a prompt for the clause extractor agent with RAG context."""
     metadata_section = f"Document source: {source_file}\n\n" if source_file else ""
     memory_section = ""
     if memory_context:
@@ -59,6 +59,20 @@ def build_clause_extractor_prompt(contract_text: str, source_file: str | None = 
         memory_section = (
             "Memory context:\n"
             f"{serialized}\n\n"
+        )
+
+    reference_section = ""
+    if reference_clauses and isinstance(reference_clauses, list) and reference_clauses:
+        ref_texts = []
+        for i, ref in enumerate(reference_clauses[:3], 1):
+            if isinstance(ref, dict):
+                text = ref.get("content") or str(ref)
+            else:
+                text = str(ref)
+            ref_texts.append(f"Example {i}:\n{text[:300]}")
+        reference_section = (
+            "REFERENCE EXAMPLES (from similar contracts):\n"
+            f"{chr(10).join(ref_texts)}\n\n"
         )
 
     return (
@@ -71,6 +85,7 @@ def build_clause_extractor_prompt(contract_text: str, source_file: str | None = 
         f"{json.dumps(OUTPUT_SCHEMA, indent=2)}\n\n"
         f"{metadata_section}"
         f"{memory_section}"
+        f"{reference_section}"
         "CONTRACT_TEXT:\n"
         f"{contract_text.strip()}"
     )
