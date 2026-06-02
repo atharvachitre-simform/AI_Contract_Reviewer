@@ -124,7 +124,17 @@ class ContractReviewService:
             clause_extraction = ContractReviewState.model_validate({"clause_extraction": extracted_data}).clause_extraction
         if clause_extraction is None:
             clause_extraction = extract_clauses(contract_text)
-        result = score_risks(clause_extraction)
+
+        risk_llm_client = self.azure.get_openai_client_for_agent("risk_scorer")
+        if not risk_llm_client or not risk_llm_client.is_configured():
+            logger.error(
+                "Risk scorer OpenAI client is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER, OpenAI credentials, and ensure the azure-ai-openai package is installed."
+            )
+            raise RuntimeError(
+                "Risk scorer OpenAI client is not configured. Verify AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and install azure-ai-openai."
+            )
+
+        result = score_risks(clause_extraction, llm_client=risk_llm_client)
         self._trace("score_risks", "Completed risk scoring.", {"issues": len(result.issues), "overall_risk": str(result.overall_risk_level)}, "completed")
         return result.model_dump()
 
@@ -145,7 +155,12 @@ class ContractReviewService:
             clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
         if clause_extraction is None:
             clause_extraction = extract_clauses(contract_text)
-        result = find_obligations(clause_extraction)
+        obligation_llm_client = self.azure.get_openai_client_for_agent("obligation_finder")
+        if not obligation_llm_client or not obligation_llm_client.is_configured():
+            logger.error("Obligation Finder OpenAI client is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+            raise RuntimeError("Obligation Finder OpenAI client is not configured. Verify AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+
+        result = find_obligations(clause_extraction, llm_client=obligation_llm_client)
         self._trace("find_obligations", "Completed obligation detection.", {"obligations": len(result.obligations)}, "completed")
         return result.model_dump()
 
@@ -252,12 +267,12 @@ class ContractReviewService:
                 contract_id=contract_id,
                 source_file=source_blob_path,
                 llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
+                risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 memory_context=memory_context,
                 retriever=self,
             )
             state.trace_id = self.current_trace_id
-            state.short_term_memory = memory_context
             self._save_memory(contract_id, session_id, state)
             self._trace(
                 "process_contract",

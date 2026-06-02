@@ -20,6 +20,7 @@ from src.agents import (
 )
 from src.controllers.controller import ContractReviewController
 from src.models import ClauseExtractorOutput
+from src.services.azure_clients import AzureClientFactory
 from src.services.services import ContractReviewService
 
 MODEL_OPTIONS = [
@@ -54,6 +55,13 @@ def load_text_from_upload(uploaded_file) -> str:
         return data.decode("latin-1")
 
 
+def _val(obj: object, default: str = "N/A") -> str:
+    """Return .value for Enum objects, str() for everything else."""
+    if obj is None:
+        return default
+    return getattr(obj, "value", str(obj))
+
+
 def render_api_trace(api_trace: list[dict]) -> None:
     with st.expander("Trace / API call history", expanded=False):
         if not api_trace:
@@ -64,7 +72,11 @@ def render_api_trace(api_trace: list[dict]) -> None:
 
 def render_clause_extraction(output: object) -> None:
     with st.expander("Clause Extractor", expanded=True):
-        if not output or not getattr(output, "clauses", None):
+        if not output:
+            st.write("No clauses were extracted.")
+            return
+        st.markdown(f"**Extraction method:** {getattr(output, 'extraction_method', 'unknown').upper()}")
+        if not getattr(output, "clauses", None):
             st.write("No clauses were extracted.")
             return
         st.markdown(f"**Detected {len(output.clauses)} clauses**")
@@ -83,12 +95,12 @@ def render_risk_scoring(output: object) -> None:
         if not output:
             st.write("No risk scoring output available.")
             return
-        st.markdown(f"**Overall risk level:** {getattr(output, 'overall_risk_level', 'N/A')}")
+        st.markdown(f"**Overall risk level:** {_val(getattr(output, 'overall_risk_level', None)).upper()}")
         st.markdown(f"**Overall risk score:** {getattr(output, 'overall_risk_score', 'N/A')}")
         if getattr(output, "issues", None):
             st.markdown("**Risk issues:**")
             for issue in output.issues:
-                st.markdown(f"- **{getattr(issue, 'issue', 'Risk issue')}** ({getattr(issue, 'risk_level', 'N/A')}): {getattr(issue, 'rationale', '')}")
+                st.markdown(f"- **{getattr(issue, 'issue', 'Risk issue')}** ({_val(getattr(issue, 'risk_level', None)).upper()}): {getattr(issue, 'rationale', '')}")
                 if getattr(issue, 'negotiation_suggestion', None):
                     st.write(f"  - Suggestion: {issue.negotiation_suggestion}")
         if getattr(output, "negotiation_suggestions", None):
@@ -99,7 +111,11 @@ def render_risk_scoring(output: object) -> None:
 
 def render_obligation_finding(output: object) -> None:
     with st.expander("Obligation Finder", expanded=True):
-        if not output or not getattr(output, "obligations", None):
+        if not output:
+            st.write("No obligations detected.")
+            return
+        st.markdown(f"**Method used:** {getattr(output, 'method_used', 'heuristic').upper()}")
+        if not getattr(output, "obligations", None):
             st.write("No obligations detected.")
             return
         for obligation in output.obligations:
@@ -114,7 +130,7 @@ def render_red_flag_detection(output: object) -> None:
             st.write("No red flags detected.")
             return
         for flag in output.red_flags:
-            st.markdown(f"- **{getattr(flag, 'pattern_name', 'Red flag')}** ({getattr(flag, 'severity', 'N/A')}): {getattr(flag, 'description', '')}")
+            st.markdown(f"- **{getattr(flag, 'pattern_name', 'Red flag')}** ({_val(getattr(flag, 'severity', None)).upper()}): {getattr(flag, 'description', '')}")
             if getattr(flag, "safer_alternative", None):
                 st.write(f"  - Suggested mitigation: {flag.safer_alternative}")
 
@@ -142,8 +158,8 @@ def render_report_assembler(output: object) -> None:
         if not output:
             st.write("No report output available.")
             return
-        st.markdown(f"**Verdict:** {getattr(output, 'verdict', 'N/A')}\n\n")
-        st.markdown(f"**Overall risk:** {getattr(output, 'overall_risk_level', 'N/A')}\n\n")
+        st.markdown(f"**Verdict:** {_val(getattr(output, 'verdict', None))}\n\n")
+        st.markdown(f"**Overall risk:** {_val(getattr(output, 'overall_risk_level', None)).upper()}\n\n")
         if getattr(output, "report_summary", None):
             st.markdown("**Report summary:**")
             st.write(output.report_summary)
@@ -241,15 +257,24 @@ def main() -> None:
                 state = controller.review_contract(contract_text)
                 render_full_review(state)
             else:
-                clause_output = extract_clauses(contract_text)
+                clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
+                clause_output = extract_clauses(contract_text, llm_client=clause_client)
                 if selected_model == "Clause Extractor":
                     render_clause_extraction(clause_output)
                 elif selected_model == "Risk Scorer":
-                    result = score_risks(clause_output)
-                    render_risk_scoring(result)
+                    risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                    if not risk_client or not risk_client.is_configured():
+                        st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
+                    else:
+                        result = score_risks(clause_output, llm_client=risk_client)
+                        render_risk_scoring(result)
                 elif selected_model == "Obligation Finder":
-                    result = find_obligations(clause_output)
-                    render_obligation_finding(result)
+                    obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
+                    if not obligation_client or not obligation_client.is_configured():
+                        st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+                    else:
+                        result = find_obligations(clause_output, llm_client=obligation_client)
+                        render_obligation_finding(result)
                 elif selected_model == "Red Flag Detector":
                     result = detect_red_flags(clause_output)
                     render_red_flag_detection(result)
@@ -257,16 +282,20 @@ def main() -> None:
                     result = generate_plain_english(clause_output)
                     render_plain_english(result)
                 elif selected_model == "Report Assembler":
-                    risk_output = score_risks(clause_output)
-                    red_flag_output = detect_red_flags(clause_output)
-                    plain_output = generate_plain_english(clause_output)
-                    report_output = assemble_report(
-                        clause_extraction=clause_output,
-                        risk_scoring=risk_output,
-                        red_flags=red_flag_output,
-                        plain_english=plain_output,
-                    )
-                    render_report_assembler(report_output)
+                    risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                    if not risk_client or not risk_client.is_configured():
+                        st.error("Report assembly requires the Risk Scorer client to be configured.")
+                    else:
+                        risk_output = score_risks(clause_output, llm_client=risk_client)
+                        red_flag_output = detect_red_flags(clause_output)
+                        plain_output = generate_plain_english(clause_output)
+                        report_output = assemble_report(
+                            clause_extraction=clause_output,
+                            risk_scoring=risk_output,
+                            red_flags=red_flag_output,
+                            plain_english=plain_output,
+                        )
+                        render_report_assembler(report_output)
 
 
 if __name__ == "__main__":

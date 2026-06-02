@@ -16,6 +16,15 @@ try:
 except ImportError:
     OpenAIClient = None  # type: ignore
 
+try:
+    import openai as openai_package
+    from openai import OpenAI as OpenAIPackageClient
+    from openai import AzureOpenAI
+except ImportError:
+    openai_package = None
+    OpenAIPackageClient = None
+    AzureOpenAI = None
+
 dotenv_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path)
 
@@ -37,33 +46,75 @@ load_dotenv()
 class AzureOpenAIWrapper:
     """Wrapper for Azure OpenAI chat completions."""
 
-    def __init__(self, endpoint: str, api_key: str, deployment_name: str) -> None:
-        self.endpoint = endpoint
+    def __init__(self, endpoint: str, api_key: str, deployment_name: str, api_version: str | None = None) -> None:
+        self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.deployment_name = deployment_name
-        self.client: Any | None = None
+        self.api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview").strip()
+        self.azure_client: Any | None = None
+        self.openai_client: Any | None = None
+        self.use_openai_fallback = False
+
         if endpoint and api_key and deployment_name and OpenAIClient is not None:
-            self.client = OpenAIClient(endpoint, AzureKeyCredential(api_key))
+            self.azure_client = OpenAIClient(endpoint, AzureKeyCredential(api_key))
+        elif endpoint and api_key and deployment_name and AzureOpenAI is not None:
+            self.openai_client = AzureOpenAI(
+                azure_endpoint=self.endpoint,
+                api_key=api_key,
+                api_version=self.api_version,
+            )
+            self.use_openai_fallback = True
+        elif endpoint and api_key and deployment_name and OpenAIPackageClient is not None:
+            self.openai_client = OpenAIPackageClient(
+                api_key=api_key,
+                base_url=self.endpoint,
+                default_query={"api-version": self.api_version},
+            )
+            self.use_openai_fallback = True
 
     def is_configured(self) -> bool:
-        return self.client is not None
+        return bool(self.azure_client or self.openai_client)
 
     def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800) -> str:
-        if not self.client:
+        if not self.is_configured():
+            if OpenAIClient is None and OpenAIPackageClient is None:
+                raise RuntimeError(
+                    "No Azure OpenAI SDK or compatible OpenAI package is installed. Install azure-ai-openai or openai and restart the app."
+                )
             raise RuntimeError("Azure OpenAI client is not configured")
 
-        response = self.client.get_chat_completions(
-            self.deployment_name,
-            messages=[
-                {"role": "system", "content": "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        if not response.choices:
+        messages = [
+            {"role": "system", "content": "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."},
+            {"role": "user", "content": prompt},
+        ]
+
+        if self.azure_client is not None:
+            response = self.azure_client.get_chat_completions(
+                self.deployment_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if not response.choices:
+                return ""
+            return response.choices[0].message.content or ""
+
+        if self.openai_client is not None:
+            response = self.openai_client.chat.completions.create(
+                model=self.deployment_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if not getattr(response, "choices", None):
+                return ""
+            choice = response.choices[0]
+            message = getattr(choice, "message", None)
+            if message is not None:
+                return getattr(message, "content", None) or (message.get("content") if isinstance(message, dict) else "")
             return ""
-        return response.choices[0].message.content or ""
+
+        raise RuntimeError("Azure OpenAI client is not configured")
 
 
 class AzureClientFactory:

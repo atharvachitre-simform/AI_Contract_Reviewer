@@ -2,26 +2,16 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import re
-from typing import Any, TypedDict
-
-from langgraph.graph import StateGraph, END
+import json
+from typing import Any
 
 from ..helpers.contract_analysis import extract_dates, extract_numbers_and_periods
 from ..models import ClauseExtractorOutput, ObligationFinderOutput, ObligationItem
 from ..prompts.obligation_finder_prompt import build_obligation_finder_prompt
 
-
-class ObligationFinderState(TypedDict):
-    clause_extraction: ClauseExtractorOutput
-    obligations: list[ObligationItem]
-    key_deadlines: list[str]
-    reference_obligations: list[dict[str, Any]]
-    llm_attempt_success: bool
-    heuristic_backup_used: bool
-    error_messages: list[str]
-    confidence_score: float
+logger = logging.getLogger(__name__)
 
 
 class ObligationFinderAgent:
@@ -43,250 +33,114 @@ class ObligationFinderAgent:
         "will be",
     )
 
-    def find(
-        self,
-        clause_extraction: ClauseExtractorOutput,
-        llm_client: Any | None = None,
-        memory_context: dict[str, Any] | None = None,
-        retriever: Any | None = None,
-    ) -> ObligationFinderOutput:
-        graph = self._create_graph(llm_client, memory_context, retriever)
-        initial_state: ObligationFinderState = {
-            "clause_extraction": clause_extraction,
-            "obligations": [],
-            "key_deadlines": [],
-            "reference_obligations": [],
-            "llm_attempt_success": False,
-            "heuristic_backup_used": False,
-            "error_messages": [],
-            "confidence_score": 0.0,
-        }
-        final_state = graph.invoke(initial_state)
-        return self._build_output(final_state)
+    def find(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> ObligationFinderOutput:
+        """LLM-based obligation extraction. Returns ObligationFinderOutput with method_used='llm'.
 
-    def _create_graph(self, llm_client: Any | None, memory_context: dict[str, Any] | None, retriever: Any | None):
-        graph = StateGraph(ObligationFinderState)
-        graph.add_node("retrieve_references", lambda state: self._retrieve_reference_obligations_node(state, retriever))
-        graph.add_node("llm_extract", lambda state: self._llm_extraction_node(state, llm_client, memory_context))
-        graph.add_node("heuristic_fallback", self._heuristic_extraction_node)
-        graph.add_node("build_output", self._build_output_node)
-
-        graph.set_entry_point("retrieve_references")
-        graph.add_edge("retrieve_references", "llm_extract")
-        graph.add_edge("llm_extract", "heuristic_fallback")
-        graph.add_edge("heuristic_fallback", "build_output")
-        graph.add_edge("build_output", END)
-        return graph.compile()
-
-    def _retrieve_reference_obligations_node(self, state: ObligationFinderState, retriever: Any | None) -> ObligationFinderState:
-        """Retrieve reference obligations from knowledge base for RAG context."""
-        state["reference_obligations"] = []
-        if retriever is None:
-            return state
-        
-        try:
-            contract_type = state["clause_extraction"].metadata.contract_type or "general"
-            query = f"obligations and deadlines in {contract_type} contracts"
-            references = retriever.retrieve_from_knowledge_base(query, "legal_standards")
-            state["reference_obligations"] = references if isinstance(references, list) else []
-        except Exception as e:
-            state["error_messages"].append(f"Reference retrieval error: {str(e)}")
-        
-        return state
-
-    def _llm_extraction_node(
-        self,
-        state: ObligationFinderState,
-        llm_client: Any | None,
-        memory_context: dict[str, Any] | None,
-    ) -> ObligationFinderState:
-        if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
-            state["llm_attempt_success"] = False
-            return state
-
-        try:
-            prompt = build_obligation_finder_prompt(
-                state["clause_extraction"],
-                memory_context=memory_context,
-                reference_obligations=state["reference_obligations"],
-            )
-            llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=1200)
-            parsed = self._parse_llm_response(llm_response)
-            if not parsed or not isinstance(parsed, dict):
-                state["error_messages"].append("LLM response parsing failed")
-                state["llm_attempt_success"] = False
-                return state
-
-            obligations = self._build_obligations_from_llm(parsed.get("obligations", []))
-            if not obligations:
-                state["error_messages"].append("LLM returned no obligations")
-                state["llm_attempt_success"] = False
-                return state
-
-            state["obligations"] = obligations
-            state["key_deadlines"] = [o.due_date for o in obligations if o.due_date]
-            state["llm_attempt_success"] = True
-            state["confidence_score"] = 0.85
-
-        except Exception as exc:
-            state["error_messages"].append(f"LLM extraction error: {str(exc)}")
-            state["llm_attempt_success"] = False
-
-        return state
-
-    def _heuristic_extraction_node(self, state: ObligationFinderState) -> ObligationFinderState:
-        if state["llm_attempt_success"]:
-            return state
-
-        result = self._find_by_heuristics(state["clause_extraction"])
-        state["obligations"] = result.obligations
-        state["key_deadlines"] = result.key_deadlines
-        state["heuristic_backup_used"] = True
-        state["confidence_score"] = 0.65 if result.obligations else 0.3
-        if result.obligations:
-            state["error_messages"].append("Heuristic fallback completed")
-        else:
-            state["error_messages"].append("No obligations found using heuristic fallback")
-        return state
-
-    def _build_output_node(self, state: ObligationFinderState) -> ObligationFinderState:
-        return state
-
-    def _build_output(self, state: ObligationFinderState) -> ObligationFinderOutput:
-        categorized: dict[str, list[ObligationItem]] = {
-            "payment": [],
-            "notice": [],
-            "restriction": [],
-            "general": [],
-        }
-        for obligation in state["obligations"]:
-            otype = str(obligation.obligation_type or "general").lower()
-            if otype in categorized:
-                categorized[otype].append(obligation)
-            else:
-                categorized["general"].append(obligation)
-
-        summary = self._generate_summary(state["obligations"])
-        return ObligationFinderOutput(
-            obligations=state["obligations"],
-            categorized=categorized,
-            key_deadlines=state["key_deadlines"],
-            summary=summary,
-        )
-
-    def _generate_summary(self, obligations: list[ObligationItem]) -> str:
-        if not obligations:
-            return "No obligations found."
-        
-        counts = {"payment": 0, "notice": 0, "restriction": 0, "general": 0}
-        for obligation in obligations:
-            otype = str(obligation.obligation_type or "general").lower()
-            if otype in counts:
-                counts[otype] += 1
-            else:
-                counts["general"] += 1
-        
-        parts = []
-        if counts["payment"] > 0:
-            parts.append(f"{counts['payment']} payment obligation(s)")
-        if counts["notice"] > 0:
-            parts.append(f"{counts['notice']} notice requirement(s)")
-        if counts["restriction"] > 0:
-            parts.append(f"{counts['restriction']} restriction(s)")
-        if counts["general"] > 0:
-            parts.append(f"{counts['general']} general obligation(s)")
-        
-        total = sum(counts.values())
-        return f"Identified {total} obligation(s): {', '.join(parts)}."
-
-
-    def _find_by_heuristics(self, clause_extraction: ClauseExtractorOutput) -> ObligationFinderOutput:
+        If `llm_client` is not provided or not configured, the method returns an empty result and logs an error.
+        """
         obligations: list[ObligationItem] = []
         payment_obligations: list[ObligationItem] = []
         notice_requirements: list[ObligationItem] = []
         restrictions: list[ObligationItem] = []
         key_deadlines: list[str] = []
 
-        for clause in clause_extraction.clauses:
-            text = clause.raw_text.strip()
-            lower = text.lower()
-            if not any(hint in lower for hint in self.PARTY_HINTS):
-                continue
-
-            if clause.cuad_category and clause.cuad_category not in {"PARTIES", "GENERAL"} and not any(
-                token in lower
-                for token in (
-                    "shall",
-                    "must",
-                    "will",
-                    "required",
-                    "obligated",
-                    "requires",
-                    "due date",
-                    "payment",
-                    "fee",
-                    "notice",
-                    "terminate",
-                    "renew",
-                )
-            ):
-                continue
-
-            party = self._infer_party(text)
-            obligation_type = self._classify(text)
-            obligation = ObligationItem(
-                party=party,
-                obligation=text[:500],
-                due_date=(extract_dates(text) or extract_numbers_and_periods(text) or [None])[0],
-                frequency=self._frequency(text),
-                condition=self._condition(text),
-                obligation_type=obligation_type,
-                source_clause=clause.clause_type,
+        if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
+            logger.error("Obligation Finder LLM client is not configured; obligation finder is LLM-only.")
+            return ObligationFinderOutput(
+                obligations=[],
+                payment_obligations=[],
+                notice_requirements=[],
+                restrictions=[],
+                key_deadlines=[],
+                method_used="llm",
             )
-            obligations.append(obligation)
-            if obligation_type == "payment":
-                payment_obligations.append(obligation)
-            elif obligation_type == "notice":
-                notice_requirements.append(obligation)
-            elif obligation_type == "restriction":
-                restrictions.append(obligation)
 
-            for candidate in extract_dates(text) + extract_numbers_and_periods(text):
-                if candidate not in key_deadlines:
-                    key_deadlines.append(candidate)
+        try:
+            prompt = build_obligation_finder_prompt(clause_extraction)
+            response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=2000)
+            logger.debug(f"Obligation LLM response (first 300 chars): {response_text[:300]}")
+            parsed = None
+            if response_text:
+                # Strip markdown code fences that some models wrap JSON in
+                clean = response_text.strip()
+                if clean.startswith("```"):
+                    lines = clean.splitlines()
+                    # Drop opening fence line and closing fence
+                    inner = [l for l in lines[1:] if l.strip() != "```"]
+                    clean = "\n".join(inner).strip()
+                try:
+                    parsed = json.loads(clean)
+                except Exception:
+                    # Fallback: extract first balanced JSON object
+                    first = clean.find("{")
+                    last = clean.rfind("}")
+                    if first != -1 and last != -1 and last > first:
+                        try:
+                            parsed = json.loads(clean[first:last+1])
+                        except Exception:
+                            logger.error(f"Obligation finder: JSON parse failed. Raw response: {response_text[:500]}")
+                            parsed = None
 
-        if not obligations:
-            for clause in clause_extraction.clauses:
-                lower = clause.raw_text.lower()
-                if any(hint in lower for hint in self.PARTY_HINTS):
-                    fallback = ObligationItem(
-                        party=self._infer_party(clause.raw_text) or "Unknown party",
-                        obligation=clause.raw_text[:500],
-                        due_date=(extract_dates(clause.raw_text) or extract_numbers_and_periods(clause.raw_text) or [None])[0],
-                        frequency=self._frequency(clause.raw_text),
-                        condition=self._condition(clause.raw_text),
-                        obligation_type=self._classify(clause.raw_text),
-                        source_clause=clause.clause_type,
-                    )
-                    obligations.append(fallback)
-                    if fallback.obligation_type == "payment":
-                        payment_obligations.append(fallback)
-                    elif fallback.obligation_type == "notice":
-                        notice_requirements.append(fallback)
-                    elif fallback.obligation_type == "restriction":
-                        restrictions.append(fallback)
-                    for candidate in extract_dates(clause.raw_text) + extract_numbers_and_periods(clause.raw_text):
-                        if candidate not in key_deadlines:
-                            key_deadlines.append(candidate)
-                    break
+            if not parsed or not isinstance(parsed, dict):
+                logger.warning("LLM returned no parseable obligations JSON; returning empty result.")
+                return ObligationFinderOutput(
+                    obligations=[],
+                    payment_obligations=[],
+                    notice_requirements=[],
+                    restrictions=[],
+                    key_deadlines=[],
+                    method_used="llm",
+                )
 
-        return ObligationFinderOutput(
-            obligations=obligations,
-            payment_obligations=payment_obligations,
-            notice_requirements=notice_requirements,
-            restrictions=restrictions,
-            key_deadlines=key_deadlines,
-        )
+            for item in parsed.get("obligations", []):
+                if not isinstance(item, dict):
+                    continue
+                party = item.get("party")
+                obligation_text = item.get("obligation") or ""
+                due = item.get("due_date")
+                freq = item.get("frequency")
+                cond = item.get("condition")
+                otype = item.get("obligation_type")
+                source = item.get("source_clause")
+                oi = ObligationItem(
+                    party=party,
+                    obligation=obligation_text[:500],
+                    due_date=due,
+                    frequency=freq,
+                    condition=cond,
+                    obligation_type=otype,
+                    source_clause=source,
+                )
+                obligations.append(oi)
+                if otype == "payment":
+                    payment_obligations.append(oi)
+                elif otype == "notice":
+                    notice_requirements.append(oi)
+                elif otype == "restriction":
+                    restrictions.append(oi)
+                for candidate in (extract_dates(obligation_text) + extract_numbers_and_periods(obligation_text)):
+                    if candidate and candidate not in key_deadlines:
+                        key_deadlines.append(candidate)
+
+            logger.info(f"Obligation finder identified {len(obligations)} obligations via LLM")
+            return ObligationFinderOutput(
+                obligations=obligations,
+                payment_obligations=payment_obligations,
+                notice_requirements=notice_requirements,
+                restrictions=restrictions,
+                key_deadlines=key_deadlines,
+                method_used="llm",
+            )
+        except Exception as e:
+            logger.error(f"Obligation finder LLM failed: {e}", exc_info=True)
+            return ObligationFinderOutput(
+                obligations=[],
+                payment_obligations=[],
+                notice_requirements=[],
+                restrictions=[],
+                key_deadlines=[],
+                method_used="llm",
+            )
 
     def _parse_llm_response(self, response_text: str) -> dict[str, Any] | None:
         if not response_text:
@@ -386,6 +240,6 @@ class ObligationFinderAgent:
         return None
 
 
-def find_obligations(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None) -> ObligationFinderOutput:
-    """Convenience function for finding obligations."""
-    return ObligationFinderAgent().find(clause_extraction, llm_client=llm_client, retriever=retriever)
+def find_obligations(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> ObligationFinderOutput:
+    """Convenience function for finding obligations using an optional llm_client."""
+    return ObligationFinderAgent().find(clause_extraction, llm_client=llm_client)

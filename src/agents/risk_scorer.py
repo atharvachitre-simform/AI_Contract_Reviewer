@@ -1,122 +1,308 @@
-"""Risk Scorer Agent - Agent 2 (Parallel) - Evaluates financial and legal risks."""
+"""Risk Scorer Agent - Agent 2 (Parallel) - Evaluates financial and legal risks with LangGraph."""
 
 from __future__ import annotations
 
-from ..helpers.contract_analysis import clause_keyword_score, build_bulleted_summary
+import json
+import logging
+from typing import Any
+from typing_extensions import TypedDict
+
+from langgraph.graph import StateGraph, END
+
 from ..models import ClauseExtractorOutput, ClauseSpan, RiskIssue, RiskLevel, RiskScorerOutput
+from ..prompts.risk_scorer_prompt import build_risk_scorer_prompt
+
+logger = logging.getLogger(__name__)
+
+
+class RiskScorerState(TypedDict):
+    """State for risk scoring workflow."""
+    clause_extraction: ClauseExtractorOutput
+    reference_risks: list[dict[str, Any]]
+    llm_risks: list[RiskIssue] | None
+    overall_risk_level: RiskLevel
+    overall_risk_score: float
+    clause_risk_map: dict[str, float]
 
 
 class RiskScorerAgent:
-	"""Score clause-level and overall contract risk."""
+    """Score clause-level and overall contract risk using LangGraph workflow."""
 
-	HIGH_RISK_KEYWORDS = (
-		"unlimited liability",
-		"uncapped liability",
-		"terminate for convenience",
-		"non-compete",
-		"exclusivity",
-		"change of control",
-		"anti-assignment",
-		"liquidated damages",
-		"audit rights",
-		"post-termination",
-		"indemnification",
-		"insurance",
-		"royalty",
-		"minimum commitment",
-		"governing law",
-	)
+    def __init__(self):
+        """Initialize the risk scorer agent."""
+        self.graph = None
 
-	def score(self, clause_extraction: ClauseExtractorOutput) -> RiskScorerOutput:
-		issues: list[RiskIssue] = []
-		clause_risk_map: dict[str, float] = {}
+    MAX_CLAUSES_TO_ANALYZE = 16
+    CLAUSE_TEXT_TRUNCATION = 700
 
-		for clause in clause_extraction.clauses:
-			text = clause.raw_text.lower()
-			keyword_hits = clause_keyword_score(text, self.HIGH_RISK_KEYWORDS)
-			risk_score = min(1.0, 0.12 + keyword_hits * 0.12)
-			if any(token in text for token in ("unlimited", "uncapped", "without limit", "in no event shall")):
-				risk_level = RiskLevel.CRITICAL
-			elif risk_score >= 0.7:
-				risk_level = RiskLevel.HIGH
-			elif risk_score >= 0.4:
-				risk_level = RiskLevel.MEDIUM
-			else:
-				risk_level = RiskLevel.LOW
+    def _create_graph(self, llm_client: Any | None = None, retriever: Any | None = None):
+        """Create the LangGraph workflow."""
+        graph = StateGraph(RiskScorerState)
 
-			if risk_score >= 0.25:
-				issues.append(
-					RiskIssue(
-						clause_type=clause.clause_type,
-						risk_level=risk_level,
-						risk_score=risk_score,
-						issue=self._describe_issue(text, clause),
-						rationale="Heuristic pattern match against CUAD-style contractual risk terms.",
-						negotiation_suggestion=self._suggestion_for_clause(text),
-						evidence=[clause.raw_text[:400]],
-						related_categories=[clause.cuad_category] if clause.cuad_category else [],
-					)
-				)
-				clause_risk_map[clause.clause_type] = risk_score
+        # Add nodes
+        graph.add_node("retrieve_reference_risks", lambda state: self._retrieve_reference_risks_node(state, retriever))
+        graph.add_node("llm_risk_analysis", lambda state: self._llm_risk_analysis_node(state, llm_client))
+        graph.add_node("consolidate_risks", lambda state: self._consolidate_risks_node(state))
 
-		if not issues and clause_extraction.clauses:
-			issues.append(
-				RiskIssue(
-					clause_type=clause_extraction.clauses[0].clause_type,
-					risk_level=RiskLevel.LOW,
-					risk_score=0.1,
-					issue="No material risk signals detected by heuristic scan.",
-					rationale="No high-risk keyword patterns matched.",
-					negotiation_suggestion="No immediate negotiation changes required.",
-					evidence=[clause_extraction.clauses[0].raw_text[:200]],
-				)
-			)
+        # Add edges
+        graph.set_entry_point("retrieve_reference_risks")
+        graph.add_edge("retrieve_reference_risks", "llm_risk_analysis")
+        graph.add_edge("llm_risk_analysis", "consolidate_risks")
+        graph.add_edge("consolidate_risks", END)
 
-		overall_score = round(sum(issue.risk_score for issue in issues) / max(len(issues), 1), 3)
-		overall_level = RiskLevel.CRITICAL if overall_score >= 0.8 else RiskLevel.HIGH if overall_score >= 0.6 else RiskLevel.MEDIUM if overall_score >= 0.3 else RiskLevel.LOW
+        return graph.compile()
 
-		return RiskScorerOutput(
-			overall_risk_level=overall_level,
-			overall_risk_score=overall_score,
-			issues=issues,
-			negotiation_suggestions=[issue.negotiation_suggestion for issue in issues if issue.negotiation_suggestion],
-			clause_risk_map=clause_risk_map,
-		)
+    def _strip_markdown_fences(self, text: str) -> str:
+        """Strip markdown code fences (```json ... ```) from LLM response."""
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            # Remove opening fence (```json or ```) and closing fence
+            inner = [l for l in lines[1:] if l.strip() != "```"]
+            return "\n".join(inner).strip()
+        return stripped
 
-	def _describe_issue(self, text: str, clause: ClauseSpan) -> str:
-		lower = text.lower()
-		if "liability" in lower:
-			return f"Liability exposure in {clause.clause_type} may create uncapped financial responsibility."
-		if "non-compete" in lower or "exclusive" in lower:
-			return f"Restriction language in {clause.clause_type} may limit future growth or customer reach."
-		if "audit" in lower:
-			return f"Audit rights in {clause.clause_type} may increase compliance burden and unexpected cost."
-		if "termination" in lower:
-			return f"Termination terms in {clause.clause_type} may allow the counterparty to exit the agreement too quickly."
-		if "assignment" in lower:
-			return f"Assignment or transfer language in {clause.clause_type} may impede corporate changes or sale transactions."
-		if "indemn" in lower:
-			return f"Indemnity language in {clause.clause_type} may require one party to cover significant losses."
-		return f"Potentially risky language appears in {clause.clause_type}; please review this clause carefully."
+    def _extract_json_payload(self, text: str) -> str | None:
+        """Extract the first balanced JSON object from the LLM response."""
+        # Strip markdown code fences first
+        text = self._strip_markdown_fences(text)
 
-	def _suggestion_for_clause(self, text: str) -> str:
-		lower = text.lower()
-		if "liability" in lower:
-			return "Ask for a clear liability cap, exclusions for indirect damages, and carve-outs for fraud or wilful misconduct."
-		if "non-compete" in lower or "exclusive" in lower:
-			return "Limit the restriction by duration, geography, and product scope, and add a mutual carve-out."
-		if "audit" in lower:
-			return "Limit audits to reasonable notice, frequency, scope, and require cost shifting for any out-of-pocket expenses."
-		if "termination" in lower:
-			return "Request material breach or cause-based termination, adequate cure rights, and fair notice periods."
-		if "assignment" in lower:
-			return "Allow assignment to affiliates and successors with notice, while preserving consent only for third-party transfers."
-		if "indemn" in lower:
-			return "Narrow indemnity to third-party claims, direct damages, and exclude punitive or consequential damage coverage."
-		return "Review the scope of this clause, ask for clearer obligations, and negotiate narrower risk exposure."
+        if not text or "{" not in text:
+            return None
+
+        start = None
+        depth = 0
+        for idx, char in enumerate(text):
+            if char == "{":
+                if depth == 0:
+                    start = idx
+                depth += 1
+            elif char == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidate = text[start:idx + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        continue
+        return None
+
+    def _parse_risk_response(self, response_text: str) -> dict | None:
+        """Parse LLM risk response with truncation recovery.
+        
+        Tries full JSON parse first, then falls back to salvaging
+        individual issue objects from truncated output.
+        """
+        clean = self._strip_markdown_fences(response_text)
+
+        # 1. Standard full parse
+        try:
+            return json.loads(clean)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Try first { to last } substring
+        first = clean.find("{")
+        last = clean.rfind("}")
+        if first != -1 and last != -1 and last > first:
+            try:
+                return json.loads(clean[first:last + 1])
+            except json.JSONDecodeError:
+                pass
+
+        # 3. Truncation recovery: salvage fully-written issue objects
+        import re
+        issues = []
+        for m in re.finditer(r"\{", clean):
+            start = m.start()
+            depth = 0
+            for i in range(start, len(clean)):
+                if clean[i] == "{":
+                    depth += 1
+                elif clean[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = clean[start:i + 1]
+                        try:
+                            obj = json.loads(candidate)
+                            if isinstance(obj, dict) and "issue" in obj and "risk_level" in obj:
+                                issues.append(obj)
+                        except json.JSONDecodeError:
+                            pass
+                        break
+
+        if issues:
+            logger.warning(f"Risk scorer: recovered {len(issues)} issue(s) from truncated JSON.")
+            return {"issues": issues}
+
+        return None
+
+    def _retrieve_reference_risks_node(self, state: RiskScorerState, retriever: Any | None) -> dict:
+        """Retrieve reference risk patterns from knowledge base."""
+        if retriever is None:
+            state["reference_risks"] = []
+            return state
+
+        try:
+            contract_type = getattr(state["clause_extraction"], "contract_type", "general contract")
+            query = f"risk patterns and issues in {contract_type} contracts"
+            reference_risks = retriever.retrieve_from_knowledge_base(query, "legal_standards")
+            state["reference_risks"] = reference_risks if isinstance(reference_risks, list) else []
+        except Exception as err:
+            logger.warning(f"Retrieval failed: {err}")
+            state["reference_risks"] = []
+
+        return state
+
+    def _normalize_risk_level(self, raw_value: str | None) -> RiskLevel:
+        """Normalize risk level values to LOW, MEDIUM, or HIGH."""
+        if not raw_value:
+            return RiskLevel.LOW
+
+        value = raw_value.strip().upper()
+        if value in {"HIGH", "H"}:
+            return RiskLevel.HIGH
+        if value in {"MEDIUM", "M", "MODERATE"}:
+            return RiskLevel.MEDIUM
+        if value in {"LOW", "L"}:
+            return RiskLevel.LOW
+        if value in {"CRITICAL", "CRIT"}:
+            return RiskLevel.HIGH
+        return RiskLevel.LOW
+
+    def _llm_risk_analysis_node(self, state: RiskScorerState, llm_client: Any | None) -> dict:
+        """Call LLM for structured risk analysis."""
+        if llm_client is None:
+            logger.warning("LLM client is None, cannot perform risk analysis")
+            state["llm_risks"] = []
+            return state
+
+        try:
+            clause_extraction = state["clause_extraction"]
+            clauses_text = "\n\n".join([
+                f"[{i+1}] Type: {clause.clause_type}\nText: {clause.raw_text[:self.CLAUSE_TEXT_TRUNCATION]}"
+                for i, clause in enumerate(clause_extraction.clauses[: self.MAX_CLAUSES_TO_ANALYZE])
+            ])
+
+            prompt = build_risk_scorer_prompt(
+                clauses_text=clauses_text,
+                reference_risks=state["reference_risks"],
+            )
+
+            logger.info(
+                f"Calling LLM for risk analysis with {len(clause_extraction.clauses)} clauses; sending {min(len(clause_extraction.clauses), self.MAX_CLAUSES_TO_ANALYZE)} clauses to prompt"
+            )
+            response_text = llm_client.chat_complete(
+                prompt,
+                temperature=0.0,
+                max_tokens=4000,
+            ).strip()
+
+            logger.debug(f"LLM response (first 300 chars): {response_text[:300]}")
+            if not response_text:
+                logger.warning("LLM returned an empty response for risk analysis")
+                state["llm_risks"] = []
+                return state
+
+            result = self._parse_risk_response(response_text)
+            if result is None:
+                logger.error(
+                    "Unable to parse JSON from LLM risk response."
+                    f" Response (first 1000 chars): {response_text[:1000]}"
+                )
+                state["llm_risks"] = []
+                return state
+            llm_risks: list[RiskIssue] = []
+            for issue_dict in result.get("issues", []):
+                if not isinstance(issue_dict, dict):
+                    logger.warning("Skipping invalid issue entry, expected dict.")
+                    continue
+
+                risk_score = 0.0
+                try:
+                    risk_score = float(issue_dict.get("risk_score", 0.0))
+                except (TypeError, ValueError):
+                    logger.warning("Invalid risk_score value in issue entry, defaulting to 0.0")
+
+                risk_score = max(0.0, min(1.0, risk_score))
+                risk_level = self._normalize_risk_level(issue_dict.get("risk_level"))
+
+                llm_risks.append(
+                    RiskIssue(
+                        clause_type=str(issue_dict.get("clause_type", "Unknown")) or "Unknown",
+                        risk_level=risk_level,
+                        risk_score=risk_score,
+                        issue=str(issue_dict.get("issue", "")).strip(),
+                        rationale=str(issue_dict.get("rationale", "")).strip(),
+                        negotiation_suggestion=str(issue_dict.get("negotiation_suggestion", "")).strip(),
+                        evidence=issue_dict.get("evidence", []) if isinstance(issue_dict.get("evidence", []), list) else [str(issue_dict.get("evidence", ""))],
+                        related_categories=issue_dict.get("related_categories", []) if isinstance(issue_dict.get("related_categories", []), list) else [],
+                    )
+                )
+
+            logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")
+            state["llm_risks"] = llm_risks
+        except Exception as err:
+            logger.error(f"LLM risk analysis failed: {err}", exc_info=True)
+            state["llm_risks"] = []
+
+        return state
+
+    def _consolidate_risks_node(self, state: RiskScorerState) -> dict:
+        """Consolidate LLM results. LLM-only, no heuristic fallback."""
+        final_issues = state.get("llm_risks") or []
+
+        logger.info(f"Consolidating risks: {len(final_issues)} issues from LLM")
+        if not final_issues:
+            logger.warning("No risk issues returned by LLM; returning LOW overall risk with empty issue set.")
+
+        clause_risk_map: dict[str, float] = {}
+        for issue in final_issues:
+            clause_risk_map[issue.clause_type] = issue.risk_score
+
+        overall_score = round(sum(issue.risk_score for issue in final_issues) / max(len(final_issues), 1), 3) if final_issues else 0.0
+        overall_level = (
+            RiskLevel.HIGH if overall_score >= 0.6
+            else RiskLevel.MEDIUM if overall_score >= 0.3
+            else RiskLevel.LOW
+        )
+
+        logger.info(f"Final risk assessment: level={overall_level}, score={overall_score}, issues={len(final_issues)}")
+        state["overall_risk_level"] = overall_level
+        state["overall_risk_score"] = overall_score
+        state["clause_risk_map"] = clause_risk_map
+
+        return state
+
+    def score(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None) -> RiskScorerOutput:
+        """Score risks in extracted clauses using LangGraph workflow."""
+        # Initialize state
+        initial_state: RiskScorerState = {
+            "clause_extraction": clause_extraction,
+            "reference_risks": [],
+            "llm_risks": None,
+            "overall_risk_level": RiskLevel.LOW,
+            "overall_risk_score": 0.0,
+            "clause_risk_map": {},
+        }
+
+        # Create and run graph
+        graph = self._create_graph(llm_client=llm_client, retriever=retriever)
+        final_state = graph.invoke(initial_state)
+
+        # Build output using only LLM results (no heuristic fallback)
+        issues = final_state["llm_risks"] or []
+        return RiskScorerOutput(
+            overall_risk_level=final_state["overall_risk_level"],
+            overall_risk_score=final_state["overall_risk_score"],
+            issues=issues,
+            negotiation_suggestions=[issue.negotiation_suggestion for issue in issues if issue.negotiation_suggestion],
+            clause_risk_map=final_state["clause_risk_map"],
+        )
 
 
-def score_risks(clause_extraction: ClauseExtractorOutput) -> RiskScorerOutput:
-	"""Convenience function for risk scoring."""
+def score_risks(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None) -> RiskScorerOutput:
+    """Convenience function for risk scoring."""
+    return RiskScorerAgent().score(clause_extraction, llm_client=llm_client, retriever=retriever)
 
-	return RiskScorerAgent().score(clause_extraction)

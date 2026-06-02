@@ -45,6 +45,7 @@ class ContractReviewWorkflow:
 		source_file: str | None = None,
 		trace_id: str | None = None,
 		llm_client: Any | None = None,
+		risk_llm_client: Any | None = None,
 		obligation_llm_client: Any | None = None,
 		memory_context: dict[str, Any] | None = None,
 		retriever: Any | None = None,
@@ -91,8 +92,8 @@ class ContractReviewWorkflow:
 		)
 
 		with ThreadPoolExecutor(max_workers=4) as executor:
-			risk_future = executor.submit(score_risks, clause_extraction)
-			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, retriever)
+			risk_future = executor.submit(score_risks, clause_extraction, risk_llm_client)
+			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction)
 			plain_future = executor.submit(generate_plain_english, clause_extraction)
 
@@ -186,6 +187,7 @@ def run_contract_review(
 	source_file: str | None = None,
 	trace_id: str | None = None,
 	llm_client: Any | None = None,
+	risk_llm_client: Any | None = None,
 	obligation_llm_client: Any | None = None,
 	memory_context: dict[str, Any] | None = None,
 	retriever: Any | None = None,
@@ -198,6 +200,7 @@ def run_contract_review(
 		source_file=source_file,
 		trace_id=trace_id,
 		llm_client=llm_client,
+		risk_llm_client=risk_llm_client,
 		obligation_llm_client=obligation_llm_client,
 		memory_context=memory_context,
 		retriever=retriever,
