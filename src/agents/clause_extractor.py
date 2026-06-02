@@ -10,10 +10,13 @@ Uses LangGraph for improved confidence tracking, state management, and reliabili
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from typing import Any, TypedDict
 
 from langgraph.graph import StateGraph, END
+
+logger = logging.getLogger(__name__)
 
 from ..helpers.contract_analysis import (
     clause_keyword_score,
@@ -23,7 +26,6 @@ from ..helpers.contract_analysis import (
     extract_money,
     extract_numbers_and_periods,
     normalize_whitespace,
-    split_paragraphs,
 )
 from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata
 from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt
@@ -38,7 +40,7 @@ class ClauseExtractorState(TypedDict):
     clauses: list[ClauseSpan]
     cuad_labels: dict[str, CUADClauseLabel]
     llm_attempt_success: bool
-    heuristic_backup_used: bool
+    used_extraction_method: str
     confidence_score: float
     error_messages: list[str]
 
@@ -59,7 +61,10 @@ def normalize_text_node(state: ClauseExtractorState) -> ClauseExtractorState:
 def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None) -> ClauseExtractorState:
     """Step 2: Attempt LLM-based extraction with confidence tracking."""
     if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
+        logger.error("LLM client is not configured; clause extractor is LLM-only in this mode.")
         state["llm_attempt_success"] = False
+        state["used_extraction_method"] = "llm"
+        state["error_messages"].append("LLM client not configured for ClauseExtractor (LLM-only mode).")
         return state
     
     try:
@@ -68,7 +73,7 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
             source_file=state["source_file"],
             memory_context=memory_context,
         )
-        llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=1200)
+        llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
         
         parsed = _parse_llm_response(llm_response)
         if not parsed:
@@ -84,6 +89,8 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
         
         state["clauses"] = clauses
         state["llm_attempt_success"] = True
+        state["used_extraction_method"] = "llm"
+        logger.info("Clause extraction method: llm")
         state["confidence_score"] = 0.85  # LLM-extracted clauses have high confidence
         
         # Merge LLM metadata
@@ -99,79 +106,7 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
     return state
 
 
-def heuristic_extraction_node(state: ClauseExtractorState) -> ClauseExtractorState:
-    """Step 3: Fallback to heuristic extraction if LLM failed."""
-    if state["llm_attempt_success"]:
-        return state
-    
-    try:
-        paragraphs = split_paragraphs(state["cleaned_text"])
-        clauses: list[ClauseSpan] = []
-        category_contexts: dict[str, list[str]] = defaultdict(list)
-        
-        for index, paragraph in enumerate(paragraphs, start=1):
-            categories = detect_clause_categories(paragraph)
-            keyword_score = clause_keyword_score(paragraph, (
-                "shall", "must", "will", "agrees to", "agrees that",
-                "requires", "required", "payment", "fee", "notice",
-                "terminate", "renew", "assign", "audit", "liability", "insurance",
-            ))
-            
-            is_relevant = bool(categories or keyword_score >= 2 or len(paragraph) > 220)
-            if not is_relevant:
-                continue
-            
-            clause_type = str(categories[0]) if categories else f"Paragraph {index}"
-            confidence = min(1.0, 0.25 + 0.15 * len(categories) + 0.1 * min(keyword_score, 3)) if categories else min(0.35, 0.15 + 0.1 * keyword_score)
-            
-            clauses.append(
-                ClauseSpan(
-                    clause_type=clause_type,
-                    raw_text=paragraph,
-                    section_reference=f"Paragraph {index}",
-                    confidence=confidence,
-                    normalized_text=paragraph,
-                    cuad_category=categories[0] if categories else None,
-                )
-            )
-            
-            for category in categories:
-                category_contexts[str(category)].append(paragraph)
-        
-        # Build CUAD labels from heuristic extraction
-        labels: dict[str, CUADClauseLabel] = {}
-        for category, contexts in category_contexts.items():
-            joined = " ".join(contexts)
-            answer_parts = extract_dates(joined) or extract_money(joined) or extract_numbers_and_periods(joined)
-            answer = "; ".join(answer_parts[:3]) if answer_parts else ("Yes" if clause_keyword_score(joined, ["shall", "must", "will", "may not"]) else None)
-            labels[category] = CUADClauseLabel(
-                category=category,
-                context=contexts[:3],
-                answer=answer,
-                answer_format="best-effort heuristic",
-                group=None,
-                is_present=True,
-            )
-        
-        if not clauses and state["cleaned_text"]:
-            clauses = [ClauseSpan(
-                clause_type="General",
-                raw_text=state["cleaned_text"],
-                section_reference="Paragraph 1",
-                confidence=0.2,
-            )]
-        
-        state["clauses"] = clauses
-        state["cuad_labels"] = labels
-        state["heuristic_backup_used"] = True
-        state["confidence_score"] = 0.65 if clauses else 0.2  # Lower confidence for heuristic
-        state["error_messages"].append("Using heuristic extraction as fallback")
-        
-    except Exception as e:
-        state["error_messages"].append(f"Heuristic extraction error: {str(e)}")
-        state["confidence_score"] = 0.1
-    
-    return state
+# Heuristic extraction removed: Clause Extractor is LLM-only in this configuration.
 
 
 def confidence_validation_node(state: ClauseExtractorState) -> ClauseExtractorState:
@@ -197,12 +132,15 @@ def confidence_validation_node(state: ClauseExtractorState) -> ClauseExtractorSt
 
 def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
     """Step 5: Build final output with metadata."""
+    method = state.get("used_extraction_method", "heuristic")
+    logger.info(f"Clause extraction completed using method: {method}")
     return ClauseExtractorOutput(
         metadata=state["metadata"],
         clauses=state["clauses"],
         cuad_labels=state["cuad_labels"],
         raw_contract_text=state["cleaned_text"],
         page_count=None,
+        extraction_method=method,
     )
 
 
@@ -213,14 +151,12 @@ def create_clause_extraction_graph(llm_client: Any | None = None, memory_context
     # Add nodes
     workflow.add_node("normalize", normalize_text_node)
     workflow.add_node("llm_extract", lambda state: llm_extraction_node(state, llm_client, memory_context))
-    workflow.add_node("heuristic_extract", heuristic_extraction_node)
     workflow.add_node("validate_confidence", confidence_validation_node)
     
     # Add edges
     workflow.set_entry_point("normalize")
     workflow.add_edge("normalize", "llm_extract")
-    workflow.add_edge("llm_extract", "heuristic_extract")
-    workflow.add_edge("heuristic_extract", "validate_confidence")
+    workflow.add_edge("llm_extract", "validate_confidence")
     workflow.add_edge("validate_confidence", END)
     
     return workflow.compile()
@@ -256,7 +192,7 @@ class ClauseExtractorAgent:
             "clauses": [],
             "cuad_labels": {},
             "llm_attempt_success": False,
-            "heuristic_backup_used": False,
+            "used_extraction_method": "llm",
             "confidence_score": 0.0,
             "error_messages": [],
         }
@@ -269,20 +205,82 @@ class ClauseExtractorAgent:
 
 
 def _parse_llm_response(response_text: str) -> dict[str, Any] | None:
-    """Parse LLM response JSON."""
+    """Parse LLM response JSON, with truncation recovery fallback."""
     if not response_text:
         return None
     text = response_text.strip()
+    
+    # 1. Attempt standard JSON parsing
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        first = text.find("{")
-        last = text.rfind("}")
-        if first != -1 and last != -1 and last > first:
-            try:
-                return json.loads(text[first:last + 1])
-            except json.JSONDecodeError:
-                return None
+        pass
+        
+    # 2. Attempt substring parsing between first { and last }
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        try:
+            return json.loads(text[first:last + 1])
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Fallback: resilient recovery of truncated/broken JSON
+    try:
+        import re
+        clauses = []
+        open_indices = [m.start() for m in re.finditer(r'\{', text)]
+        close_indices = [m.start() for m in re.finditer(r'\}', text)]
+        
+        # Extract valid clauses
+        for start in open_indices:
+            for end in close_indices:
+                if end > start:
+                    candidate = text[start:end+1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict) and "clause_type" in obj and "raw_text" in obj:
+                            clauses.append(obj)
+                            break
+                    except Exception:
+                        pass
+                        
+        # Filter out nested clauses
+        unique_clauses = []
+        for c in clauses:
+            is_nested = False
+            for other in clauses:
+                if other is not c and other.get("raw_text") and c.get("raw_text") and c.get("raw_text") in other.get("raw_text"):
+                    if len(other.get("raw_text", "")) > len(c.get("raw_text", "")):
+                        is_nested = True
+                        break
+            if not is_nested and c not in unique_clauses:
+                unique_clauses.append(c)
+                
+        # Extract metadata
+        metadata = None
+        for start in open_indices:
+            for end in close_indices:
+                if end > start:
+                    candidate = text[start:end+1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict) and "parties" in obj:
+                            metadata = obj
+                            break
+                    except Exception:
+                        pass
+            if metadata:
+                break
+                
+        if unique_clauses or metadata:
+            return {
+                "clauses": unique_clauses,
+                "metadata": metadata or {}
+            }
+    except Exception:
+        pass
+
     return None
 
 
@@ -361,6 +359,12 @@ def extract_clauses(
     memory_context: dict[str, Any] | None = None,
 ) -> ClauseExtractorOutput:
     """Extract clauses using LangGraph workflow with confidence tracking."""
+    if llm_client is None:
+        try:
+            from ..services.azure_clients import AzureClientFactory
+            llm_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
+        except Exception:
+            pass
     agent = ClauseExtractorAgent(llm_client=llm_client)
     return agent.extract(
         contract_text,

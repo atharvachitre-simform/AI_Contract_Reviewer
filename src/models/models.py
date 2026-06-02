@@ -163,7 +163,7 @@ class ClauseSpan(BaseModel):
     page_number: int | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     normalized_text: str | None = None
-    cuad_category: CUADCategory | None = None
+    cuad_category: CUADCategory | str | None = None
 
 
 class RiskIssue(BaseModel):
@@ -252,6 +252,7 @@ class ClauseExtractorOutput(BaseModel):
     cuad_labels: dict[str, CUADClauseLabel] = Field(default_factory=dict)
     raw_contract_text: str | None = None
     page_count: int | None = None
+    extraction_method: str = Field(default="heuristic")
 
 
 class RiskScorerOutput(BaseModel):
@@ -276,6 +277,7 @@ class ObligationFinderOutput(BaseModel):
     notice_requirements: list[ObligationItem] = Field(default_factory=list)
     restrictions: list[ObligationItem] = Field(default_factory=list)
     key_deadlines: list[str] = Field(default_factory=list)
+    method_used: str = Field(default="heuristic")
 
 
 class RedFlagDetectorOutput(BaseModel):

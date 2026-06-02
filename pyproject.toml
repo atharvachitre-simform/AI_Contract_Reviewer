@@ -22,6 +22,7 @@ dependencies = [
     "azure-storage-blob",
     "azure-search-documents",
     "azure-identity",
+    "azure-ai-openai",
 ]
 
 [dependency-groups]
