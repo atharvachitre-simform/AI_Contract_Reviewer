@@ -252,7 +252,9 @@ class ContractReviewService:
                 contract_id=contract_id,
                 source_file=source_blob_path,
                 llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
+                obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 memory_context=memory_context,
+                retriever=self,
             )
             state.trace_id = self.current_trace_id
             state.short_term_memory = memory_context
