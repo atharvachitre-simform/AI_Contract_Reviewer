@@ -142,6 +142,71 @@ class ObligationFinderAgent:
                 method_used="llm",
             )
 
+    def _parse_llm_response(self, response_text: str) -> dict[str, Any] | None:
+        if not response_text:
+            return None
+
+        text = response_text.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            first = text.find("{")
+            last = text.rfind("}")
+            if first != -1 and last != -1 and last > first:
+                try:
+                    return json.loads(text[first:last + 1])
+                except json.JSONDecodeError:
+                    return None
+        return None
+
+    def _build_obligations_from_llm(self, obligations_data: list[dict[str, Any]]) -> list[ObligationItem]:
+        obligations: list[ObligationItem] = []
+        for obligation_obj in obligations_data:
+            if not isinstance(obligation_obj, dict):
+                continue
+
+            obligation_text = str(obligation_obj.get("obligation", "")).strip()
+            if not obligation_text:
+                continue
+
+            obligations.append(
+                ObligationItem(
+                    party=str(obligation_obj.get("party", "")).strip() or None,
+                    obligation=obligation_text,
+                    due_date=str(obligation_obj.get("due_date", "")).strip() or None,
+                    frequency=str(obligation_obj.get("frequency", "")).strip() or None,
+                    condition=str(obligation_obj.get("condition", "")).strip() or None,
+                    obligation_type=str(obligation_obj.get("obligation_type", "")).strip() or None,
+                    source_clause=str(obligation_obj.get("source_clause", "")).strip() or None,
+                )
+            )
+        return obligations
+
+    def _categorize_obligations(self, obligations: list[ObligationItem]) -> ObligationFinderOutput:
+        categorized: dict[str, list[ObligationItem]] = {
+            "payment": [],
+            "notice": [],
+            "restriction": [],
+            "general": [],
+        }
+        key_deadlines: list[str] = []
+
+        for obligation in obligations:
+            otype = str(obligation.obligation_type or "general").lower()
+            if otype in categorized:
+                categorized[otype].append(obligation)
+            else:
+                categorized["general"].append(obligation)
+
+            if obligation.due_date and obligation.due_date not in key_deadlines:
+                key_deadlines.append(obligation.due_date)
+
+        return ObligationFinderOutput(
+            obligations=obligations,
+            categorized=categorized,
+            key_deadlines=key_deadlines,
+        )
+
     def _infer_party(self, text: str) -> str | None:
         match = re.match(r"([A-Z][A-Za-z0-9&.,/\- ]{2,80}?)\s+(shall|must|will|may not|shall not|agrees to|agrees that)", text, re.IGNORECASE)
         if match:

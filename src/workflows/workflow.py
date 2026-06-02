@@ -48,6 +48,7 @@ class ContractReviewWorkflow:
 		risk_llm_client: Any | None = None,
 		obligation_llm_client: Any | None = None,
 		memory_context: dict[str, Any] | None = None,
+		retriever: Any | None = None,
 	) -> ContractReviewState:
 		trace_id = trace_id or str(uuid.uuid4())
 		state = ContractReviewState(
@@ -77,6 +78,7 @@ class ContractReviewWorkflow:
 			source_file=source_file,
 			llm_client=llm_client,
 			memory_context=memory_context,
+			retriever=retriever,
 		)
 		state.clause_extraction = clause_extraction
 		state.metadata = clause_extraction.metadata
@@ -188,6 +190,7 @@ def run_contract_review(
 	risk_llm_client: Any | None = None,
 	obligation_llm_client: Any | None = None,
 	memory_context: dict[str, Any] | None = None,
+	retriever: Any | None = None,
 ) -> ContractReviewState:
 	"""Convenience function for running the full workflow."""
 
@@ -200,4 +203,5 @@ def run_contract_review(
 		risk_llm_client=risk_llm_client,
 		obligation_llm_client=obligation_llm_client,
 		memory_context=memory_context,
+		retriever=retriever,
 	)

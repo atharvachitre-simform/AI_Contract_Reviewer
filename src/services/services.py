@@ -270,6 +270,7 @@ class ContractReviewService:
                 risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 memory_context=memory_context,
+                retriever=self,
             )
             state.trace_id = self.current_trace_id
             self._save_memory(contract_id, session_id, state)

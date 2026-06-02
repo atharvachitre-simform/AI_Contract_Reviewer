@@ -273,9 +273,14 @@ class ObligationFinderOutput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     obligations: list[ObligationItem] = Field(default_factory=list)
-    payment_obligations: list[ObligationItem] = Field(default_factory=list)
-    notice_requirements: list[ObligationItem] = Field(default_factory=list)
-    restrictions: list[ObligationItem] = Field(default_factory=list)
+    categorized: dict[str, list[ObligationItem]] = Field(
+        default_factory=lambda: {
+            "payment": [],
+            "notice": [],
+            "restriction": [],
+            "general": [],
+        }
+    )
     key_deadlines: list[str] = Field(default_factory=list)
     method_used: str = Field(default="heuristic")
 
