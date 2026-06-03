@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 class PlainEnglishWriterState(TypedDict):
 	"""State for plain English writer workflow."""
 	clause_extraction: ClauseExtractorOutput
+	risks_text: str
+	red_flags_text: str
 	executive_summary: str
 	clause_summaries: list[PlainEnglishClause]
 	key_points: list[str]
@@ -64,7 +66,16 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 		return state
 
 	try:
-		clauses_to_analyze = state["clause_extraction"].clauses[:20]
+		# Gather recursively all clauses and subclauses for summary
+		def get_all_clauses(cl_list: list[Any]) -> list[Any]:
+			res = []
+			for c in cl_list:
+				res.append(c)
+				if getattr(c, "subclauses", []):
+					res.extend(get_all_clauses(c.subclauses))
+			return res
+
+		clauses_to_analyze = get_all_clauses(state["clause_extraction"].clauses)[:20]
 		clause_lines = []
 		for idx, clause in enumerate(clauses_to_analyze, 1):
 			clause_lines.append(
@@ -74,7 +85,11 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 			)
 		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
 
-		prompt = build_plain_english_writer_prompt(clauses_text)
+		prompt = build_plain_english_writer_prompt(
+			clauses_text,
+			risks_text=state.get("risks_text", ""),
+			red_flags_text=state.get("red_flags_text", "")
+		)
 		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
 
 		parsed = _parse_plain_english_response(response_text)
@@ -114,10 +129,30 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWriterState:
 	"""Validate summaries and provide fallback executive summary if needed."""
 	if not state["llm_attempt_success"] or not state["clause_summaries"]:
-		state["executive_summary"] = "No candidate clauses were extracted or Plain English summary generation failed."
-		state["clause_summaries"] = []
-		state["key_points"] = []
-		state["plain_english_risk_notes"] = []
+		clauses = state["clause_extraction"].clauses
+		if clauses:
+			summarized_types = [c.clause_type for c in clauses[:5]]
+			state["executive_summary"] = (
+				"This contract contains key clauses including: " + ", ".join(summarized_types) + ". "
+				"Full analysis is partial or failed, but these clauses were extracted and are available for review."
+			)
+			state["clause_summaries"] = [
+				PlainEnglishClause(
+					clause_type=c.clause_type,
+					original_text=c.raw_text,
+					plain_english=c.normalized_text or c.raw_text[:200],
+					why_it_matters="Extracted from the contract text.",
+					party_burden="obligatory"
+				)
+				for c in clauses[:5]
+			]
+			state["key_points"] = [f"Extracted {c.clause_type}: {c.raw_text[:120]}..." for c in clauses[:3]]
+			state["plain_english_risk_notes"] = ["Extraction pipeline returned partial results. Manual verification is recommended."]
+		else:
+			state["executive_summary"] = "No candidate clauses were extracted or Plain English summary generation failed."
+			state["clause_summaries"] = []
+			state["key_points"] = []
+			state["plain_english_risk_notes"] = []
 	return state
 
 
@@ -139,9 +174,11 @@ class PlainEnglishWriterAgent:
 
 		return workflow.compile()
 
-	def write(self, clause_extraction: ClauseExtractorOutput) -> PlainEnglishWriterOutput:
+	def write(self, clause_extraction: ClauseExtractorOutput, risks_text: str = "", red_flags_text: str = "") -> PlainEnglishWriterOutput:
 		initial_state: PlainEnglishWriterState = {
 			"clause_extraction": clause_extraction,
+			"risks_text": risks_text,
+			"red_flags_text": red_flags_text,
 			"executive_summary": "",
 			"clause_summaries": [],
 			"key_points": [],
@@ -161,7 +198,12 @@ class PlainEnglishWriterAgent:
 		)
 
 
-def generate_plain_english(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> PlainEnglishWriterOutput:
+def generate_plain_english(
+	clause_extraction: ClauseExtractorOutput,
+	llm_client: Any | None = None,
+	risks_text: str = "",
+	red_flags_text: str = ""
+) -> PlainEnglishWriterOutput:
 	"""Convenience function for plain-English summaries."""
 	if llm_client is None:
 		try:
@@ -169,4 +211,4 @@ def generate_plain_english(clause_extraction: ClauseExtractorOutput, llm_client:
 			llm_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
 		except Exception:
 			pass
-	return PlainEnglishWriterAgent(llm_client=llm_client).write(clause_extraction)
+	return PlainEnglishWriterAgent(llm_client=llm_client).write(clause_extraction, risks_text, red_flags_text)

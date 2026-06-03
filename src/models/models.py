@@ -164,6 +164,7 @@ class ClauseSpan(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     normalized_text: str | None = None
     cuad_category: CUADCategory | str | None = None
+    subclauses: list[ClauseSpan] = Field(default_factory=list)
 
 
 class RiskIssue(BaseModel):
@@ -253,6 +254,10 @@ class ClauseExtractorOutput(BaseModel):
     raw_contract_text: str | None = None
     page_count: int | None = None
     extraction_method: str = Field(default="llm")
+    coverage_score: float | None = None
+    highest_clause_number: int | None = None
+    is_extraction_complete: bool = True
+    extraction_completeness_notes: str | None = None
 
 
 class RiskScorerOutput(BaseModel):

@@ -41,7 +41,9 @@ PROMPT_GUIDELINES = (
     "- Determine the overall verdict ('approve' for low risk, 'review' for minor gaps/medium risk, 'negotiate' for high risk/red flags, 'reject' for critical risks).\n"
     "- Determine the overall_risk_level matching the Risk Scorer's assessment but adjusted for critical red flags if necessary.\n"
     "- Formulate a prioritized list of negotiation_priorities based on identified risks, red flags, and critical missing clauses. Sort them by priority order (1 being highest priority).\n"
-    "- Identify missing clauses that should have been present in the contract. Consider standard commercial requirements (e.g. Governing Law, Cap on Liability, Term, Indemnification, etc.) and note why they are missing and their impact.\n"
+    "- Identify missing clauses that should have been present in the contract. Consider standard commercial requirements: Governing Law, Termination, Confidentiality, Indemnification, Limitation of Liability, Intellectual Property.\n"
+    "- DO NOT classify a clause as missing solely because it was not extracted.\n"
+    "- Before identifying a clause as missing, verify the extraction completeness status. If the extraction coverage is flagged as incomplete, mark missing standard commercial clauses as 'Unknown / Not Extracted' (with 'reason': 'Clause not detected by extraction pipeline') instead of classifying them as missing from the contract.\n"
     "- List up to 5 key_risks and compile the recommended_next_steps.\n"
     "- Return exactly one JSON object that matches the schema."
 )
@@ -52,8 +54,12 @@ def build_report_assembler_prompt(
     risks_summary: str,
     red_flags_summary: str,
     plain_english_summary: str,
+    completeness_summary: str = "",
 ) -> str:
     """Build a prompt for the report assembler agent."""
+    completeness_section = ""
+    if completeness_summary:
+        completeness_section = f"5. EXTRACTION COMPLETENESS STATUS:\n{completeness_summary}\n\n"
     return (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
         "INSTRUCTIONS:\n"
@@ -65,5 +71,6 @@ def build_report_assembler_prompt(
         f"2. RISK SCORING & ISSUES:\n{risks_summary}\n\n"
         f"3. DETECTED RED FLAGS:\n{red_flags_summary}\n\n"
         f"4. PLAIN ENGLISH SUMMARIES:\n{plain_english_summary}\n\n"
+        f"{completeness_section}"
         "Begin output now. Return only valid JSON."
     )

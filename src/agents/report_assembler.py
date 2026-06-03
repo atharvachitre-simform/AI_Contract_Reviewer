@@ -134,11 +134,17 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 			plain_english_list.append(f"- Risk Note {idx}: {note}")
 		plain_english_summary = "\n".join(plain_english_list)
 
+		# Add extraction completeness status context
+		is_complete = getattr(state["clause_extraction"], "is_extraction_complete", True)
+		notes = getattr(state["clause_extraction"], "extraction_completeness_notes", "Normal")
+		completeness_summary = f"Is Complete: {is_complete}\nNotes: {notes}"
+
 		prompt = build_report_assembler_prompt(
 			clauses_summary=clauses_summary,
 			risks_summary=risks_summary,
 			red_flags_summary=red_flags_summary,
 			plain_english_summary=plain_english_summary,
+			completeness_summary=completeness_summary,
 		)
 
 		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
@@ -187,12 +193,70 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 		state["recommended_next_steps"] = [str(s) for s in parsed.get("recommended_next_steps", []) if s]
 		state["llm_attempt_success"] = True
 
+		# Apply missing clause validation rule override
+		state["missing_clauses"] = enforce_missing_clauses_validation(state)
+
 	except Exception as e:
 		logger.error(f"Report Assembler LLM error: {e}", exc_info=True)
 		state["llm_attempt_success"] = False
 		state["error_messages"].append(f"LLM compilation error: {str(e)}")
 
 	return state
+
+
+def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[MissingClause]:
+	"""Validate standard commercial clauses presence, unknown, or missing status."""
+	required_categories = {
+		"Governing Law": "Governing Law",
+		"Termination": "Termination for Convenience",
+		"Confidentiality": "Confidentiality",
+		"Indemnification": "Indemnification",
+		"Limitation of Liability": "Cap on Liability",
+		"Intellectual Property": "IP Ownership Assignment",
+	}
+	
+	# Extract recursively all clause types and cuad categories detected
+	def get_all_detected(cl_list: list[Any]) -> set[str]:
+		detected = set()
+		for c in cl_list:
+			if c.clause_type:
+				detected.add(c.clause_type.lower())
+			if c.cuad_category:
+				detected.add(str(c.cuad_category).lower())
+			if getattr(c, "subclauses", []):
+				detected.update(get_all_detected(c.subclauses))
+		return detected
+
+	detected_terms = get_all_detected(state["clause_extraction"].clauses)
+	is_incomplete = not getattr(state["clause_extraction"], "is_extraction_complete", True)
+	
+	validated_missing = []
+	for display_name, cuad_name in required_categories.items():
+		found = False
+		for term in detected_terms:
+			if display_name.lower() in term or cuad_name.lower() in term:
+				found = True
+				break
+				
+		if found:
+			continue
+		elif is_incomplete:
+			validated_missing.append(
+				MissingClause(
+					category=display_name,
+					reason="Unknown / Not Extracted (Clause not detected by extraction pipeline)",
+					impact="Extraction coverage is incomplete. Genuineness of missing status cannot be confirmed."
+				)
+			)
+		else:
+			validated_missing.append(
+				MissingClause(
+					category=display_name,
+					reason="Missing from contract",
+					impact=f"Standard commercial safeguard '{display_name}' was not found in the fully analyzed contract."
+				)
+			)
+	return validated_missing
 
 
 def validate_report_node(state: ReportAssemblerState) -> ReportAssemblerState:
@@ -202,7 +266,7 @@ def validate_report_node(state: ReportAssemblerState) -> ReportAssemblerState:
 		state["overall_risk_level"] = state["risk_scoring"].overall_risk_level
 		state["report_summary"] = "Failed to assemble the contract review report automatically."
 		state["negotiation_priorities"] = []
-		state["missing_clauses"] = []
+		state["missing_clauses"] = enforce_missing_clauses_validation(state)
 		state["key_risks"] = []
 		state["recommended_next_steps"] = []
 	return state
