@@ -96,6 +96,7 @@ def render_risk_scoring(output: object) -> None:
         if not output:
             st.write("No risk scoring output available.")
             return
+        st.markdown(f"**Method:** LLM")
         st.markdown(f"**Overall risk level:** {_val(getattr(output, 'overall_risk_level', None)).upper()}")
         st.markdown(f"**Overall risk score:** {getattr(output, 'overall_risk_score', 'N/A')}")
         if getattr(output, "issues", None):
@@ -128,7 +129,11 @@ def render_obligation_finding(output: object) -> None:
 
 def render_red_flag_detection(output: object) -> None:
     with st.expander("Red Flag Detector", expanded=True):
-        if not output or not getattr(output, "red_flags", None):
+        if not output:
+            st.write("No red flags detected.")
+            return
+        st.markdown(f"**Method:** LLM")
+        if not getattr(output, "red_flags", None):
             st.write("No red flags detected.")
             return
         for flag in output.red_flags:
@@ -142,6 +147,7 @@ def render_plain_english(output: object) -> None:
         if not output:
             st.write("No plain English output available.")
             return
+        st.markdown(f"**Method:** LLM")
         if getattr(output, "executive_summary", None):
             st.markdown("**Executive summary:**")
             st.write(output.executive_summary)
@@ -160,6 +166,7 @@ def render_report_assembler(output: object) -> None:
         if not output:
             st.write("No report output available.")
             return
+        st.markdown(f"**Method:** Heuristic")
         st.markdown(f"**Verdict:** {_val(getattr(output, 'verdict', None))}\n\n")
         st.markdown(f"**Overall risk:** {_val(getattr(output, 'overall_risk_level', None)).upper()}\n\n")
         if getattr(output, "report_summary", None):
@@ -263,7 +270,8 @@ def main() -> None:
                         result = find_obligations(clause_output, llm_client=obligation_client)
                         render_obligation_finding(result)
                 elif selected_model == "Red Flag Detector":
-                    result = detect_red_flags(clause_output)
+                    red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
+                    result = detect_red_flags(clause_output, llm_client=red_flag_client)
                     render_red_flag_detection(result)
                 elif selected_model == "Plain English Writer":
                     plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
@@ -275,7 +283,8 @@ def main() -> None:
                         st.error("Report assembly requires the Risk Scorer client to be configured.")
                     else:
                         risk_output = score_risks(clause_output, llm_client=risk_client)
-                        red_flag_output = detect_red_flags(clause_output)
+                        red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
+                        red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client)
                         plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
                         plain_output = generate_plain_english(clause_output, llm_client=plain_client)
                         report_output = assemble_report(
