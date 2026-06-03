@@ -181,7 +181,8 @@ class ContractReviewService:
             clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
         if clause_extraction is None:
             clause_extraction = extract_clauses(contract_text)
-        result = detect_red_flags(clause_extraction)
+        red_flag_client = self.azure.get_openai_client_for_agent("red_flag_detector")
+        result = detect_red_flags(clause_extraction, llm_client=red_flag_client)
         self._trace("detect_red_flags", "Completed red flag detection.", {"red_flags": len(result.red_flags)}, "completed")
         return result.model_dump()
 
@@ -271,6 +272,7 @@ class ContractReviewService:
                 risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 plain_llm_client=self.azure.get_openai_client_for_agent("plain_english_writer"),
+                red_flag_llm_client=self.azure.get_openai_client_for_agent("red_flag_detector"),
                 memory_context=memory_context,
                 retriever=self,
             )

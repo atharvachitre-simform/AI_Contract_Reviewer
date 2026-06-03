@@ -125,7 +125,7 @@ class ReportAssemblerAgent:
 	) -> str:
 		return (
 			f"Final verdict: {verdict.value}. "
-			f"Heuristic risk score: {risk_scoring.overall_risk_score:.2f} ({risk_scoring.overall_risk_level.value}). "
+			f"Overall risk score: {risk_scoring.overall_risk_score:.2f} ({risk_scoring.overall_risk_level.value}). "
 			f"Detected {len(red_flags.red_flags)} red flags. "
 			f"Plain-English summary: {plain_english.executive_summary}"
 		)
