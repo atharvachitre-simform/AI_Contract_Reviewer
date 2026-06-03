@@ -233,7 +233,8 @@ class ContractReviewService:
         if isinstance(plain_english, dict):
             plain_english = ContractReviewState.model_validate({"plain_english": plain_english}).plain_english
         if clause_extraction and risk_scoring and red_flags and plain_english:
-            result = assemble_report(clause_extraction, risk_scoring, red_flags, plain_english)
+            assembler_client = self.azure.get_openai_client_for_agent("report_assembler")
+            result = assemble_report(clause_extraction, risk_scoring, red_flags, plain_english, llm_client=assembler_client)
             self._trace("assemble_report", "Completed final report assembly.", {"verdict": str(result.verdict), "risk": str(result.overall_risk_level)}, "completed")
             return result.model_dump()
         raise ValueError("Incomplete analysis results for report assembly")
@@ -273,6 +274,7 @@ class ContractReviewService:
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 plain_llm_client=self.azure.get_openai_client_for_agent("plain_english_writer"),
                 red_flag_llm_client=self.azure.get_openai_client_for_agent("red_flag_detector"),
+                assembler_llm_client=self.azure.get_openai_client_for_agent("report_assembler"),
                 memory_context=memory_context,
                 retriever=self,
             )

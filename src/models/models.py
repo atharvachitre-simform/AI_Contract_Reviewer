@@ -252,7 +252,7 @@ class ClauseExtractorOutput(BaseModel):
     cuad_labels: dict[str, CUADClauseLabel] = Field(default_factory=dict)
     raw_contract_text: str | None = None
     page_count: int | None = None
-    extraction_method: str = Field(default="heuristic")
+    extraction_method: str = Field(default="llm")
 
 
 class RiskScorerOutput(BaseModel):
@@ -282,7 +282,7 @@ class ObligationFinderOutput(BaseModel):
         }
     )
     key_deadlines: list[str] = Field(default_factory=list)
-    method_used: str = Field(default="heuristic")
+    method_used: str = Field(default="llm")
 
 
 class RedFlagDetectorOutput(BaseModel):
