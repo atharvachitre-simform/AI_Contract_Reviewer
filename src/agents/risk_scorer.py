@@ -250,7 +250,7 @@ class RiskScorerAgent:
         return state
 
     def _consolidate_risks_node(self, state: RiskScorerState) -> dict:
-        """Consolidate LLM results. LLM-only, no heuristic fallback."""
+        """Consolidate LLM results."""
         final_issues = state.get("llm_risks") or []
 
         logger.info(f"Consolidating risks: {len(final_issues)} issues from LLM")
@@ -291,7 +291,7 @@ class RiskScorerAgent:
         graph = self._create_graph(llm_client=llm_client, retriever=retriever)
         final_state = graph.invoke(initial_state)
 
-        # Build output using only LLM results (no heuristic fallback)
+        # Build output using LLM results
         issues = final_state["llm_risks"] or []
         return RiskScorerOutput(
             overall_risk_level=final_state["overall_risk_level"],

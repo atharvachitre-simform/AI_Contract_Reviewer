@@ -75,10 +75,11 @@ def render_clause_extraction(output: object) -> None:
         if not output:
             st.write("No clauses were extracted.")
             return
-        st.markdown(f"**Extraction method:** {getattr(output, 'extraction_method', 'unknown').upper()}")
         if not getattr(output, "clauses", None):
             st.write("No clauses were extracted.")
             return
+        method = getattr(output, 'extraction_method', 'heuristic')
+        st.markdown(f"**Method:** {'LLM' if 'llm' in method.lower() else 'Heuristic'}")
         st.markdown(f"**Detected {len(output.clauses)} clauses**")
         for index, clause in enumerate(output.clauses, start=1):
             st.markdown(f"**Clause {index}: {getattr(clause, 'clause_type', 'Unknown')}**")
@@ -114,10 +115,11 @@ def render_obligation_finding(output: object) -> None:
         if not output:
             st.write("No obligations detected.")
             return
-        st.markdown(f"**Method used:** {getattr(output, 'method_used', 'heuristic').upper()}")
         if not getattr(output, "obligations", None):
             st.write("No obligations detected.")
             return
+        method = getattr(output, 'method_used', 'heuristic')
+        st.markdown(f"**Method:** {'LLM' if 'llm' in method.lower() else 'Heuristic'}")
         for obligation in output.obligations:
             st.markdown(f"- **{getattr(obligation, 'obligation_type', 'Obligation')}**: {getattr(obligation, 'obligation', 'No description')} ")
             if getattr(obligation, "party", None):
@@ -213,15 +215,6 @@ def main() -> None:
     with st.sidebar:
         st.header("Available Models")
         selected_model = st.radio("Model / pipeline", MODEL_OPTIONS)
-        st.markdown(
-            "---\n"
-            "This frontend currently supports the local contract review pipeline and agent-level execution. "
-            "Choose one of the available model steps for analysis."
-        )
-        st.info(
-            "The Streamlit UI runs the local heuristic implementation in `src/agents/`. "
-            "Azure-backed model support is planned for later integration."
-        )
 
     uploaded_file = st.file_uploader(
         "Upload contract text or PDF",
@@ -229,22 +222,16 @@ def main() -> None:
         help="Upload a .txt or .pdf file to populate the contract text area.",
     )
 
+    default_text = ""
+    if uploaded_file is not None:
+        default_text = load_text_from_upload(uploaded_file)
+
     contract_text = st.text_area(
         "Contract Text",
-        value="",
+        value=default_text,
         height=320,
         placeholder="Paste contract text here or upload a .txt or .pdf file using the uploader above.",
     )
-
-    if uploaded_file is not None:
-        file_text = load_text_from_upload(uploaded_file)
-        if file_text:
-            contract_text = st.text_area(
-                "Contract Text",
-                value=file_text,
-                height=320,
-                placeholder="The uploaded file text appears here.",
-            )
 
     if not contract_text:
         st.warning("Enter contract text or upload a file before running the selected model.")
@@ -279,7 +266,8 @@ def main() -> None:
                     result = detect_red_flags(clause_output)
                     render_red_flag_detection(result)
                 elif selected_model == "Plain English Writer":
-                    result = generate_plain_english(clause_output)
+                    plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
+                    result = generate_plain_english(clause_output, llm_client=plain_client)
                     render_plain_english(result)
                 elif selected_model == "Report Assembler":
                     risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
@@ -288,7 +276,8 @@ def main() -> None:
                     else:
                         risk_output = score_risks(clause_output, llm_client=risk_client)
                         red_flag_output = detect_red_flags(clause_output)
-                        plain_output = generate_plain_english(clause_output)
+                        plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
+                        plain_output = generate_plain_english(clause_output, llm_client=plain_client)
                         report_output = assemble_report(
                             clause_extraction=clause_output,
                             risk_scoring=risk_output,

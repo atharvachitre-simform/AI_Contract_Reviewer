@@ -202,7 +202,8 @@ class ContractReviewService:
             clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
         if clause_extraction is None:
             clause_extraction = extract_clauses(contract_text)
-        result = generate_plain_english(clause_extraction)
+        plain_client = self.azure.get_openai_client_for_agent("plain_english_writer")
+        result = generate_plain_english(clause_extraction, llm_client=plain_client)
         self._trace("generate_plain_english", "Completed plain English summary.", {"clauses": len(result.clause_summaries)}, "completed")
         return result.model_dump()
 
@@ -269,6 +270,7 @@ class ContractReviewService:
                 llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
                 risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
+                plain_llm_client=self.azure.get_openai_client_for_agent("plain_english_writer"),
                 memory_context=memory_context,
                 retriever=self,
             )
