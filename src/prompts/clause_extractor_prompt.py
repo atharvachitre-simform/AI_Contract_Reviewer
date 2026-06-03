@@ -19,6 +19,7 @@ OUTPUT_SCHEMA = {
             "confidence": 0.0,
             "normalized_text": "string",
             "cuad_category": "string or null",
+            "subclauses": []
         }
     ],
     "metadata": {
@@ -35,8 +36,11 @@ OUTPUT_SCHEMA = {
 }
 
 PROMPT_GUIDELINES = (
-    "- Extract all relevant clauses and metadata from the contract text.\n"
-    "- For each clause, include clause_type, raw_text, section_reference, confidence, normalized_text, and cuad_category.\n"
+    "- Do not treat subclauses as independent clauses.\n"
+    "- Only top-level numbered sections (e.g., 1, 2, 3, etc.) should be classified as primary clauses in the main 'clauses' array.\n"
+    "- Sections such as 1.1, 1.2, (a), (b), (i), (ii) must be preserved as children of their parent clause in the 'subclauses' list.\n"
+    "- Treat introductory contract language, party definitions, effective dates, recitals, and WHEREAS statements as PREAMBLE or RECITAL sections, not contractual clauses.\n"
+    "- For each clause and subclause, include clause_type, raw_text, section_reference, confidence, normalized_text, and cuad_category.\n"
     "- Use null for missing metadata values and empty arrays for missing lists.\n"
     "- Confidence must be a number between 0.0 and 1.0.\n"
     "- Return exactly one JSON object that matches the schema."
@@ -44,9 +48,10 @@ PROMPT_GUIDELINES = (
 
 WORKFLOW_STEPS = (
     "1. Read the full contract text.\n"
-    "2. Identify distinct clauses and label their section locations.\n"
-    "3. Populate metadata fields from the document.\n"
-    "4. Output the result as one JSON object matching the schema.\n"
+    "2. Identify distinct clauses, preserving the hierarchical legal structure (subclauses nested under their parent clauses).\n"
+    "3. Identify recitals/introductory language as PREAMBLE/RECITAL sections.\n"
+    "4. Populate metadata fields from the document.\n"
+    "5. Output the result as one JSON object matching the schema.\n"
 )
 
 

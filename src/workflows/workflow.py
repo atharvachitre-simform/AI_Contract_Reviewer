@@ -94,26 +94,11 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 
-		with ThreadPoolExecutor(max_workers=4) as executor:
-			risk_future = executor.submit(score_risks, clause_extraction, risk_llm_client)
+		# Cooperative Sequential Flow:
+		# 1. Run Obligation Finder & Red Flag Detector in parallel first
+		with ThreadPoolExecutor(max_workers=2) as executor:
 			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client)
-			plain_future = executor.submit(generate_plain_english, clause_extraction, plain_llm_client)
-
-			state.risk_scoring = risk_future.result()
-			state.api_trace.append({
-				"step": "risk_scoring",
-				"agent": "Risk Scorer",
-				"description": "Score clauses and identify negotiation priorities.",
-				"status": "completed",
-			})
-			self._trace(
-				"risk_scoring",
-				"Completed risk scoring.",
-				{"issues": len(state.risk_scoring.issues), "overall_risk": str(state.risk_scoring.overall_risk_level)},
-				"completed",
-				trace_id=trace_id,
-			)
 
 			state.obligation_finding = obligation_future.result()
 			state.api_trace.append({
@@ -145,21 +130,48 @@ class ContractReviewWorkflow:
 				trace_id=trace_id,
 			)
 
-			state.plain_english = plain_future.result()
-			state.api_trace.append({
-				"step": "plain_english",
-				"agent": "Plain English Writer",
-				"description": "Rewrite contract clauses into simpler language.",
-				"status": "completed",
-			})
-			self._trace(
-				"plain_english",
-				"Completed plain English summarization.",
-				{"clauses": len(state.plain_english.clause_summaries)},
-				"completed",
-				trace_id=trace_id,
-			)
+		# 2. Run Risk Scorer sequentially, consuming retriever (Azure AI Search)
+		state.risk_scoring = score_risks(clause_extraction, risk_llm_client, retriever)
+		state.api_trace.append({
+			"step": "risk_scoring",
+			"agent": "Risk Scorer",
+			"description": "Score clauses and identify negotiation priorities.",
+			"status": "completed",
+		})
+		self._trace(
+			"risk_scoring",
+			"Completed risk scoring.",
+			{"issues": len(state.risk_scoring.issues), "overall_risk": str(state.risk_scoring.overall_risk_level)},
+			"completed",
+			trace_id=trace_id,
+		)
 
+		# 3. Format risks and red flags texts to pass as context to the Plain English Writer
+		risks_text = "\n".join([f"- {issue.clause_type} ({issue.risk_level.value}): {issue.issue}" for issue in state.risk_scoring.issues])
+		red_flags_text = "\n".join([f"- {flag.pattern_name} ({flag.severity.value}): {flag.description}" for flag in state.red_flag_detection.red_flags])
+
+		# 4. Run Plain English Writer sequentially, passing the formatted risk context
+		state.plain_english = generate_plain_english(
+			clause_extraction,
+			plain_llm_client,
+			risks_text=risks_text,
+			red_flags_text=red_flags_text
+		)
+		state.api_trace.append({
+			"step": "plain_english",
+			"agent": "Plain English Writer",
+			"description": "Rewrite contract clauses into simpler language with risk warnings.",
+			"status": "completed",
+		})
+		self._trace(
+			"plain_english",
+			"Completed plain English summarization.",
+			{"clauses": len(state.plain_english.clause_summaries)},
+			"completed",
+			trace_id=trace_id,
+		)
+
+		# 5. Compile the final report using the Report Assembler
 		state.final_report = assemble_report(
 			clause_extraction=state.clause_extraction,
 			risk_scoring=state.risk_scoring,

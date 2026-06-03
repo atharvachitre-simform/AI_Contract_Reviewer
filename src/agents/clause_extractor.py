@@ -29,6 +29,7 @@ from ..helpers.contract_analysis import (
 )
 from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata
 from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt
+from ..helpers.coverage_validator import calculate_coverage
 
 
 class ClauseExtractorState(TypedDict):
@@ -86,21 +87,76 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
         return state
     
     try:
-        prompt = build_clause_extractor_prompt(
-            state["cleaned_text"],
-            source_file=state["source_file"],
-            memory_context=memory_context,
-            reference_clauses=state["reference_clauses"],
-        )
-        llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+        import re
+        cleaned_text = state["cleaned_text"]
+        chunk_size = 18000
+        overlap = 1500
         
-        parsed = _parse_llm_response(llm_response)
-        if not parsed:
-            state["error_messages"].append("LLM response parsing failed")
-            state["llm_attempt_success"] = False
-            return state
+        if len(cleaned_text) <= chunk_size:
+            prompt = build_clause_extractor_prompt(
+                cleaned_text,
+                source_file=state["source_file"],
+                memory_context=memory_context,
+                reference_clauses=state["reference_clauses"],
+            )
+            llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+            
+            parsed = _parse_llm_response(llm_response)
+            if not parsed:
+                state["error_messages"].append("LLM response parsing failed")
+                state["llm_attempt_success"] = False
+                return state
+            
+            clauses = _build_clauses_from_llm(parsed.get("clauses", []))
+            metadata = parsed.get("metadata", {})
+        else:
+            logger.info(f"Contract is large ({len(cleaned_text)} characters). Splitting into chunks for extraction.")
+            chunks = []
+            start = 0
+            while start < len(cleaned_text):
+                end = min(start + chunk_size, len(cleaned_text))
+                if end < len(cleaned_text):
+                    lookback = cleaned_text.rfind("\n\n", end - 2000, end)
+                    if lookback != -1 and lookback > start:
+                        end = lookback + 2
+                    else:
+                        lookback_nl = cleaned_text.rfind("\n", end - 500, end)
+                        if lookback_nl != -1 and lookback_nl > start:
+                            end = lookback_nl + 1
+                chunks.append(cleaned_text[start:end])
+                start = end - overlap
+                if start >= len(cleaned_text) or end == len(cleaned_text):
+                    break
+            
+            clauses = []
+            metadata = {}
+            
+            for idx, chunk in enumerate(chunks, 1):
+                logger.info(f"Extracting clauses from chunk {idx}/{len(chunks)} (size: {len(chunk)} characters)")
+                prompt = build_clause_extractor_prompt(
+                    chunk,
+                    source_file=state["source_file"],
+                    memory_context=memory_context,
+                    reference_clauses=state["reference_clauses"],
+                )
+                llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+                parsed = _parse_llm_response(llm_response)
+                if parsed:
+                    chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
+                    clauses.extend(chunk_clauses)
+                    if parsed.get("metadata") and isinstance(parsed["metadata"], dict):
+                        metadata.update({k: v for k, v in parsed["metadata"].items() if v})
+            
+            # Deduplicate clauses based on normalized raw text
+            unique_clauses = []
+            seen_texts = set()
+            for c in clauses:
+                normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
+                if normalized_raw not in seen_texts:
+                    seen_texts.add(normalized_raw)
+                    unique_clauses.append(c)
+            clauses = unique_clauses
         
-        clauses = _build_clauses_from_llm(parsed.get("clauses", []))
         if not clauses:
             state["error_messages"].append("LLM extraction returned no clauses")
             state["llm_attempt_success"] = False
@@ -109,12 +165,12 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
         state["clauses"] = clauses
         state["llm_attempt_success"] = True
         state["used_extraction_method"] = "llm"
-        logger.info("Clause extraction method: llm")
-        state["confidence_score"] = 0.85  # LLM-extracted clauses have high confidence
+        logger.info(f"Clause extraction method: llm. Found {len(clauses)} clauses.")
+        state["confidence_score"] = 0.85
         
         # Merge LLM metadata
-        if isinstance(parsed.get("metadata"), dict):
-            state["metadata"] = _merge_metadata(state["metadata"], parsed.get("metadata", {}))
+        if metadata:
+            state["metadata"] = _merge_metadata(state["metadata"], metadata)
         
         state["cuad_labels"] = _build_cuad_labels(clauses)
         
@@ -149,6 +205,13 @@ def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
     """Step 5: Build final output with metadata."""
     method = state.get("used_extraction_method", "llm")
     logger.info(f"Clause extraction completed using method: {method}")
+    
+    # Calculate coverage completeness
+    coverage_info = calculate_coverage(
+        contract_text=state.get("cleaned_text") or state.get("contract_text") or "",
+        clauses=state.get("clauses") or [],
+    )
+    
     return ClauseExtractorOutput(
         metadata=state["metadata"],
         clauses=state["clauses"],
@@ -156,6 +219,10 @@ def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
         raw_contract_text=state["cleaned_text"],
         page_count=None,
         extraction_method=method,
+        coverage_score=coverage_info["coverage_score"],
+        highest_clause_number=coverage_info["highest_clause_number"],
+        is_extraction_complete=coverage_info["is_extraction_complete"],
+        extraction_completeness_notes=coverage_info["extraction_completeness_notes"],
     )
 
 
@@ -217,9 +284,27 @@ class ClauseExtractorAgent:
         
         # Run workflow
         final_state = graph.invoke(initial_state)
+        output = build_output_node(final_state)
         
-        # Build output
-        return build_output_node(final_state)
+        # Self-correction check: If incomplete and we have a valid LLM client
+        if not output.is_extraction_complete and client and getattr(client, "is_configured", lambda: False)():
+            logger.info("Self-correction loop triggered: extraction was incomplete. Retrying with feedback.")
+            feedback_context = {
+                "system_feedback": (
+                    "Your previous extraction attempt was incomplete. You only extracted "
+                    f"{len(output.clauses)} clause(s) with highest clause number {output.highest_clause_number}. "
+                    "Please do a thorough and complete extraction of ALL clauses from the entire document, "
+                    "ensuring you do not stop until the end of the contract is reached."
+                )
+            }
+            new_memory = memory_context.copy() if memory_context else {}
+            new_memory.update(feedback_context)
+            
+            retry_graph = create_clause_extraction_graph(client, new_memory, retriever)
+            final_state = retry_graph.invoke(initial_state)
+            output = build_output_node(final_state)
+            
+        return output
 
 
 def _parse_llm_response(response_text: str) -> dict[str, Any] | None:
@@ -303,7 +388,7 @@ def _parse_llm_response(response_text: str) -> dict[str, Any] | None:
 
 
 def _build_clauses_from_llm(clauses_data: list[dict[str, Any]]) -> list[ClauseSpan]:
-    """Build ClauseSpan objects from LLM response."""
+    """Build ClauseSpan objects from LLM response recursively."""
     clauses: list[ClauseSpan] = []
     for clause_obj in clauses_data:
         if not isinstance(clause_obj, dict):
@@ -313,6 +398,13 @@ def _build_clauses_from_llm(clauses_data: list[dict[str, Any]]) -> list[ClauseSp
         if not raw_text:
             continue
         confidence = float(clause_obj.get("confidence", 0.4))
+        
+        # Recursively build subclauses
+        subclauses_data = clause_obj.get("subclauses") or []
+        subclauses = []
+        if isinstance(subclauses_data, list) and subclauses_data:
+            subclauses = _build_clauses_from_llm(subclauses_data)
+            
         clauses.append(
             ClauseSpan(
                 clause_type=str(clause_type),
@@ -321,6 +413,7 @@ def _build_clauses_from_llm(clauses_data: list[dict[str, Any]]) -> list[ClauseSp
                 confidence=min(max(confidence, 0.0), 1.0),
                 normalized_text=str(clause_obj.get("normalized_text", raw_text)).strip(),
                 cuad_category=clause_obj.get("cuad_category"),
+                subclauses=subclauses,
             )
         )
     return clauses

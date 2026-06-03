@@ -21,9 +21,9 @@ class LangFuseTracer:
         dotenv_path = repo_root / ".env"
         if dotenv_path.exists():
             load_dotenv(dotenv_path=dotenv_path, override=False)
-        self.host = os.getenv("LANGFUSE_HOST", "https://api.langfuse.com").rstrip("/")
-        self.public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-        self.secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+        self.host = (os.getenv("LANGFUSE_HOST") or "https://api.langfuse.com").strip('"').strip("'").strip().rstrip("/")
+        self.public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip('"').strip("'").strip()
+        self.secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip('"').strip("'").strip()
         self.local_log_path = Path("logs/langfuse_events.jsonl")
         self.local_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.client = self._initialize_client()
