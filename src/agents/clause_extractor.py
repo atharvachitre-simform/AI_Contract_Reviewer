@@ -147,7 +147,7 @@ def confidence_validation_node(state: ClauseExtractorState) -> ClauseExtractorSt
 
 def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
     """Step 5: Build final output with metadata."""
-    method = state.get("used_extraction_method", "heuristic")
+    method = state.get("used_extraction_method", "llm")
     logger.info(f"Clause extraction completed using method: {method}")
     return ClauseExtractorOutput(
         metadata=state["metadata"],

@@ -78,7 +78,7 @@ def render_clause_extraction(output: object) -> None:
         if not getattr(output, "clauses", None):
             st.write("No clauses were extracted.")
             return
-        method = getattr(output, 'extraction_method', 'heuristic')
+        method = getattr(output, 'extraction_method', 'llm')
         st.markdown(f"**Method:** {'LLM' if 'llm' in method.lower() else 'Heuristic'}")
         st.markdown(f"**Detected {len(output.clauses)} clauses**")
         for index, clause in enumerate(output.clauses, start=1):
@@ -119,7 +119,7 @@ def render_obligation_finding(output: object) -> None:
         if not getattr(output, "obligations", None):
             st.write("No obligations detected.")
             return
-        method = getattr(output, 'method_used', 'heuristic')
+        method = getattr(output, 'method_used', 'llm')
         st.markdown(f"**Method:** {'LLM' if 'llm' in method.lower() else 'Heuristic'}")
         for obligation in output.obligations:
             st.markdown(f"- **{getattr(obligation, 'obligation_type', 'Obligation')}**: {getattr(obligation, 'obligation', 'No description')} ")
@@ -166,7 +166,7 @@ def render_report_assembler(output: object) -> None:
         if not output:
             st.write("No report output available.")
             return
-        st.markdown(f"**Method:** Heuristic")
+        st.markdown(f"**Method:** LLM")
         st.markdown(f"**Verdict:** {_val(getattr(output, 'verdict', None))}\n\n")
         st.markdown(f"**Overall risk:** {_val(getattr(output, 'overall_risk_level', None)).upper()}\n\n")
         if getattr(output, "report_summary", None):
@@ -287,11 +287,13 @@ def main() -> None:
                         red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client)
                         plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
                         plain_output = generate_plain_english(clause_output, llm_client=plain_client)
+                        assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
                         report_output = assemble_report(
                             clause_extraction=clause_output,
                             risk_scoring=risk_output,
                             red_flags=red_flag_output,
                             plain_english=plain_output,
+                            llm_client=assembler_client,
                         )
                         render_report_assembler(report_output)
 

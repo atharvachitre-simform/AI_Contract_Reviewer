@@ -49,6 +49,7 @@ class ContractReviewWorkflow:
 		obligation_llm_client: Any | None = None,
 		plain_llm_client: Any | None = None,
 		red_flag_llm_client: Any | None = None,
+		assembler_llm_client: Any | None = None,
 		memory_context: dict[str, Any] | None = None,
 		retriever: Any | None = None,
 	) -> ContractReviewState:
@@ -164,6 +165,7 @@ class ContractReviewWorkflow:
 			risk_scoring=state.risk_scoring,
 			red_flags=state.red_flag_detection,
 			plain_english=state.plain_english,
+			llm_client=assembler_llm_client,
 		)
 		state.api_trace.append({
 			"step": "final_report",
@@ -193,6 +195,7 @@ def run_contract_review(
 	obligation_llm_client: Any | None = None,
 	plain_llm_client: Any | None = None,
 	red_flag_llm_client: Any | None = None,
+	assembler_llm_client: Any | None = None,
 	memory_context: dict[str, Any] | None = None,
 	retriever: Any | None = None,
 ) -> ContractReviewState:
@@ -208,6 +211,7 @@ def run_contract_review(
 		obligation_llm_client=obligation_llm_client,
 		plain_llm_client=plain_llm_client,
 		red_flag_llm_client=red_flag_llm_client,
+		assembler_llm_client=assembler_llm_client,
 		memory_context=memory_context,
 		retriever=retriever,
 	)
