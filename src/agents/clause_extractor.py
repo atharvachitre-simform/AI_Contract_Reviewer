@@ -1,7 +1,7 @@
 """Clause Extractor Agent - Agent 1 (Sequential) - Extracts key clauses from contracts.
 
 Uses LangGraph for improved confidence tracking, state management, and reliability:
-- LLM-based extraction with fallback to heuristics
+- LLM-based extraction
 - Confidence scoring for each clause
 - State management across extraction steps
 - Error tracking and recovery
@@ -123,10 +123,6 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
         state["llm_attempt_success"] = False
     
     return state
-
-
-# Heuristic extraction removed: Clause Extractor is LLM-only in this configuration.
-
 
 def confidence_validation_node(state: ClauseExtractorState) -> ClauseExtractorState:
     """Step 4: Validate and rank clauses by confidence."""

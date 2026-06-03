@@ -47,6 +47,7 @@ class ContractReviewWorkflow:
 		llm_client: Any | None = None,
 		risk_llm_client: Any | None = None,
 		obligation_llm_client: Any | None = None,
+		plain_llm_client: Any | None = None,
 		memory_context: dict[str, Any] | None = None,
 		retriever: Any | None = None,
 	) -> ContractReviewState:
@@ -95,7 +96,7 @@ class ContractReviewWorkflow:
 			risk_future = executor.submit(score_risks, clause_extraction, risk_llm_client)
 			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction)
-			plain_future = executor.submit(generate_plain_english, clause_extraction)
+			plain_future = executor.submit(generate_plain_english, clause_extraction, plain_llm_client)
 
 			state.risk_scoring = risk_future.result()
 			state.api_trace.append({
@@ -189,6 +190,7 @@ def run_contract_review(
 	llm_client: Any | None = None,
 	risk_llm_client: Any | None = None,
 	obligation_llm_client: Any | None = None,
+	plain_llm_client: Any | None = None,
 	memory_context: dict[str, Any] | None = None,
 	retriever: Any | None = None,
 ) -> ContractReviewState:
@@ -202,6 +204,7 @@ def run_contract_review(
 		llm_client=llm_client,
 		risk_llm_client=risk_llm_client,
 		obligation_llm_client=obligation_llm_client,
+		plain_llm_client=plain_llm_client,
 		memory_context=memory_context,
 		retriever=retriever,
 	)

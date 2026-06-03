@@ -1,147 +1,172 @@
-"""Plain English Writer Agent - Agent 5 (Parallel) - Summarizes contract in plain language."""
+"""Plain English Writer Agent - Agent 5 (Parallel) - Summarizes contract in plain language using LangGraph."""
 
 from __future__ import annotations
 
-from typing import Optional
+import json
+import logging
+from typing import Any, TypedDict
 
-from ..models import CUADCategory, ClauseExtractorOutput, PlainEnglishClause, PlainEnglishWriterOutput
+from langgraph.graph import StateGraph, END
+
+from ..models import ClauseExtractorOutput, PlainEnglishClause, PlainEnglishWriterOutput
+from ..prompts.plain_english_writer_prompt import build_plain_english_writer_prompt
+
+logger = logging.getLogger(__name__)
+
+
+class PlainEnglishWriterState(TypedDict):
+	"""State for plain English writer workflow."""
+	clause_extraction: ClauseExtractorOutput
+	executive_summary: str
+	clause_summaries: list[PlainEnglishClause]
+	key_points: list[str]
+	plain_english_risk_notes: list[str]
+	llm_attempt_success: bool
+	error_messages: list[str]
+
+
+def _strip_markdown_fences(text: str) -> str:
+	"""Strip markdown code fences (```json ... ```) from LLM response."""
+	stripped = text.strip()
+	if stripped.startswith("```"):
+		lines = stripped.splitlines()
+		inner = [l for l in lines[1:] if l.strip() != "```"]
+		return "\n".join(inner).strip()
+	return stripped
+
+
+def _parse_plain_english_response(response_text: str) -> dict | None:
+	"""Parse LLM response with resilient fallback."""
+	clean = _strip_markdown_fences(response_text)
+
+	try:
+		return json.loads(clean)
+	except json.JSONDecodeError:
+		pass
+
+	first = clean.find("{")
+	last = clean.rfind("}")
+	if first != -1 and last != -1 and last > first:
+		try:
+			return json.loads(clean[first:last + 1])
+		except json.JSONDecodeError:
+			pass
+
+	return None
+
+
+def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = None) -> PlainEnglishWriterState:
+	"""Call LLM to generate plain English summaries."""
+	if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
+		logger.error("LLM client not configured for PlainEnglishWriter (LLM-only).")
+		state["llm_attempt_success"] = False
+		state["error_messages"].append("LLM client not configured for PlainEnglishWriter.")
+		return state
+
+	try:
+		clauses_to_analyze = state["clause_extraction"].clauses[:20]
+		clause_lines = []
+		for idx, clause in enumerate(clauses_to_analyze, 1):
+			clause_lines.append(
+				f"Clause {idx}:\n"
+				f"Type: {clause.clause_type}\n"
+				f"Text: {clause.raw_text[:800]}\n"
+			)
+		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+
+		prompt = build_plain_english_writer_prompt(clauses_text)
+		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+
+		parsed = _parse_plain_english_response(response_text)
+		if not parsed or not isinstance(parsed, dict):
+			state["llm_attempt_success"] = False
+			state["error_messages"].append("Failed to parse LLM response.")
+			return state
+
+		state["executive_summary"] = str(parsed.get("executive_summary") or "").strip()
+
+		clause_summaries = []
+		for item in parsed.get("clause_summaries", []):
+			if not isinstance(item, dict):
+				continue
+			clause_summaries.append(
+				PlainEnglishClause(
+					clause_type=str(item.get("clause_type") or "Clause"),
+					original_text=str(item.get("original_text") or ""),
+					plain_english=str(item.get("plain_english") or ""),
+					why_it_matters=str(item.get("why_it_matters") or "") or None,
+					party_burden=str(item.get("party_burden") or "") or None,
+				)
+			)
+		state["clause_summaries"] = clause_summaries
+		state["key_points"] = [str(pt) for pt in parsed.get("key_points", []) if pt]
+		state["plain_english_risk_notes"] = [str(note) for note in parsed.get("plain_english_risk_notes", []) if note]
+		state["llm_attempt_success"] = True
+
+	except Exception as e:
+		logger.error(f"Plain English Writer LLM error: {e}", exc_info=True)
+		state["llm_attempt_success"] = False
+		state["error_messages"].append(f"LLM rewrite error: {str(e)}")
+
+	return state
+
+
+def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWriterState:
+	"""Validate summaries and provide fallback executive summary if needed."""
+	if not state["llm_attempt_success"] or not state["clause_summaries"]:
+		state["executive_summary"] = "No candidate clauses were extracted or Plain English summary generation failed."
+		state["clause_summaries"] = []
+		state["key_points"] = []
+		state["plain_english_risk_notes"] = []
+	return state
 
 
 class PlainEnglishWriterAgent:
-	"""Rewrite clauses into concise plain English."""
+	"""Rewrite clauses into concise plain English using LangGraph and LLM."""
+
+	def __init__(self, llm_client: Any | None = None):
+		self.llm_client = llm_client
+
+	def _create_graph(self, llm_client: Any | None = None):
+		workflow = StateGraph(PlainEnglishWriterState)
+
+		workflow.add_node("llm_rewrite", lambda state: llm_rewrite_node(state, llm_client))
+		workflow.add_node("validate_summaries", validate_summaries_node)
+
+		workflow.set_entry_point("llm_rewrite")
+		workflow.add_edge("llm_rewrite", "validate_summaries")
+		workflow.add_edge("validate_summaries", END)
+
+		return workflow.compile()
 
 	def write(self, clause_extraction: ClauseExtractorOutput) -> PlainEnglishWriterOutput:
-		clause_summaries: list[PlainEnglishClause] = []
-		key_points: list[str] = []
-		risk_notes: list[str] = []
+		initial_state: PlainEnglishWriterState = {
+			"clause_extraction": clause_extraction,
+			"executive_summary": "",
+			"clause_summaries": [],
+			"key_points": [],
+			"plain_english_risk_notes": [],
+			"llm_attempt_success": False,
+			"error_messages": [],
+		}
 
-		for clause in clause_extraction.clauses[:20]:
-			clause_type = self._category_label(clause.cuad_category) if clause.cuad_category else (clause.clause_type or "Clause")
-			plain = self._rewrite_clause(clause)
-			clause_summaries.append(
-				PlainEnglishClause(
-					clause_type=clause_type,
-					original_text=clause.raw_text[:800],
-					plain_english=plain,
-					why_it_matters=self._why_it_matters(clause),
-					party_burden=self._burden(clause.raw_text),
-				)
-			)
-			if clause.cuad_category:
-				key_points.append(f"{self._category_label(clause.cuad_category)}: {plain}")
-			if self._is_risky_clause(clause.raw_text):
-				risk_notes.append(f"{clause_type}: requires a closer review for obligations, termination, or liability.")
+		graph = self._create_graph(self.llm_client)
+		final_state = graph.invoke(initial_state)
 
-		if not clause_extraction.clauses:
-			return PlainEnglishWriterOutput(
-				executive_summary="No candidate clauses were extracted from the contract.",
-				clause_summaries=[],
-				key_points=[],
-				plain_english_risk_notes=[],
-			)
-
-		executive_summary = self._build_executive_summary(clause_extraction, clause_summaries)
 		return PlainEnglishWriterOutput(
-			executive_summary=executive_summary,
-			clause_summaries=clause_summaries,
-			key_points=key_points[:12],
-			plain_english_risk_notes=risk_notes[:10],
-		)
-
-	def _rewrite_clause(self, clause) -> str:
-		text = clause.raw_text.strip()
-		lower = text.lower()
-		category = clause.cuad_category
-
-		if category:
-			return self._category_summary(category, lower, text)
-		if "exclusive" in lower:
-			return "One party gets exclusive rights, which may block the other party from using the same rights elsewhere."
-		if "termination" in lower or "terminate" in lower:
-			return "The contract can end under the stated conditions, often with a notice period or cause requirement."
-		if "liability" in lower:
-			return "This clause decides who is financially responsible if loss or damage occurs."
-		if "audit" in lower:
-			return "One party can inspect records or operations to verify compliance with the agreement."
-		if "payment" in lower or "fee" in lower or "price" in lower or "compensation" in lower:
-			return "This clause defines what payments or fees are due and how they must be made."
-		if "renew" in lower or "term" in lower or "expiration" in lower:
-			return "It defines how long the agreement lasts and whether it renews, expires, or ends." 
-		if "assign" in lower or "transfer" in lower:
-			return "It controls whether rights or obligations can be transferred to another party."
-		return f"This clause describes a contractual obligation or right. In plain terms, it means the parties must follow the rule stated here."
-
-	def _category_summary(self, category: CUADCategory | str, lower: str, text: str) -> str:
-		label = self._category_label(category)
-		if category == CUADCategory.LICENSE_GRANT:
-			return "This license clause gives one party permission to use another party's rights under defined conditions."
-		if category == CUADCategory.TERMINATION_FOR_CONVENIENCE:
-			return "This clause allows the agreement to end for convenience, often with notice or a cure period."
-		if category == CUADCategory.AUDIT_RIGHTS:
-			return "This clause lets one party inspect records or processes to verify compliance."
-		if category == CUADCategory.UNCAPPED_LIABILITY or category == CUADCategory.CAP_ON_LIABILITY or category == CUADCategory.LIQUIDATED_DAMAGES:
-			return "This clause defines how much one party may owe if something goes wrong."
-		if category == CUADCategory.RENEWAL_TERM or category == CUADCategory.EXPIRATION_DATE:
-			return "This clause defines the agreement term, whether it renews automatically, and when it ends."
-		if category == CUADCategory.ANTI_ASSIGNMENT:
-			return "This clause controls whether rights or obligations may be transferred to another party."
-		return f"This clause relates to {label.lower()}. {self._generic_summary(text)}"
-
-	def _generic_summary(self, text: str) -> str:
-		lower = text.lower()
-		if "must" in lower or "shall" in lower:
-			return "It creates a clear requirement that one or more parties must follow."
-		if "may" in lower:
-			return "It gives one party an option or permission rather than a strict obligation."
-		return "It defines an important contract rule or expectation for the parties."
-
-	def _category_label(self, category: CUADCategory | str) -> str:
-		if hasattr(category, "name"):
-			label = category.name
-		else:
-			label = str(category)
-		return label.replace("_", " ").title()
-
-	def _is_risky_clause(self, text: str) -> bool:
-		lower = text.lower()
-		return any(token in lower for token in ("shall not", "terminate", "liability", "audit", "exclusive", "penalty", "breach", "indemnify", "insurance"))
-
-	def _why_it_matters(self, clause) -> Optional[str]:
-		lower = clause.raw_text.lower()
-		if "liability" in lower:
-			return "It affects financial exposure if something goes wrong."
-		if "assignment" in lower or "transfer" in lower:
-			return "It controls whether rights and responsibilities can move to another party."
-		if "renew" in lower or "term" in lower or "expire" in lower:
-			return "It affects how long the deal lasts and whether it continues automatically."
-		if "audit" in lower:
-			return "It affects how closely performance or compliance can be checked."
-		return None
-
-	def _burden(self, text: str) -> Optional[str]:
-		lower = text.lower()
-		if "shall not" in lower or "may not" in lower:
-			return "restrictive"
-		if "shall" in lower or "must" in lower:
-			return "obligatory"
-		if "may" in lower or "can" in lower:
-			return "permissive"
-		return None
-
-	def _build_executive_summary(self, clause_extraction: ClauseExtractorOutput, clause_summaries: list[PlainEnglishClause]) -> str:
-		clause_count = len(clause_extraction.clauses)
-		important = ", ".join(summary.clause_type for summary in clause_summaries[:5]) or "no highlighted clauses"
-		topics = {self._category_label(clause.cuad_category) for clause in clause_extraction.clauses if clause.cuad_category}
-		topic_list = ", ".join(sorted(topics)) if topics else "general obligations"
-		return (
-			f"This review found {clause_count} candidate contract clauses. "
-			f"Key sections include {important}. "
-			f"The most relevant topics are {topic_list}. "
-			"Review these clauses carefully for payment, termination, liability, and transfer risks before signing."
+			executive_summary=final_state["executive_summary"],
+			clause_summaries=final_state["clause_summaries"],
+			key_points=final_state["key_points"][:12],
+			plain_english_risk_notes=final_state["plain_english_risk_notes"][:10],
 		)
 
 
-def generate_plain_english(clause_extraction: ClauseExtractorOutput) -> PlainEnglishWriterOutput:
+def generate_plain_english(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> PlainEnglishWriterOutput:
 	"""Convenience function for plain-English summaries."""
-
-	return PlainEnglishWriterAgent().write(clause_extraction)
+	if llm_client is None:
+		try:
+			from ..services.azure_clients import AzureClientFactory
+			llm_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
+		except Exception:
+			pass
+	return PlainEnglishWriterAgent(llm_client=llm_client).write(clause_extraction)
