@@ -34,3 +34,12 @@ RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "5"))
 # --- Storage and Persistence ---
 REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "5"))
+
+# --- Qdrant Backup Vector Store ---
+QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
+
+# --- Memory and Relevance Gating Configuration ---
+MEMORY_SHORT_TERM_TTL_SECONDS = int(os.getenv("MEMORY_SHORT_TERM_TTL_SECONDS", "7200"))
+RELEVANCE_GATING_MAX_CHARS = int(os.getenv("RELEVANCE_GATING_MAX_CHARS", "1500"))
+

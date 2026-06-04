@@ -116,6 +116,29 @@ class AzureOpenAIWrapper:
     def is_configured(self) -> bool:
         return bool(self.azure_client or self.openai_client)
 
+    def get_embedding(self, text: str) -> list[float]:
+        """Generate vector embedding for the input text."""
+        if not self.is_configured():
+            raise RuntimeError("OpenAI/Azure client is not configured for embeddings.")
+        
+        # Azure OpenAI client (older SDK fallback)
+        if self.azure_client is not None:
+            response = self.azure_client.get_embeddings(
+                self.deployment_name,
+                input=[text]
+            )
+            return response.data[0].embedding
+            
+        # OpenAI/AzureOpenAI client
+        if self.openai_client is not None:
+            response = self.openai_client.embeddings.create(
+                input=[text],
+                model=self.deployment_name
+            )
+            return response.data[0].embedding
+            
+        raise RuntimeError("OpenAI/Azure client is not configured.")
+
     @retry(
         retry=retry_if_exception(is_transient_error),
         wait=wait_exponential(
@@ -126,7 +149,7 @@ class AzureOpenAIWrapper:
         stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS),
         reraise=True
     )
-    def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800) -> str:
+    def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800, response_format: dict[str, Any] | None = None) -> str:
         if not self.is_configured():
             if OpenAIClient is None and OpenAIPackageClient is None:
                 raise RuntimeError(
@@ -140,22 +163,42 @@ class AzureOpenAIWrapper:
         ]
 
         if self.azure_client is not None:
-            response = self.azure_client.get_chat_completions(
-                self.deployment_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            kwargs = {}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
+            try:
+                response = self.azure_client.get_chat_completions(
+                    self.deployment_name,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs
+                )
+            except Exception as e:
+                if response_format is not None:
+                    logger.warning(f"get_chat_completions failed with response_format: {e}. Retrying without response_format.")
+                    response = self.azure_client.get_chat_completions(
+                        self.deployment_name,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                else:
+                    raise
             if not response.choices:
                 return ""
             return response.choices[0].message.content or ""
 
         if self.openai_client is not None:
+            kwargs = {}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
             response = self.openai_client.chat.completions.create(
                 model=self.deployment_name,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **kwargs
             )
             if not getattr(response, "choices", None):
                 return ""
@@ -192,11 +235,13 @@ class AzureClientFactory:
             "report_assembler": os.getenv("AZURE_OPENAI_DEPLOYMENT_REPORT_ASSEMBLER", "").strip(),
         }
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379").strip()
+        self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small").strip()
 
         self.blob_service_client = self._init_blob_service()
         self.document_intelligence_client = self._init_document_intelligence_client()
         self.openai_client = self._init_openai_client()
         self.redis_client = self._init_redis_client()
+        self.qdrant_client = self._init_qdrant_client()
 
     def _build_storage_connection_string(self) -> str | None:
         if self.storage_connection_string:
@@ -230,11 +275,11 @@ class AzureClientFactory:
         if not deployment:
             return None
         
-        # Route Gemini deployments
-        if deployment.startswith("gemini-"):
+        # Route Gemini and Gemma deployments
+        if deployment.startswith("gemini-") or deployment.startswith("gemma-"):
             gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
             if not gemini_api_key:
-                logger.warning("Gemini model requested but GEMINI_API_KEY is not set.")
+                logger.warning(f"Gemini/Gemma model {deployment} requested but GEMINI_API_KEY is not set.")
                 return None
             return AzureOpenAIWrapper(
                 endpoint="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -248,8 +293,41 @@ class AzureClientFactory:
         return AzureOpenAIWrapper(self.openai_endpoint, self.openai_api_key, deployment)
 
     def get_openai_client_for_agent(self, agent_name: str) -> AzureOpenAIWrapper | None:
-        deployment_name = self.openai_agent_deployments.get(agent_name) or self.openai_deployment_name
-        return self.get_openai_client(deployment_name)
+        agent_env_suffix = agent_name.upper()
+        
+        # Read agent-specific deployment, endpoint, and key
+        deployment_name = os.getenv(f"AZURE_OPENAI_DEPLOYMENT_{agent_env_suffix}", "").strip()
+        if not deployment_name:
+            deployment_name = self.openai_agent_deployments.get(agent_name) or self.openai_deployment_name
+            
+        agent_endpoint = os.getenv(f"AZURE_OPENAI_ENDPOINT_{agent_env_suffix}", "").strip()
+        agent_api_key = os.getenv(f"AZURE_OPENAI_API_KEY_{agent_env_suffix}", "").strip()
+        
+        endpoint = agent_endpoint or self.openai_endpoint
+        api_key = agent_api_key or self.openai_api_key
+        
+        deployment = (deployment_name or "").strip()
+        if not deployment:
+            return None
+            
+        # Route Gemini/Gemma deployments to Google API base URL if no agent-specific endpoint is configured
+        if (deployment.startswith("gemini-") or deployment.startswith("gemma-")) and not agent_endpoint:
+            gemini_key = agent_api_key or os.getenv("GEMINI_API_KEY", "").strip()
+            if not gemini_key:
+                logger.warning(f"Gemini/Gemma model {deployment} requested for {agent_name} but GEMINI_API_KEY is not set.")
+                return None
+            return AzureOpenAIWrapper(
+                endpoint="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=gemini_key,
+                deployment_name=deployment,
+                api_version=""
+            )
+            
+        if not endpoint or not api_key:
+            logger.warning(f"Endpoint or API key not configured for agent {agent_name} (deployment: {deployment}).")
+            return None
+            
+        return AzureOpenAIWrapper(endpoint, api_key, deployment)
 
     def _init_redis_client(self) -> Redis | None:
         if not self.redis_url:
@@ -257,6 +335,21 @@ class AzureClientFactory:
         try:
             return Redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
         except Exception:
+            return None
+
+    def _init_qdrant_client(self) -> Any | None:
+        qdrant_url = os.getenv("QDRANT_URL", "").strip()
+        qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
+        if not qdrant_url:
+            return None
+        try:
+            from qdrant_client import QdrantClient
+            return QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        except ImportError:
+            logger.warning("qdrant-client is not installed; Qdrant integration is disabled.")
+            return None
+        except Exception as e:
+            logger.warning(f"Qdrant client initialization failed: {e}")
             return None
 
     def get_blob_container_client(self):
@@ -334,14 +427,70 @@ class AzureClientFactory:
         )
 
     def search_documents(self, query: str, index_name: str, top_k: int = config.SEARCH_TOP_K) -> list[dict[str, Any]]:
+        # 1. Generate query embedding if deployment is configured
+        vector_query = None
+        embedding_client = self.get_openai_client(self.embedding_deployment)
+        
+        if embedding_client:
+            try:
+                query_vector = embedding_client.get_embedding(query)
+                from azure.search.documents.models import VectorizedQuery
+                vector_query = VectorizedQuery(
+                    vector=query_vector,
+                    k_nearest_neighbors=top_k,
+                    fields="vector"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to generate query vector embedding: {e}")
+                query_vector = None
+        else:
+            query_vector = None
+
+        # 2. Try Azure AI Search
         search_client = self.get_search_client(index_name)
-        if not search_client:
-            return []
-        results = []
-        response = search_client.search(query, top=top_k, query_type="semantic", query_language="en-us")
-        for item in response:
-            results.append({"document": item, "score": getattr(item, "@search.score", None)})
-        return results
+        if search_client:
+            try:
+                if vector_query:
+                    # Hybrid Search (vector + text query + semantic reranking)
+                    response = search_client.search(
+                        search_text=query,
+                        vector_queries=[vector_query],
+                        top=top_k,
+                        query_type="semantic"
+                    )
+                else:
+                    # Text-only Semantic Rerank
+                    response = search_client.search(
+                        search_text=query,
+                        top=top_k,
+                        query_type="semantic"
+                    )
+                
+                results = []
+                for item in response:
+                    results.append({"document": item, "score": getattr(item, "@search.score", None)})
+                return results
+            except Exception as err:
+                logger.warning(f"Azure AI Search query failed: {err}. Trying Qdrant fallback.")
+
+        # 3. Fallback to Qdrant (if configured and query vector was successfully generated)
+        if self.qdrant_client and query_vector:
+            try:
+                response = self.qdrant_client.search(
+                    collection_name=index_name,
+                    query_vector=query_vector,
+                    limit=top_k
+                )
+                qdrant_results = []
+                for hit in response:
+                    doc = hit.payload or {}
+                    qdrant_results.append({"document": doc, "score": hit.score})
+                logger.info(f"Successfully retrieved {len(qdrant_results)} results from Qdrant fallback collection {index_name}.")
+                return qdrant_results
+            except Exception as q_err:
+                logger.warning(f"Qdrant fallback query failed: {q_err}")
+
+        return [{"index": index_name, "query": query, "result": "Knowledge base integration is not configured or failed."}]
 
     def create_blob(self, blob_name: str, content: str | bytes) -> None:
         container_client = self.get_blob_container_client()
@@ -360,7 +509,7 @@ class AzureClientFactory:
 
 
 class MemoryStore:
-    """Simple memory persistence over Redis and Azure Blob."""
+    """Simple memory persistence over Redis and Azure Blob, with local fallbacks and Qdrant indexing."""
 
     SHORT_TERM_PREFIX = "short-term:"
     LONG_TERM_PREFIX = "memory/long-term/"
@@ -369,35 +518,170 @@ class MemoryStore:
         self.redis = azure_factory.redis_client
         self.azure_factory = azure_factory
 
-    def save_short_term_memory(self, session_id: str, payload: dict[str, Any], ttl_seconds: int = config.REDIS_TTL_SECONDS) -> None:
+    def is_redis_available(self) -> bool:
         if not self.redis:
-            return
-        self.redis.setex(f"{self.SHORT_TERM_PREFIX}{session_id}", ttl_seconds, json.dumps(payload, ensure_ascii=False))
+            return False
+        try:
+            return bool(self.redis.ping())
+        except Exception:
+            return False
+
+    def _save_local_fallback(self, session_id: str, payload: dict[str, Any]) -> None:
+        try:
+            folder = Path("logs/memory/short-term")
+            folder.mkdir(parents=True, exist_ok=True)
+            filepath = folder / f"{session_id}.json"
+            # Atomic write
+            import tempfile
+            with tempfile.NamedTemporaryFile("w", dir=str(folder), delete=False, encoding="utf-8") as temp_file:
+                json.dump(payload, temp_file, ensure_ascii=False, indent=2)
+                temp_name = temp_file.name
+            os.replace(temp_name, str(filepath))
+            logger.info(f"Saved short-term memory locally to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save short-term memory locally: {e}")
+
+    def _load_local_fallback(self, session_id: str) -> dict[str, Any] | None:
+        try:
+            filepath = Path("logs/memory/short-term") / f"{session_id}.json"
+            if not filepath.exists():
+                return None
+            
+            # Enforce TTL
+            import time
+            mtime = os.path.getmtime(str(filepath))
+            age = time.time() - mtime
+            if age > config.MEMORY_SHORT_TERM_TTL_SECONDS:
+                logger.info(f"Local short-term memory expired (age: {age}s, TTL: {config.MEMORY_SHORT_TERM_TTL_SECONDS}s). Deleting.")
+                filepath.unlink(missing_ok=True)
+                return None
+                
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load short-term memory locally: {e}")
+            return None
+
+    def _save_long_term_local_fallback(self, key: str, payload: dict[str, Any]) -> None:
+        try:
+            folder = Path("logs/memory/long-term")
+            folder.mkdir(parents=True, exist_ok=True)
+            filepath = folder / f"{key}.json"
+            # Atomic write
+            import tempfile
+            with tempfile.NamedTemporaryFile("w", dir=str(folder), delete=False, encoding="utf-8") as temp_file:
+                json.dump(payload, temp_file, ensure_ascii=False, indent=2)
+                temp_name = temp_file.name
+            os.replace(temp_name, str(filepath))
+            logger.info(f"Saved long-term memory locally to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save long-term memory locally: {e}")
+
+    def _load_long_term_local_fallback(self, key: str) -> dict[str, Any] | None:
+        try:
+            filepath = Path("logs/memory/long-term") / f"{key}.json"
+            if not filepath.exists():
+                return None
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load long-term memory locally: {e}")
+            return None
+
+    def save_short_term_memory(self, session_id: str, payload: dict[str, Any], ttl_seconds: int = config.REDIS_TTL_SECONDS) -> None:
+        if self.is_redis_available():
+            try:
+                self.redis.setex(f"{self.SHORT_TERM_PREFIX}{session_id}", ttl_seconds, json.dumps(payload, ensure_ascii=False))
+                return
+            except Exception as e:
+                logger.warning(f"Redis write failed: {e}. Falling back to local file.")
+        
+        self._save_local_fallback(session_id, payload)
 
     def load_short_term_memory(self, session_id: str) -> dict[str, Any] | None:
-        if not self.redis:
-            return None
-        raw = self.redis.get(f"{self.SHORT_TERM_PREFIX}{session_id}")
-        if not raw:
-            return None
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return None
+        if self.is_redis_available():
+            try:
+                raw = self.redis.get(f"{self.SHORT_TERM_PREFIX}{session_id}")
+                if raw:
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Redis read failed: {e}. Falling back to local file.")
+                
+        return self._load_local_fallback(session_id)
 
     def save_long_term_memory(self, key: str, payload: dict[str, Any]) -> None:
-        blob_name = f"{self.LONG_TERM_PREFIX}{key}.json"
-        self.azure_factory.create_blob(blob_name, json.dumps(payload, indent=2, ensure_ascii=False))
+        if self.azure_factory.blob_service_client:
+            try:
+                blob_name = f"{self.LONG_TERM_PREFIX}{key}.json"
+                self.azure_factory.create_blob(blob_name, json.dumps(payload, indent=2, ensure_ascii=False))
+                return
+            except Exception as e:
+                logger.warning(f"Azure Blob write failed: {e}. Falling back to local file.")
+                
+        self._save_long_term_local_fallback(key, payload)
 
     def load_long_term_memory(self, key: str) -> dict[str, Any] | None:
-        blob_name = f"{self.LONG_TERM_PREFIX}{key}.json"
-        if not self.azure_factory.blob_exists(blob_name):
-            return None
-        raw = self.azure_factory.download_blob_text(blob_name)
+        if self.azure_factory.blob_service_client:
+            try:
+                blob_name = f"{self.LONG_TERM_PREFIX}{key}.json"
+                if self.azure_factory.blob_exists(blob_name):
+                    raw = self.azure_factory.download_blob_text(blob_name)
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Azure Blob read failed: {e}. Falling back to local file.")
+                
+        return self._load_long_term_local_fallback(key)
+
+    def index_clauses_in_qdrant(self, contract_id: str, clauses: list[Any]) -> None:
+        """Embed and save contract clauses to Qdrant long-term vector memory backup."""
+        if not self.azure_factory.qdrant_client:
+            return
+        embedding_client = self.azure_factory.get_openai_client(self.azure_factory.embedding_deployment)
+        if not embedding_client:
+            return
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw}
+            client = self.azure_factory.qdrant_client
+            collection_name = "contracts-memory"
+            from qdrant_client.models import Distance, VectorParams, PointStruct
+            import uuid
+            
+            # Ensure collection exists
+            try:
+                client.get_collection(collection_name)
+            except Exception:
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+                )
+                
+            points = []
+            for idx, c in enumerate(clauses):
+                raw_text = getattr(c, "raw_text", "") or (c.get("raw_text") if isinstance(c, dict) else "")
+                clause_type = getattr(c, "clause_type", "") or (c.get("clause_type") if isinstance(c, dict) else "")
+                confidence = getattr(c, "confidence", 0.0) or (c.get("confidence") if isinstance(c, dict) else 0.0)
+                if not raw_text:
+                    continue
+                try:
+                    vector = embedding_client.get_embedding(raw_text)
+                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{contract_id}_{idx}_{clause_type[:20]}"))
+                    points.append(PointStruct(
+                        id=point_id,
+                        vector=vector,
+                        payload={
+                            "contract_id": contract_id,
+                            "clause_type": clause_type,
+                            "text": raw_text,
+                            "confidence": confidence
+                        }
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to embed clause for Qdrant storage: {e}")
+                    
+            if points:
+                client.upsert(collection_name=collection_name, points=points)
+                logger.info(f"Successfully indexed {len(points)} clauses in Qdrant contracts-memory collection.")
+        except Exception as err:
+            logger.warning(f"Failed to save clauses to Qdrant: {err}")
 
     def get_memory_summary(self, session_id: str, long_term_key: str | None = None) -> dict[str, Any]:
         summary: dict[str, Any] = {}

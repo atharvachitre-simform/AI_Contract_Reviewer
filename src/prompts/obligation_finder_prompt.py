@@ -24,7 +24,7 @@ OUTPUT_SCHEMA = {
 }
 
 
-def build_obligation_finder_prompt(clause_extraction: Any) -> str:
+def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[str, Any] | None = None) -> str:
     """Build a prompt for the obligation finder agent from ClauseExtractorOutput or list of clauses."""
     # Accept either the full output object or raw list
     clauses = []
@@ -41,12 +41,29 @@ def build_obligation_finder_prompt(clause_extraction: Any) -> str:
 
     clauses_text = "\n".join(clause_lines) if clause_lines else "(no clauses provided)"
 
+    prior_context_block = ""
+    if memory_context:
+        st = memory_context.get("short_term") or {}
+        lt = memory_context.get("long_term") or {}
+        red_flags = st.get("red_flags") or lt.get("red_flags") or []
+        if red_flags:
+            flag_names = []
+            for f in red_flags:
+                if isinstance(f, dict):
+                    flag_names.append(f.get("pattern_name", ""))
+                else:
+                    flag_names.append(str(f))
+            flag_names = [name for name in flag_names if name]
+            if flag_names:
+                prior_context_block = f"PRIOR REVIEW WARNINGS:\nPrevious review flagged issues in these areas: {', '.join(flag_names)}. Pay extra attention to obligations or compliance requirements related to these subjects.\n\n"
+
     prompt = (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
         "INSTRUCTIONS:\n"
         "- Identify all obligations and populate the required fields.\n"
         "- For missing values use null.\n"
         "- Return exactly one JSON object matching OUTPUT_SCHEMA and nothing else.\n\n"
+        f"{prior_context_block}"
         "OUTPUT_SCHEMA:\n"
         f"{json.dumps(OUTPUT_SCHEMA, indent=2)}\n\n"
         "CLAUSES:\n"

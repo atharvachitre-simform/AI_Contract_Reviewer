@@ -228,6 +228,13 @@ def main() -> None:
     with st.sidebar:
         st.header("Available Models")
         selected_model = st.radio("Model / pipeline", MODEL_OPTIONS)
+        
+        st.header("Review Perspective")
+        perspective = st.selectbox(
+            "Select role/perspective",
+            ["Neutral", "Customer", "Vendor"],
+            help="Review the contract from the perspective of a specific party to tailor risk scoring and red flags."
+        )
 
     uploaded_file = st.file_uploader(
         "Upload contract text or PDF",
@@ -254,7 +261,7 @@ def main() -> None:
         with st.spinner("Running contract review..."):
             if selected_model == "Full Contract Review Pipeline":
                 controller = ContractReviewController()
-                state = controller.review_contract(contract_text)
+                state = controller.review_contract(contract_text, perspective=perspective)
                 render_full_review(state)
             else:
                 clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
@@ -266,7 +273,7 @@ def main() -> None:
                     if not risk_client or not risk_client.is_configured():
                         st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
                     else:
-                        result = score_risks(clause_output, llm_client=risk_client)
+                        result = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
                         render_risk_scoring(result)
                 elif selected_model == "Obligation Finder":
                     obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
@@ -277,7 +284,7 @@ def main() -> None:
                         render_obligation_finding(result)
                 elif selected_model == "Red Flag Detector":
                     red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                    result = detect_red_flags(clause_output, llm_client=red_flag_client)
+                    result = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
                     render_red_flag_detection(result)
                 elif selected_model == "Plain English Writer":
                     plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
@@ -288,9 +295,9 @@ def main() -> None:
                     if not risk_client or not risk_client.is_configured():
                         st.error("Report assembly requires the Risk Scorer client to be configured.")
                     else:
-                        risk_output = score_risks(clause_output, llm_client=risk_client)
+                        risk_output = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
                         red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                        red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client)
+                        red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
                         plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
                         plain_output = generate_plain_english(clause_output, llm_client=plain_client)
                         assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
@@ -300,6 +307,7 @@ def main() -> None:
                             red_flags=red_flag_output,
                             plain_english=plain_output,
                             llm_client=assembler_client,
+                            perspective=perspective,
                         )
                         render_report_assembler(report_output)
 

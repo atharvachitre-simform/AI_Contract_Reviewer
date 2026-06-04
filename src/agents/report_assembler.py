@@ -40,6 +40,9 @@ class ReportAssemblerState(TypedDict):
 	recommended_next_steps: list[str]
 	llm_attempt_success: bool
 	error_messages: list[str]
+	perspective: str | None
+	is_incomplete: bool
+	warnings: list[str]
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -104,8 +107,63 @@ def _normalize_risk_level(raw_val: str | None) -> RiskLevel:
 	return RiskLevel.MEDIUM
 
 
+def check_completeness(text: str | None) -> tuple[bool, list[str]]:
+	"""Check if the contract is incomplete (missing signature blocks or truncated text)."""
+	if not text:
+		return False, []
+	
+	warnings = []
+	is_incomplete = False
+	
+	text_lower = text.lower().strip()
+	text_len = len(text_lower)
+	
+	# Check for missing signature block if the text is long enough (e.g., > 300 chars)
+	if text_len > 300:
+		sig_keywords = [
+			"signature",
+			"in witness whereof",
+			"authorized signatory",
+			"by:",
+			"title:",
+			"signee",
+			"signatory",
+			"signed",
+			"execution"
+		]
+		has_sig = any(kw in text_lower for kw in sig_keywords)
+		if not has_sig:
+			is_incomplete = True
+			warnings.append("Missing signature blocks or execution section.")
+	
+	# Check for prematurely truncated sentences at the end of the text
+	if text_len > 0:
+		last_segment = text.strip()[-100:]
+		last_segment_clean = last_segment.strip()
+		if last_segment_clean:
+			last_char = last_segment_clean[-1]
+			sentence_terminators = {".", "!", "?", '"', "'", "”", "’", ")", "]", "}"}
+			if last_char not in sentence_terminators:
+				is_incomplete = True
+				warnings.append("Prematurely truncated text detected (does not end with standard sentence punctuation).")
+			else:
+				words = last_segment_clean.lower().split()
+				if words:
+					last_word = words[-1]
+					dangling_words = {"and", "or", "the", "of", "to", "for", "with", "by", "a", "an", "in", "at", "on", "from"}
+					if last_word in dangling_words:
+						is_incomplete = True
+						warnings.append(f"Prematurely truncated text detected (ends with trailing conjunction/preposition '{last_word}').")
+						
+	return is_incomplete, warnings
+
+
 def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None) -> ReportAssemblerState:
 	"""Call LLM to compile and assemble the final review report."""
+	is_inc, warnings_list = check_completeness(state["clause_extraction"].raw_contract_text)
+	state["is_incomplete"] = is_inc
+	state["warnings"] = warnings_list
+
 	if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
 		logger.error("LLM client not configured for ReportAssembler (LLM-only).")
 		state["llm_attempt_success"] = False
@@ -146,6 +204,7 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 			red_flags_summary=red_flags_summary,
 			plain_english_summary=plain_english_summary,
 			completeness_summary=completeness_summary,
+			perspective=state.get("perspective"),
 		)
 
 		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS)
@@ -262,6 +321,10 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
 
 def validate_report_node(state: ReportAssemblerState) -> ReportAssemblerState:
 	"""Validate results and fallback if compilation failed."""
+	is_inc, warnings_list = check_completeness(state["clause_extraction"].raw_contract_text)
+	state["is_incomplete"] = is_inc
+	state["warnings"] = warnings_list
+
 	if not state["llm_attempt_success"]:
 		state["verdict"] = ReviewVerdict.REVIEW
 		state["overall_risk_level"] = state["risk_scoring"].overall_risk_level
@@ -297,6 +360,7 @@ class ReportAssemblerAgent:
 		risk_scoring: RiskScorerOutput,
 		red_flags: RedFlagDetectorOutput,
 		plain_english: PlainEnglishWriterOutput,
+		perspective: str | None = None,
 	) -> ReportAssemblerOutput:
 		initial_state: ReportAssemblerState = {
 			"clause_extraction": clause_extraction,
@@ -312,6 +376,9 @@ class ReportAssemblerAgent:
 			"recommended_next_steps": [],
 			"llm_attempt_success": False,
 			"error_messages": [],
+			"perspective": perspective,
+			"is_incomplete": False,
+			"warnings": [],
 		}
 
 		graph = self._create_graph(self.llm_client)
@@ -325,6 +392,8 @@ class ReportAssemblerAgent:
 			missing_clauses=final_state["missing_clauses"],
 			key_risks=final_state["key_risks"],
 			recommended_next_steps=final_state["recommended_next_steps"],
+			is_incomplete=final_state["is_incomplete"],
+			warnings=final_state["warnings"],
 		)
 
 
@@ -334,6 +403,7 @@ def assemble_report(
 	red_flags: RedFlagDetectorOutput,
 	plain_english: PlainEnglishWriterOutput,
 	llm_client: Any | None = None,
+	perspective: str | None = None,
 ) -> ReportAssemblerOutput:
 	"""Convenience function for report assembly."""
 	if llm_client is None:
@@ -343,5 +413,5 @@ def assemble_report(
 		except Exception:
 			pass
 	return ReportAssemblerAgent(llm_client=llm_client).assemble(
-		clause_extraction, risk_scoring, red_flags, plain_english
+		clause_extraction, risk_scoring, red_flags, plain_english, perspective=perspective
 	)
