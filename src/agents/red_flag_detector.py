@@ -12,6 +12,7 @@ from ..models import ClauseExtractorOutput, RedFlagDetectorOutput, RedFlagItem, 
 from ..prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
 
 logger = logging.getLogger(__name__)
+from src import config
 
 
 class RedFlagDetectorState(TypedDict):
@@ -90,7 +91,7 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
 
 		prompt = build_red_flag_detector_prompt(clauses_text)
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS)
 
 		parsed = _parse_red_flag_response(response_text)
 		if not parsed or not isinstance(parsed, dict):

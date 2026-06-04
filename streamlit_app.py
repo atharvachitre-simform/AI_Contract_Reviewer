@@ -96,6 +96,12 @@ def render_risk_scoring(output: object) -> None:
         if not output:
             st.write("No risk scoring output available.")
             return
+        
+        # Display truncation warning if present
+        truncation_warning = getattr(output, 'truncation_warning', None)
+        if truncation_warning:
+            st.warning(truncation_warning)
+            
         st.markdown(f"**Method:** LLM")
         st.markdown(f"**Overall risk level:** {_val(getattr(output, 'overall_risk_level', None)).upper()}")
         st.markdown(f"**Overall risk score:** {getattr(output, 'overall_risk_score', 'N/A')}")

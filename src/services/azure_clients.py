@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from dotenv import load_dotenv
 from azure.core.credentials import AzureKeyCredential
@@ -39,15 +41,47 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     BlobServiceClient = None  # type: ignore
 from redis import Redis
 from fitz import open as fitz_open
+from src import config
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+def is_transient_error(exception: Exception) -> bool:
+    """Determine if an exception represents a transient API or connection issue."""
+    exc_name = type(exception).__name__
+    # Retrying on Rate Limits, Connection Errors, Timeouts and generic API issues
+    if exc_name in ("RateLimitError", "APIConnectionError", "InternalServerError", "APIError", "Timeout", "APITimeoutError"):
+        logger.warning(f"Transient LLM API error encountered: {exc_name}. Retrying...")
+        return True
+        
+    # Check for Azure core HTTP errors
+    if exc_name == "HttpResponseError":
+        status_code = getattr(exception, "status_code", None)
+        if status_code in (429, 500, 502, 503, 504):
+            logger.warning(f"Azure HTTP response error {status_code} encountered. Retrying...")
+            return True
+            
+    # Check for general HTTP connection or timeout issues
+    try:
+        import requests
+        if isinstance(exception, (requests.exceptions.RequestException, ConnectionError, TimeoutError)):
+            logger.warning(f"Connection or timeout error encountered: {exception}. Retrying...")
+            return True
+    except ImportError:
+        if isinstance(exception, (ConnectionError, TimeoutError)):
+            logger.warning(f"Connection or timeout error encountered: {exception}. Retrying...")
+            return True
+        
+    return False
 
 
 class AzureOpenAIWrapper:
     """Wrapper for Azure OpenAI chat completions."""
 
     def __init__(self, endpoint: str, api_key: str, deployment_name: str, api_version: str | None = None) -> None:
-        self.endpoint = endpoint.rstrip("/")
+        self.endpoint = endpoint.rstrip("/") if endpoint else ""
         self.api_key = api_key
         self.deployment_name = deployment_name
         self.api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview").strip()
@@ -55,7 +89,14 @@ class AzureOpenAIWrapper:
         self.openai_client: Any | None = None
         self.use_openai_fallback = False
 
-        if endpoint and api_key and deployment_name and OpenAIClient is not None:
+        if deployment_name.startswith("gemini-"):
+            if OpenAIPackageClient is not None:
+                self.openai_client = OpenAIPackageClient(
+                    api_key=api_key,
+                    base_url=self.endpoint or "https://generativelanguage.googleapis.com/v1beta/openai/",
+                )
+                self.use_openai_fallback = True
+        elif endpoint and api_key and deployment_name and OpenAIClient is not None:
             self.azure_client = OpenAIClient(endpoint, AzureKeyCredential(api_key))
         elif endpoint and api_key and deployment_name and AzureOpenAI is not None:
             self.openai_client = AzureOpenAI(
@@ -75,6 +116,16 @@ class AzureOpenAIWrapper:
     def is_configured(self) -> bool:
         return bool(self.azure_client or self.openai_client)
 
+    @retry(
+        retry=retry_if_exception(is_transient_error),
+        wait=wait_exponential(
+            multiplier=config.RETRY_MULTIPLIER,
+            min=config.RETRY_MIN_WAIT,
+            max=config.RETRY_MAX_WAIT
+        ),
+        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS),
+        reraise=True
+    )
     def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800) -> str:
         if not self.is_configured():
             if OpenAIClient is None and OpenAIPackageClient is None:
@@ -175,10 +226,24 @@ class AzureClientFactory:
         return self.get_openai_client(self.openai_deployment_name)
 
     def get_openai_client(self, deployment_name: str | None = None) -> AzureOpenAIWrapper | None:
-        if not self.openai_endpoint or not self.openai_api_key:
-            return None
         deployment = (deployment_name or "").strip()
         if not deployment:
+            return None
+        
+        # Route Gemini deployments
+        if deployment.startswith("gemini-"):
+            gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+            if not gemini_api_key:
+                logger.warning("Gemini model requested but GEMINI_API_KEY is not set.")
+                return None
+            return AzureOpenAIWrapper(
+                endpoint="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=gemini_api_key,
+                deployment_name=deployment,
+                api_version=""
+            )
+
+        if not self.openai_endpoint or not self.openai_api_key:
             return None
         return AzureOpenAIWrapper(self.openai_endpoint, self.openai_api_key, deployment)
 
@@ -239,7 +304,11 @@ class AzureClientFactory:
             # Last resort: use document content if available
             if not pieces and hasattr(result, "content"):
                 pieces.append(result.content or "")
-            return "\n\n".join(filter(None, pieces)).strip()
+            
+            # Clean OCR paragraphs/pieces before joining
+            from ..helpers.pdf_cleaner import clean_extracted_paragraphs
+            cleaned_pieces = clean_extracted_paragraphs(pieces)
+            return "\n\n".join(filter(None, cleaned_pieces)).strip()
 
         if lower.endswith(".txt") or lower.endswith(".json") or lower.endswith(".md"):
             return self.download_blob_text(blob_name)
@@ -248,7 +317,8 @@ class AzureClientFactory:
             document = fitz_open(stream=raw_bytes, filetype="pdf")
             try:
                 pages = [page.get_text("text") for page in document]
-                return "\n\n".join(pages)
+                from ..helpers.pdf_cleaner import clean_extracted_pages
+                return clean_extracted_pages(pages)
             finally:
                 document.close()
 
@@ -263,7 +333,7 @@ class AzureClientFactory:
             credential=AzureKeyCredential(self.search_api_key),
         )
 
-    def search_documents(self, query: str, index_name: str, top_k: int = 5) -> list[dict[str, Any]]:
+    def search_documents(self, query: str, index_name: str, top_k: int = config.SEARCH_TOP_K) -> list[dict[str, Any]]:
         search_client = self.get_search_client(index_name)
         if not search_client:
             return []
@@ -299,7 +369,7 @@ class MemoryStore:
         self.redis = azure_factory.redis_client
         self.azure_factory = azure_factory
 
-    def save_short_term_memory(self, session_id: str, payload: dict[str, Any], ttl_seconds: int = 3600) -> None:
+    def save_short_term_memory(self, session_id: str, payload: dict[str, Any], ttl_seconds: int = config.REDIS_TTL_SECONDS) -> None:
         if not self.redis:
             return
         self.redis.setex(f"{self.SHORT_TERM_PREFIX}{session_id}", ttl_seconds, json.dumps(payload, ensure_ascii=False))

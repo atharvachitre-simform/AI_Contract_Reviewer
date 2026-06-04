@@ -344,20 +344,22 @@ class ContractReviewService:
             except Exception as err:
                 logger.warning(f"Azure Document Intelligence extraction failed, falling back to local extraction: {err}")
 
+        from ..helpers.pdf_cleaner import clean_extracted_pages
+
         if pdf_path.startswith("http") or pdf_path.startswith("contracts/"):
             try:
                 raw_bytes = self.azure.download_blob_bytes(pdf_path)
                 document = fitz.open(stream=raw_bytes, filetype="pdf")
                 pages = [page.get_text("text") for page in document]
                 document.close()
-                return "\n\n".join(pages)
+                return clean_extracted_pages(pages)
             except Exception:
                 pass
 
         doc = fitz.open(pdf_path)
         try:
             pages = [page.get_text("text") for page in doc]
-            return "\n\n".join(pages)
+            return clean_extracted_pages(pages)
         finally:
             doc.close()
 

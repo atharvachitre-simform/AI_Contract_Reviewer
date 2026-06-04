@@ -22,6 +22,7 @@ from ..models import (
 from ..prompts.report_assembler_prompt import build_report_assembler_prompt
 
 logger = logging.getLogger(__name__)
+from src import config
 
 
 class ReportAssemblerState(TypedDict):
@@ -113,7 +114,7 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 
 	try:
 		clauses_list = []
-		for idx, clause in enumerate(state["clause_extraction"].clauses[:15], 1):
+		for idx, clause in enumerate(state["clause_extraction"].clauses[:config.REPORT_ASSEMBLER_CLAUSES_LIMIT], 1):
 			clauses_list.append(f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}")
 		clauses_summary = "\n".join(clauses_list) if clauses_list else "(No clauses provided)"
 
@@ -147,7 +148,7 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 			completeness_summary=completeness_summary,
 		)
 
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS)
 
 		parsed = _parse_report_response(response_text)
 		if not parsed or not isinstance(parsed, dict):

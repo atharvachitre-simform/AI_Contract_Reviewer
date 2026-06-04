@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from collections import defaultdict
 from typing import Any, TypedDict
 
 from langgraph.graph import StateGraph, END
 
 logger = logging.getLogger(__name__)
+from src import config
 
 from ..helpers.contract_analysis import (
     clause_keyword_score,
@@ -77,6 +80,34 @@ def retrieve_reference_clauses_node(state: ClauseExtractorState, retriever: Any 
     return state
 
 
+def _split_by_sections(text: str) -> list[str]:
+    """Split contract text into logical sections based on headings."""
+    heading_pattern = re.compile(
+        r"(?:\n|^)"
+        r"(?:"
+        r"\s*(?:ARTICLE|SECTION|SECT|EXHIBIT|SCHEDULE)\s+[IVXLCDM\d]+[.:\-\s]*.*"
+        r"|\s*\d+\.\d+(?:\.\d+)*\s+[A-Z].*"
+        r"|\s*\d+\.\s+[A-Z][a-zA-Z0-9\s,\-\(\)]{3,50}"
+        r"|\s*[A-Z0-9\s,\-\(\)]{5,50}(?:\n|$)"
+        r")",
+        re.IGNORECASE
+    )
+    matches = list(heading_pattern.finditer(text))
+    if not matches:
+        return [text]
+        
+    sections = []
+    prev_idx = 0
+    for match in matches:
+        start_idx = match.start()
+        if start_idx > prev_idx:
+            sections.append(text[prev_idx:start_idx])
+        prev_idx = start_idx
+        
+    sections.append(text[prev_idx:])
+    return [s.strip() for s in sections if s.strip()]
+
+
 def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None) -> ClauseExtractorState:
     """Step 2: Attempt LLM-based extraction with confidence tracking and RAG context."""
     if llm_client is None or not getattr(llm_client, "is_configured", lambda: False)():
@@ -87,10 +118,9 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
         return state
     
     try:
-        import re
         cleaned_text = state["cleaned_text"]
-        chunk_size = 18000
-        overlap = 1500
+        chunk_size = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "24000"))
+        overlap = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "1000"))
         
         if len(cleaned_text) <= chunk_size:
             prompt = build_clause_extractor_prompt(
@@ -99,7 +129,7 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                 memory_context=memory_context,
                 reference_clauses=state["reference_clauses"],
             )
-            llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+            llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
             
             parsed = _parse_llm_response(llm_response)
             if not parsed:
@@ -110,23 +140,55 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
             clauses = _build_clauses_from_llm(parsed.get("clauses", []))
             metadata = parsed.get("metadata", {})
         else:
-            logger.info(f"Contract is large ({len(cleaned_text)} characters). Splitting into chunks for extraction.")
+            logger.info(f"Contract is large ({len(cleaned_text)} characters). Splitting into logical sections dynamically.")
+            sections = _split_by_sections(cleaned_text)
             chunks = []
-            start = 0
-            while start < len(cleaned_text):
-                end = min(start + chunk_size, len(cleaned_text))
-                if end < len(cleaned_text):
-                    lookback = cleaned_text.rfind("\n\n", end - 2000, end)
-                    if lookback != -1 and lookback > start:
-                        end = lookback + 2
+            current_chunk = []
+            current_len = 0
+            
+            for section in sections:
+                section_len = len(section)
+                if section_len > chunk_size:
+                    # If we have a pending chunk, save it first
+                    if current_chunk:
+                        chunks.append("\n\n".join(current_chunk))
+                        current_chunk = []
+                        current_len = 0
+                    
+                    # Split massive section using character/paragraph limits
+                    start = 0
+                    while start < section_len:
+                        end = min(start + chunk_size, section_len)
+                        if end < section_len:
+                            lookback = section.rfind("\n\n", end - 2000, end)
+                            if lookback != -1 and lookback > start:
+                                end = lookback + 2
+                            else:
+                                lookback_nl = section.rfind("\n", end - 500, end)
+                                if lookback_nl != -1 and lookback_nl > start:
+                                    end = lookback_nl + 1
+                        chunks.append(section[start:end])
+                        start = end - overlap
+                        if start >= section_len or end == section_len:
+                            break
+                elif current_len + section_len <= chunk_size or not current_chunk:
+                    current_chunk.append(section)
+                    current_len += section_len
+                else:
+                    # Save current chunk and start new chunk
+                    chunks.append("\n\n".join(current_chunk))
+                    
+                    # carry over last section as overlap if small enough
+                    last_section = current_chunk[-1] if current_chunk else ""
+                    if last_section and len(last_section) <= overlap:
+                        current_chunk = [last_section, section]
+                        current_len = len(last_section) + section_len
                     else:
-                        lookback_nl = cleaned_text.rfind("\n", end - 500, end)
-                        if lookback_nl != -1 and lookback_nl > start:
-                            end = lookback_nl + 1
-                chunks.append(cleaned_text[start:end])
-                start = end - overlap
-                if start >= len(cleaned_text) or end == len(cleaned_text):
-                    break
+                        current_chunk = [section]
+                        current_len = section_len
+            
+            if current_chunk:
+                chunks.append("\n\n".join(current_chunk))
             
             clauses = []
             metadata = {}
@@ -139,7 +201,7 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                     memory_context=memory_context,
                     reference_clauses=state["reference_clauses"],
                 )
-                llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+                llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
                 parsed = _parse_llm_response(llm_response)
                 if parsed:
                     chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
