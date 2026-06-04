@@ -43,10 +43,15 @@ PROMPT_GUIDELINES = (
 )
 
 
-def build_red_flag_detector_prompt(clauses_text: str) -> str:
+def build_red_flag_detector_prompt(clauses_text: str, perspective: str | None = None) -> str:
     """Build a prompt for the red flag detector agent."""
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are reviewing this contract from the perspective of the {perspective.upper()}. Prioritize identifying and flagging terms that are unfavorable to the {perspective.upper()} and tailor the safer alternatives to protect the {perspective.upper()}'s interests.\n\n"
+
     return (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        f"{perspective_instruction}"
         "INSTRUCTIONS:\n"
         f"{PROMPT_GUIDELINES}\n\n"
         "OUTPUT_SCHEMA:\n"

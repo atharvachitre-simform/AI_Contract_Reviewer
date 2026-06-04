@@ -34,7 +34,7 @@ class ObligationFinderAgent:
         "will be",
     )
 
-    def find(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> ObligationFinderOutput:
+    def find(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None) -> ObligationFinderOutput:
         """LLM-based obligation extraction. Returns ObligationFinderOutput with method_used='llm'.
 
         If `llm_client` is not provided or not configured, the method returns an empty result and logs an error.
@@ -56,13 +56,18 @@ class ObligationFinderAgent:
             )
 
         try:
-            prompt = build_obligation_finder_prompt(clause_extraction)
-            response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS)
+            prompt = build_obligation_finder_prompt(clause_extraction, memory_context)
+            response_text = llm_client.chat_complete(
+                prompt,
+                temperature=0.0,
+                max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS,
+                response_format={"type": "json_object"}
+            )
             logger.debug(f"Obligation LLM response (first 300 chars): {response_text[:300]}")
             
             parsed = self._parse_llm_response(response_text)
             if not parsed:
-                logger.warning("LLM returned no parseable obligations JSON; returning empty result.")
+                logger.warning(f"LLM returned no parseable obligations JSON. Raw response: {response_text}")
                 return ObligationFinderOutput(
                     obligations=[],
                     categorized={
@@ -273,6 +278,6 @@ class ObligationFinderAgent:
         return None
 
 
-def find_obligations(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> ObligationFinderOutput:
+def find_obligations(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None) -> ObligationFinderOutput:
     """Convenience function for finding obligations using an optional llm_client."""
-    return ObligationFinderAgent().find(clause_extraction, llm_client=llm_client)
+    return ObligationFinderAgent().find(clause_extraction, llm_client=llm_client, memory_context=memory_context)

@@ -52,6 +52,7 @@ class ContractReviewWorkflow:
 		assembler_llm_client: Any | None = None,
 		memory_context: dict[str, Any] | None = None,
 		retriever: Any | None = None,
+		perspective: str | None = None,
 	) -> ContractReviewState:
 		trace_id = trace_id or str(uuid.uuid4())
 		state = ContractReviewState(
@@ -61,6 +62,7 @@ class ContractReviewWorkflow:
 			contract_text=contract_text or "",
 			status=ProcessingStatus.RUNNING,
 			trace_id=trace_id,
+			perspective=perspective,
 		)
 
 		state.api_trace.append({
@@ -97,8 +99,8 @@ class ContractReviewWorkflow:
 		# Cooperative Sequential Flow:
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
 		with ThreadPoolExecutor(max_workers=2) as executor:
-			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client)
-			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client)
+			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context)
+			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client, perspective)
 
 			state.obligation_finding = obligation_future.result()
 			state.api_trace.append({
@@ -131,7 +133,7 @@ class ContractReviewWorkflow:
 			)
 
 		# 2. Run Risk Scorer sequentially, consuming retriever (Azure AI Search)
-		state.risk_scoring = score_risks(clause_extraction, risk_llm_client, retriever)
+		state.risk_scoring = score_risks(clause_extraction, risk_llm_client, retriever, memory_context, perspective)
 		state.api_trace.append({
 			"step": "risk_scoring",
 			"agent": "Risk Scorer",
@@ -171,14 +173,17 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 
-		# 5. Compile the final report using the Report Assembler
 		state.final_report = assemble_report(
 			clause_extraction=state.clause_extraction,
 			risk_scoring=state.risk_scoring,
 			red_flags=state.red_flag_detection,
 			plain_english=state.plain_english,
 			llm_client=assembler_llm_client,
+			perspective=perspective,
 		)
+		if state.final_report and state.final_report.warnings:
+			state.warnings.extend(state.final_report.warnings)
+
 		state.api_trace.append({
 			"step": "final_report",
 			"agent": "Report Assembler",
@@ -210,6 +215,7 @@ def run_contract_review(
 	assembler_llm_client: Any | None = None,
 	memory_context: dict[str, Any] | None = None,
 	retriever: Any | None = None,
+	perspective: str | None = None,
 ) -> ContractReviewState:
 	"""Convenience function for running the full workflow."""
 
@@ -226,4 +232,5 @@ def run_contract_review(
 		assembler_llm_client=assembler_llm_client,
 		memory_context=memory_context,
 		retriever=retriever,
+		perspective=perspective,
 	)

@@ -24,6 +24,8 @@ class RiskScorerState(TypedDict):
     overall_risk_level: RiskLevel
     overall_risk_score: float
     clause_risk_map: dict[str, float]
+    memory_context: dict[str, Any] | None
+    perspective: str | None
 
 
 class RiskScorerAgent:
@@ -189,6 +191,8 @@ class RiskScorerAgent:
             prompt = build_risk_scorer_prompt(
                 clauses_text=clauses_text,
                 reference_risks=state["reference_risks"],
+                memory_context=state.get("memory_context"),
+                perspective=state.get("perspective"),
             )
 
             logger.info(
@@ -276,7 +280,7 @@ class RiskScorerAgent:
 
         return state
 
-    def score(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None) -> RiskScorerOutput:
+    def score(self, clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None, memory_context: dict[str, Any] | None = None, perspective: str | None = None) -> RiskScorerOutput:
         """Score risks in extracted clauses using LangGraph workflow."""
         # Initialize state
         initial_state: RiskScorerState = {
@@ -286,6 +290,8 @@ class RiskScorerAgent:
             "overall_risk_level": RiskLevel.LOW,
             "overall_risk_score": 0.0,
             "clause_risk_map": {},
+            "memory_context": memory_context,
+            "perspective": perspective,
         }
 
         # Create and run graph
@@ -317,7 +323,7 @@ class RiskScorerAgent:
         )
 
 
-def score_risks(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None) -> RiskScorerOutput:
+def score_risks(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, retriever: Any | None = None, memory_context: dict[str, Any] | None = None, perspective: str | None = None) -> RiskScorerOutput:
     """Convenience function for risk scoring."""
-    return RiskScorerAgent().score(clause_extraction, llm_client=llm_client, retriever=retriever)
+    return RiskScorerAgent().score(clause_extraction, llm_client=llm_client, retriever=retriever, memory_context=memory_context, perspective=perspective)
 

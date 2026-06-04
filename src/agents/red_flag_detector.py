@@ -23,6 +23,7 @@ class RedFlagDetectorState(TypedDict):
 	summary: str
 	llm_attempt_success: bool
 	error_messages: list[str]
+	perspective: str | None
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -90,7 +91,7 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 			)
 		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
 
-		prompt = build_red_flag_detector_prompt(clauses_text)
+		prompt = build_red_flag_detector_prompt(clauses_text, state.get("perspective"))
 		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS)
 
 		parsed = _parse_red_flag_response(response_text)
@@ -163,7 +164,7 @@ class RedFlagDetectorAgent:
 
 		return workflow.compile()
 
-	def detect(self, clause_extraction: ClauseExtractorOutput) -> RedFlagDetectorOutput:
+	def detect(self, clause_extraction: ClauseExtractorOutput, perspective: str | None = None) -> RedFlagDetectorOutput:
 		initial_state: RedFlagDetectorState = {
 			"clause_extraction": clause_extraction,
 			"red_flags": [],
@@ -171,6 +172,7 @@ class RedFlagDetectorAgent:
 			"summary": "",
 			"llm_attempt_success": False,
 			"error_messages": [],
+			"perspective": perspective,
 		}
 
 		graph = self._create_graph(self.llm_client)
@@ -183,7 +185,7 @@ class RedFlagDetectorAgent:
 		)
 
 
-def detect_red_flags(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None) -> RedFlagDetectorOutput:
+def detect_red_flags(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, perspective: str | None = None) -> RedFlagDetectorOutput:
 	"""Convenience function for red-flag detection."""
 	if llm_client is None:
 		try:
@@ -191,4 +193,4 @@ def detect_red_flags(clause_extraction: ClauseExtractorOutput, llm_client: Any |
 			llm_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
 		except Exception:
 			pass
-	return RedFlagDetectorAgent(llm_client=llm_client).detect(clause_extraction)
+	return RedFlagDetectorAgent(llm_client=llm_client).detect(clause_extraction, perspective=perspective)

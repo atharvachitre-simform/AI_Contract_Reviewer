@@ -8,6 +8,8 @@ from typing import Any
 def build_risk_scorer_prompt(
     clauses_text: str,
     reference_risks: list[dict[str, Any]] | None = None,
+    memory_context: dict[str, Any] | None = None,
+    perspective: str | None = None,
 ) -> str:
     """
     Build a GPT-4.1 structured prompt for risk scoring.
@@ -15,6 +17,8 @@ def build_risk_scorer_prompt(
     Args:
         clauses_text: Contract clauses to score for risk
         reference_risks: Optional reference risk patterns from knowledge base
+        memory_context: Optional prior review history memory context
+        perspective: Optional perspective role (Customer, Vendor, Neutral)
         
     Returns:
         Structured prompt string following GPT-4.1 best practices
@@ -33,12 +37,31 @@ def build_risk_scorer_prompt(
         if ref_list:
             reference_section = "\n\nREFERENCE RISK PATTERNS FROM SIMILAR CONTRACTS:\n" + "\n".join(ref_list)
     
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are reviewing this contract from the perspective of the {perspective.upper()}. Prioritize identifying and flagging terms that are unfavorable to the {perspective.upper()} and tailor the negotiation suggestions to protect the {perspective.upper()}'s interests.\n\n"
+
+    prior_context_block = ""
+    if memory_context:
+        st = memory_context.get("short_term") or {}
+        lt = memory_context.get("long_term") or {}
+        overall_risk = st.get("overall_risk_level") or lt.get("overall_risk")
+        key_risks = st.get("summary") or lt.get("review_summary")
+        
+        if overall_risk or key_risks:
+            prior_context_block = "PRIOR REVIEW CONTEXT:\n"
+            if overall_risk:
+                prior_context_block += f"- Previous overall risk score/level: {overall_risk}\n"
+            if key_risks:
+                prior_context_block += f"- Previous main findings: {key_risks}\n"
+            prior_context_block += "Check whether these risks have been mitigated in this version of the contract.\n\n"
+
     prompt = f"""You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
 
 ROLE & OBJECTIVE:
 Analyze the provided contract clauses and identify every risk exposure, including material and minor risk factors. Score each identified issue by risk level and provide a practical negotiation recommendation. Use reference patterns from similar contracts to inform your assessment.
 
-INSTRUCTIONS:
+{perspective_instruction}{prior_context_block}INSTRUCTIONS:
 1. Review every clause provided and identify all real risk signals, including subtle or minor issues.
 2. Include LOW risk findings when a clause creates potential exposure, ambiguity, or one-sided burden.
 3. Do not exclude any risk because it appears small; if a clause can create future liability, operational friction, or unfair burden, flag it.

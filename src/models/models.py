@@ -326,6 +326,8 @@ class ReportAssemblerOutput(BaseModel):
     missing_clauses: list[MissingClause] = Field(default_factory=list)
     key_risks: list[str] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
+    is_incomplete: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ContractReviewState(BaseModel):
@@ -352,6 +354,7 @@ class ContractReviewState(BaseModel):
     api_trace: list[dict[str, str]] = Field(default_factory=list)
     trace_id: str | None = None
     trace_url: str | None = None
+    perspective: str | None = None
 
 
 __all__ = [

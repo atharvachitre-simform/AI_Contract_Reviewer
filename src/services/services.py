@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from .azure_clients import AzureClientFactory, MemoryStore
 from .langfuse_tracer import LangFuseTracer
 from ..agents.clause_extractor import extract_clauses
+from src import config
 from ..agents.obligation_finder import find_obligations
 from ..agents.plain_english_writer import generate_plain_english
 from ..agents.red_flag_detector import detect_red_flags
@@ -76,19 +77,38 @@ class ContractReviewService:
         return {}
 
     def _save_memory(self, contract_id: str | None, session_id: str, results: ContractReviewState) -> None:
-        self.memory.save_short_term_memory(session_id, {
+        short_term_payload = {
             "contract_id": contract_id,
             "trace_id": results.trace_id,
+            "perspective": results.perspective,
             "final_report": results.final_report.model_dump(mode="json") if results.final_report else {},
             "summary": results.final_report.report_summary if results.final_report else "",
-        })
+            "red_flags": [{"pattern_name": flag.pattern_name, "severity": flag.severity.value} for flag in results.red_flag_detection.red_flags] if results.red_flag_detection else [],
+            "key_obligations": [{"clause_type": obl.obligation_type, "obligation": obl.obligation} for obl in results.obligation_finding.obligations[:5]] if results.obligation_finding else [],
+            "overall_risk_level": results.final_report.overall_risk_level.value if results.final_report else None,
+            "negotiation_priorities": [{"title": p.title, "priority": p.priority, "reason": p.reason} for p in results.final_report.negotiation_priorities] if results.final_report else [],
+        }
+        self.memory.save_short_term_memory(session_id, short_term_payload)
+        
         if contract_id:
-            self.memory.save_long_term_memory(contract_id, {
+            import datetime
+            long_term_payload = {
                 "contract_id": contract_id,
+                "perspective": results.perspective,
                 "review_summary": results.final_report.report_summary if results.final_report else "",
                 "overall_risk": results.final_report.overall_risk_level.value if results.final_report else None,
                 "red_flags": [flag.pattern_name for flag in results.red_flag_detection.red_flags] if results.red_flag_detection else [],
-            })
+                "verdict": results.final_report.verdict.value if results.final_report else None,
+                "key_risks": results.final_report.key_risks if results.final_report else [],
+                "review_timestamp": datetime.datetime.utcnow().isoformat(),
+                "missing_clauses": [{"category": m.category, "reason": m.reason} for m in results.final_report.missing_clauses] if results.final_report else [],
+                "negotiation_priorities": [{"title": p.title, "priority": p.priority, "reason": p.reason} for p in results.final_report.negotiation_priorities] if results.final_report else [],
+            }
+            self.memory.save_long_term_memory(contract_id, long_term_payload)
+            
+            # Index clauses in Qdrant if configured and available
+            if results.clause_extraction and results.clause_extraction.clauses:
+                self.memory.index_clauses_in_qdrant(contract_id, results.clause_extraction.clauses)
 
     def extract_clauses(self, contract_text: str) -> dict[str, Any]:
         """Extract key clauses from contract text.
@@ -239,18 +259,57 @@ class ContractReviewService:
             return result.model_dump()
         raise ValueError("Incomplete analysis results for report assembly")
 
-    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None) -> ContractReviewState:
+    def is_document_contract(self, text: str) -> bool:
+        """Verify if the uploaded text is a contract or legal document using Gemini."""
+        sample = text[:config.RELEVANCE_GATING_MAX_CHARS].strip()
+        if not sample:
+            return False
+            
+        llm_client = (
+            self.azure.get_openai_client_for_agent("relevance_gater")
+            or self.azure.get_openai_client("gemini-2.5-flash")
+            or self.azure.get_openai_client_for_agent("obligation_finder")
+        )
+        if not llm_client:
+            logger.warning("No LLM client available for document relevance check. Bypassing gating.")
+            return True
+            
+        prompt = (
+            "You are a legal document gatekeeper. Determine if the following text is from a contract, "
+            "agreement, covenant, lease, or legal addendum. Answer only with YES or NO.\n"
+            "If the document is irrelevant (e.g. a hospital bill, medical receipt, invoice, resume, "
+            "general article, recipe, or random text), you must answer NO.\n\n"
+            f"Document text sample:\n{sample}"
+        )
+        try:
+            response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=10).strip().upper()
+            logger.info(f"Relevance gating check response: {response}")
+            return "YES" in response
+        except Exception as e:
+            logger.warning(f"Relevance gating check failed: {e}. Bypassing gating.")
+            return True
+
+    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None, perspective: str | None = None) -> ContractReviewState:
         """End-to-end contract review process.
         
         Args:
             contract_text: The full contract text to review.
             contract_id: Optional external contract identifier.
             source_blob_path: Optional Azure Blob path for the source contract.
+            perspective: Optional role-based perspective (Customer, Vendor, Neutral).
 
         Returns:
             ContractReviewState with complete analysis results.
         """
         contract_text = self._resolve_contract_text(contract_text, source_blob_path)
+        
+        # Relevance Gating Check
+        if not self.is_document_contract(contract_text):
+            raise ValueError(
+                "Document relevance gating failed: The uploaded document does not appear to be a contract "
+                "or legal agreement. Execution aborted to conserve API resources."
+            )
+
         session_id = contract_id or str(uuid.uuid4())
         memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
 
@@ -259,7 +318,7 @@ class ContractReviewService:
         self._trace(
             "process_contract",
             "Begin end-to-end contract review.",
-            {"text_length": len(contract_text), "contract_id": contract_id, "blob_path": source_blob_path},
+            {"text_length": len(contract_text), "contract_id": contract_id, "blob_path": source_blob_path, "perspective": perspective},
             "started",
             self.current_trace_id,
         )
@@ -277,6 +336,7 @@ class ContractReviewService:
                 assembler_llm_client=self.azure.get_openai_client_for_agent("report_assembler"),
                 memory_context=memory_context,
                 retriever=self,
+                perspective=perspective,
             )
             state.trace_id = self.current_trace_id
             self._save_memory(contract_id, session_id, state)

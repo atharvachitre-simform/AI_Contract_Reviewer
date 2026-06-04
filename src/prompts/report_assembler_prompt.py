@@ -55,13 +55,20 @@ def build_report_assembler_prompt(
     red_flags_summary: str,
     plain_english_summary: str,
     completeness_summary: str = "",
+    perspective: str | None = None,
 ) -> str:
     """Build a prompt for the report assembler agent."""
     completeness_section = ""
     if completeness_summary:
         completeness_section = f"5. EXTRACTION COMPLETENESS STATUS:\n{completeness_summary}\n\n"
+    
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nThe contract review is conducted from the perspective of the {perspective.upper()}. In compiling the final report, summarize findings and recommend next steps with the goal of protecting the {perspective.upper()}'s interests, prioritizing issues unfavorable to them, and framing negotiation priorities accordingly.\n\n"
+
     return (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        f"{perspective_instruction}"
         "INSTRUCTIONS:\n"
         f"{PROMPT_GUIDELINES}\n\n"
         "OUTPUT_SCHEMA:\n"
