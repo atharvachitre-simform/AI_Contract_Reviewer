@@ -13,6 +13,7 @@ from ..models import ClauseExtractorOutput, ClauseSpan, RiskIssue, RiskLevel, Ri
 from ..prompts.risk_scorer_prompt import build_risk_scorer_prompt
 
 logger = logging.getLogger(__name__)
+from src import config
 
 
 class RiskScorerState(TypedDict):
@@ -32,8 +33,8 @@ class RiskScorerAgent:
         """Initialize the risk scorer agent."""
         self.graph = None
 
-    MAX_CLAUSES_TO_ANALYZE = 16
-    CLAUSE_TEXT_TRUNCATION = 700
+    MAX_CLAUSES_TO_ANALYZE = config.MAX_CLAUSES_TO_ANALYZE
+    CLAUSE_TEXT_TRUNCATION = config.CLAUSE_TEXT_TRUNCATION
 
     def _create_graph(self, llm_client: Any | None = None, retriever: Any | None = None):
         """Create the LangGraph workflow."""
@@ -196,7 +197,7 @@ class RiskScorerAgent:
             response_text = llm_client.chat_complete(
                 prompt,
                 temperature=0.0,
-                max_tokens=4000,
+                max_tokens=config.RISK_SCORER_MAX_TOKENS,
             ).strip()
 
             logger.debug(f"LLM response (first 300 chars): {response_text[:300]}")
@@ -263,8 +264,8 @@ class RiskScorerAgent:
 
         overall_score = round(sum(issue.risk_score for issue in final_issues) / max(len(final_issues), 1), 3) if final_issues else 0.0
         overall_level = (
-            RiskLevel.HIGH if overall_score >= 0.6
-            else RiskLevel.MEDIUM if overall_score >= 0.3
+            RiskLevel.HIGH if overall_score >= config.RISK_THRESHOLD_HIGH
+            else RiskLevel.MEDIUM if overall_score >= config.RISK_THRESHOLD_MEDIUM
             else RiskLevel.LOW
         )
 
@@ -293,12 +294,26 @@ class RiskScorerAgent:
 
         # Build output using LLM results
         issues = final_state["llm_risks"] or []
+        
+        # Calculate truncation details
+        total_clauses = len(clause_extraction.clauses) if clause_extraction and clause_extraction.clauses else 0
+        clauses_analyzed = min(total_clauses, self.MAX_CLAUSES_TO_ANALYZE)
+        truncation_warning = None
+        if total_clauses > self.MAX_CLAUSES_TO_ANALYZE:
+            truncation_warning = (
+                f"Warning: Only the first {self.MAX_CLAUSES_TO_ANALYZE} out of {total_clauses} extracted clauses "
+                "were analyzed for risks. Some risks in later clauses may have been truncated."
+            )
+            
         return RiskScorerOutput(
             overall_risk_level=final_state["overall_risk_level"],
             overall_risk_score=final_state["overall_risk_score"],
             issues=issues,
             negotiation_suggestions=[issue.negotiation_suggestion for issue in issues if issue.negotiation_suggestion],
             clause_risk_map=final_state["clause_risk_map"],
+            clauses_analyzed=clauses_analyzed,
+            total_clauses=total_clauses,
+            truncation_warning=truncation_warning,
         )
 
 

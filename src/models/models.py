@@ -270,6 +270,9 @@ class RiskScorerOutput(BaseModel):
     issues: list[RiskIssue] = Field(default_factory=list)
     negotiation_suggestions: list[str] = Field(default_factory=list)
     clause_risk_map: dict[str, float] = Field(default_factory=dict)
+    clauses_analyzed: int | None = None
+    total_clauses: int | None = None
+    truncation_warning: str | None = None
 
 
 class ObligationFinderOutput(BaseModel):

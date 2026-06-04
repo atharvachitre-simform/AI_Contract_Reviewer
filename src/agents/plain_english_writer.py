@@ -12,6 +12,7 @@ from ..models import ClauseExtractorOutput, PlainEnglishClause, PlainEnglishWrit
 from ..prompts.plain_english_writer_prompt import build_plain_english_writer_prompt
 
 logger = logging.getLogger(__name__)
+from src import config
 
 
 class PlainEnglishWriterState(TypedDict):
@@ -90,7 +91,7 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 			risks_text=state.get("risks_text", ""),
 			red_flags_text=state.get("red_flags_text", "")
 		)
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=4000)
+		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS)
 
 		parsed = _parse_plain_english_response(response_text)
 		if not parsed or not isinstance(parsed, dict):
@@ -131,7 +132,7 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 	if not state["llm_attempt_success"] or not state["clause_summaries"]:
 		clauses = state["clause_extraction"].clauses
 		if clauses:
-			summarized_types = [c.clause_type for c in clauses[:5]]
+			summarized_types = [c.clause_type for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]]
 			state["executive_summary"] = (
 				"This contract contains key clauses including: " + ", ".join(summarized_types) + ". "
 				"Full analysis is partial or failed, but these clauses were extracted and are available for review."
@@ -144,7 +145,7 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 					why_it_matters="Extracted from the contract text.",
 					party_burden="obligatory"
 				)
-				for c in clauses[:5]
+				for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]
 			]
 			state["key_points"] = [f"Extracted {c.clause_type}: {c.raw_text[:120]}..." for c in clauses[:3]]
 			state["plain_english_risk_notes"] = ["Extraction pipeline returned partial results. Manual verification is recommended."]
