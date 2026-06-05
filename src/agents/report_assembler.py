@@ -332,11 +332,11 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
 
 
 def validate_report_node(state: ReportAssemblerState) -> ReportAssemblerState:
-	"""Validate results and fallback if compilation failed."""
-	is_inc, warnings_list = check_completeness(state["clause_extraction"].raw_contract_text)
-	state["is_incomplete"] = is_inc
-	state["warnings"] = warnings_list
+	"""Validate results and apply fallback values if LLM compilation failed.
 
+	Note: completeness check (is_incomplete / warnings) was already run in
+	``llm_assemble_node`` and stored in state — no need to repeat it here.
+	"""
 	if not state["llm_attempt_success"]:
 		state["verdict"] = ReviewVerdict.REVIEW
 		state["overall_risk_level"] = state["risk_scoring"].overall_risk_level

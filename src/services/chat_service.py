@@ -13,6 +13,8 @@ from typing import Any
 
 from src import config
 from .azure_clients import AzureClientFactory
+import asyncio
+from .redis_client import AsyncRedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -35,27 +37,29 @@ class ContractChatService:
         self.local_history_path = self.local_dir / f"{self.session_id}_history.json"
         self.local_summary_path = self.local_dir / f"{self.session_id}_summary.txt"
 
-    def _is_redis_available(self) -> bool:
-        if not self.azure.redis_client:
-            return False
+        # Async Redis client
+        self.async_redis = AsyncRedisClient()
+
+    async def _is_redis_available(self) -> bool:
+        """Check if async Redis client is usable."""
         try:
-            return bool(self.azure.redis_client.ping())
+            return await self.async_redis.ping()
         except Exception:
             return False
 
-    def _load_history(self) -> tuple[str, list[dict[str, str]]]:
+
+    async def _load_history(self) -> tuple[str, list[dict[str, Any]]]:
         """Load conversation summary and verbatim message history."""
         summary = ""
         history = []
 
-        if self._is_redis_available():
+        # Async Redis check
+        if await self._is_redis_available():
             try:
-                redis = self.azure.redis_client
-                saved_summary = redis.get(self.summary_key)
+                saved_summary = await self.async_redis.get(self.summary_key)
                 if saved_summary:
                     summary = saved_summary
-                    
-                saved_history = redis.get(self.history_key)
+                saved_history = await self.async_redis.get(self.history_key)
                 if saved_history:
                     history = json.loads(saved_history)
                 return summary, history
@@ -65,23 +69,20 @@ class ContractChatService:
         # Fallback to local files
         if self.local_summary_path.exists():
             summary = self.local_summary_path.read_text(encoding="utf-8").strip()
-            
         if self.local_history_path.exists():
             try:
                 history = json.loads(self.local_history_path.read_text(encoding="utf-8"))
             except Exception:
                 pass
-
         return summary, history
 
-    def _save_history(self, summary: str, history: list[dict[str, str]]) -> None:
+    async def _save_history(self, summary: str, history: list[dict[str, Any]]) -> None:
         """Save conversation summary and verbatim message history to Redis and local files."""
         # 1. Save to Redis
-        if self._is_redis_available():
+        if await self._is_redis_available():
             try:
-                redis = self.azure.redis_client
-                redis.setex(self.summary_key, config.REDIS_TTL_SECONDS, summary)
-                redis.setex(self.history_key, config.REDIS_TTL_SECONDS, json.dumps(history))
+                await self.async_redis.setex(self.summary_key, config.REDIS_TTL_SECONDS, summary)
+                await self.async_redis.setex(self.history_key, config.REDIS_TTL_SECONDS, json.dumps(history))
             except Exception as e:
                 logger.warning(f"Failed to write chat history to Redis: {e}")
 
@@ -117,6 +118,8 @@ class ContractChatService:
 
     def _retrieve_clauses(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Retrieve relevant clauses from Qdrant vector store with fallback to memory store checkpoints."""
+        if self.contract_id == "general":
+            return []
         sources = []
         if self.azure.qdrant_client:
             embedding_client = self.azure.get_openai_client(self.azure.embedding_deployment)
@@ -179,9 +182,84 @@ class ContractChatService:
                 
         return sources
 
-    def ask(self, question: str) -> dict[str, Any]:
-        """Ask a text question and get RAG grounded answer."""
-        summary, history = self._load_history()
+    def is_question_relevant(self, question: str) -> bool:
+        """Check if the user's question is relevant to legal standards, contract terms, or document analysis."""
+        q_clean = question.strip().lower()
+        if not q_clean:
+            return False
+
+        # Relevance gating system prompt
+        system_instruction = (
+            "You are a legal document and contract analysis gatekeeper. "
+            "Determine if the user's chat question is related to a contract, legal terminology, "
+            "legal advice, legal standards, liability, rights, obligations, or document review.\n"
+            "Answer with YES if it is relevant, or NO if it is irrelevant (e.g. general recipes, sports, "
+            "gaming, weather, general math, or general coding).\n"
+            "Response must be exactly YES or NO."
+        )
+
+        chat_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT", self.azure.openai_deployment_name or "gpt-4o")
+        chat_client = self.azure.get_openai_client(chat_deployment)
+        if not chat_client or not chat_client.is_configured():
+            logger.warning("No LLM client configured for relevance check, bypassing gating.")
+            return True
+
+        prompt = f"User Question:\n{question}"
+        try:
+            response = chat_client.chat_complete(
+                prompt,
+                temperature=0.0,
+                max_tokens=10,
+                system_prompt=system_instruction
+            ).strip().upper()
+            logger.info(f"Question relevance gating response: {response}")
+            return "YES" in response
+        except Exception as e:
+            logger.warning(f"Question relevance gating failed: {e}. Bypassing gating.")
+            return True
+
+    async def transient_relevancy_check(self, question: str) -> bool:
+        """Transient relevance check using Groq fallback if Azure fails or is rate‑limited (async)."""
+        try:
+            # Primary check using existing sync method (run in thread pool to avoid blocking event loop)
+            loop = asyncio.get_event_loop()
+            is_relevant = await loop.run_in_executor(None, lambda: self.is_question_relevant(question))
+            return is_relevant
+        except Exception as e:
+            logger.warning(f"Azure relevance check failed ({e}), falling back to Groq.")
+            # Groq fallback – sync SDK call also goes through executor
+            factory = AzureClientFactory()
+            groq_client = factory.get_openai_client("groq:llama-3.1-8b-instant")
+            if not groq_client:
+                logger.error("Groq client not configured for relevance gating.")
+                return False
+            system_instruction = "You are a legal document gatekeeper. Reply YES if question is contract‑related, else NO."
+            prompt = f"User Question:\n{question}"
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: groq_client.chat_complete(
+                        prompt,
+                        temperature=0.0,
+                        max_tokens=5,
+                        system_prompt=system_instruction,
+                    )
+                )
+                return "YES" in response.strip().upper()
+            except Exception as e2:
+                logger.error(f"Groq relevance check also failed: {e2}")
+                return False
+
+    async def ask(self, question: str) -> dict[str, Any]:
+        """Ask a text question and get RAG grounded answer (async)."""
+        if not await self.transient_relevancy_check(question):
+            return {
+                "answer": "I'm sorry, but I am a specialized contract review assistant. Please ask a question related to contracts, legal terminology, or document review.",
+                "sources": []
+            }
+
+        summary, history = await self._load_history()
 
         # Hybrid Summary Buffer Logic
         max_turns = config.CHAT_MAX_HISTORY_TURNS
@@ -190,7 +268,7 @@ class ContractChatService:
             turns_to_summarize = history[:-max_turns]
             history = history[-max_turns:]
             summary = self._summarize_turns(summary, turns_to_summarize)
-            self._save_history(summary, history)
+            await self._save_history(summary, history)
 
         # Retrieve grounding references
         sources = self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
@@ -221,12 +299,6 @@ class ContractChatService:
         
         prompt = "\n".join(prompt_parts)
 
-        # Formulate full OpenAI message format including buffer history
-        messages = [{"role": "system", "content": system_instruction}]
-        for turn in history:
-            messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({"role": "user", "content": prompt})
-
         chat_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT", self.azure.openai_deployment_name or "gpt-4o")
         chat_client = self.azure.get_openai_client(chat_deployment)
         if not chat_client or not chat_client.is_configured():
@@ -236,23 +308,26 @@ class ContractChatService:
             }
 
         try:
-            # We call chat_complete using the structured messages, but since chat_complete wrapper takes a simple prompt/string,
-            # we can call OpenAI completions directly or map it. Let's see: chat_complete wrapper accepts user_prompt and system_prompt.
-            # We can format the history inside user_prompt to fit the chat_complete signature:
+            # Format history for the LLM
             history_str = "\n".join([f"{t['role'].upper()}: {t['content']}" for t in history])
             final_user_prompt = f"{history_str}\n\nUSER: {prompt}" if history_str else prompt
-            
-            answer = chat_client.chat_complete(
-                final_user_prompt,
-                temperature=0.1,
-                max_tokens=800,
-                system_prompt=system_instruction
+
+            # chat_complete is sync — always run inside a thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(
+                None,
+                lambda: chat_client.chat_complete(
+                    final_user_prompt,
+                    temperature=0.1,
+                    max_tokens=800,
+                    system_prompt=system_instruction,
+                ),
             )
             
             # Save new turns
             history.append({"role": "user", "content": question})
-            history.append({"role": "assistant", "content": answer})
-            self._save_history(summary, history)
+            history.append({"role": "assistant", "content": answer, "sources": sources})
+            await self._save_history(summary, history)
             
             return {
                 "answer": answer,
@@ -265,9 +340,15 @@ class ContractChatService:
                 "sources": []
             }
 
-    def ask_with_image(self, question: str, image_bytes: bytes) -> dict[str, Any]:
-        """Ask a question containing a page screenshot/image using multimodal vision model."""
-        summary, history = self._load_history()
+    async def ask_with_image(self, question: str, image_bytes: bytes) -> dict[str, Any]:
+        """Ask a question containing a page screenshot/image using multimodal vision model (async)."""
+        if question and not await self.transient_relevancy_check(question):
+            return {
+                "answer": "I'm sorry, but I am a specialized contract review assistant. Please ask a question related to contracts, legal terminology, or document review.",
+                "sources": []
+            }
+
+        summary, history = await self._load_history()
 
         # Hybrid Summary Buffer Logic
         max_turns = config.CHAT_MAX_HISTORY_TURNS
@@ -275,7 +356,7 @@ class ContractChatService:
             turns_to_summarize = history[:-max_turns]
             history = history[-max_turns:]
             summary = self._summarize_turns(summary, turns_to_summarize)
-            self._save_history(summary, history)
+            await self._save_history(summary, history)
 
         # Retrieve grounding references using the question text
         sources = self._retrieve_clauses(question or "key contract terms", top_k=config.CHAT_TOP_K_CLAUSES)
@@ -293,7 +374,6 @@ class ContractChatService:
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         # Prepare messages in multimodal vision format
-        # Format the system prompt and instructions
         system_instruction = (
             "You are a contract review chat assistant. You are shown an image of a contract page, along with retrieved contract context "
             "and conversation history. Answer the user's question clearly, citing the page image or retrieved context as evidence."
@@ -334,16 +414,17 @@ class ContractChatService:
             }
 
         try:
-            answer = vision_client.chat_complete_multimodal(
-                messages=messages,
-                max_tokens=1000,
-                temperature=0.1
+            # chat_complete_multimodal is sync — always run inside a thread pool
+            loop = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(
+                None,
+                lambda: vision_client.chat_complete_multimodal(messages=messages, max_tokens=1000, temperature=0.1)
             )
             
             # Save new turns verbatim (ignoring the image bytes completely to prevent Redis storage explosion)
             history.append({"role": "user", "content": f"[Image Uploaded] {question or 'Analyze page screenshot.'}"})
-            history.append({"role": "assistant", "content": answer})
-            self._save_history(summary, history)
+            history.append({"role": "assistant", "content": answer, "sources": sources})
+            await self._save_history(summary, history)
             
             return {
                 "answer": answer,
