@@ -1,19 +1,46 @@
 """FastAPI application instance and route definitions."""
-from pydantic import BaseModel
+import asyncio
+import json
+from typing import AsyncGenerator
+
 from fastapi import FastAPI, HTTPException, Response, Form, File, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from .controllers.controller import review_contract
 
 app = FastAPI(title="Contract Reviewer")
 
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
 class ReviewRequest(BaseModel):
     """Request payload for contract review."""
-
     contract_text: str
     contract_id: str | None = None
     perspective: str | None = None
 
+
+class ChatRequest(BaseModel):
+    """Request payload for contract QA chat."""
+    contract_id: str
+    question: str
+    session_id: str | None = None
+
+
+class StreamReviewRequest(BaseModel):
+    """Request payload for async streaming review."""
+    contract_text: str
+    contract_id: str | None = None
+    perspective: str | None = None
+    resume: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 def health():
@@ -21,13 +48,24 @@ def health():
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Sync review (legacy)
+# ---------------------------------------------------------------------------
+
 @app.post("/review")
 def review(request: ReviewRequest):
-    """Run the contract review workflow."""
-
-    state = review_contract(request.contract_text, contract_id=request.contract_id, perspective=request.perspective)
+    """Run the contract review workflow (synchronous)."""
+    state = review_contract(
+        request.contract_text,
+        contract_id=request.contract_id,
+        perspective=request.perspective,
+    )
     return state.model_dump(mode="json")
 
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
 
 @app.get("/api/v1/review/{contract_id}/export")
 def export_review(contract_id: str, format: str = "pdf"):
@@ -46,57 +84,64 @@ def export_review(contract_id: str, format: str = "pdf"):
         return Response(
             content=md_text,
             media_type="text/markdown",
-            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.md"}
+            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.md"},
         )
     elif fmt == "pdf":
         pdf_bytes = export_as_pdf(state)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.pdf"},
         )
     elif fmt in ("docx", "word"):
         docx_bytes = export_as_docx(state)
         return Response(
             content=docx_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.docx"}
+            headers={"Content-Disposition": f"attachment; filename=contract_review_{contract_id}.docx"},
         )
     else:
         raise HTTPException(status_code=400, detail="Unsupported export format. Use 'pdf', 'docx', or 'md'.")
 
 
-class ChatRequest(BaseModel):
-    """Request payload for contract QA chat."""
-
-    contract_id: str
-    question: str
-    session_id: str | None = None
-
+# ---------------------------------------------------------------------------
+# Chat (text)
+# ---------------------------------------------------------------------------
 
 @app.post("/api/v1/chat")
-def chat(request: ChatRequest):
-    """Answer a text question using RAG grounding."""
+async def chat(request: ChatRequest):
+    """Answer a text question using RAG grounding (async)."""
     from .services.chat_service import ContractChatService
 
-    chat_service = ContractChatService(contract_id=request.contract_id, session_id=request.session_id)
-    return chat_service.ask(request.question)
+    chat_service = ContractChatService(
+        contract_id=request.contract_id,
+        session_id=request.session_id,
+    )
+    return await chat_service.ask(request.question)
 
+
+# ---------------------------------------------------------------------------
+# Chat (image / multimodal)
+# ---------------------------------------------------------------------------
 
 @app.post("/api/v1/chat/image")
 async def chat_image(
     contract_id: str = Form(...),
     question: str = Form(...),
     session_id: str | None = Form(None),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
 ):
     """Answer a question about a contract using a page screenshot image."""
     from .services.chat_service import ContractChatService
 
     image_bytes = await file.read()
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
-    return chat_service.ask_with_image(question, image_bytes)
+    return await chat_service.ask_with_image(question, image_bytes)
 
+
+# ---------------------------------------------------------------------------
+# Page image retrieval
+# ---------------------------------------------------------------------------
 
 @app.get("/api/v1/review/{contract_id}/page/{page_num}")
 def get_page_image(contract_id: str, page_num: int):
@@ -108,8 +153,87 @@ def get_page_image(contract_id: str, page_num: int):
     if not os.path.exists(path):
         raise HTTPException(
             status_code=404,
-            detail=f"Page {page_num} not rendered or not found for contract {contract_id}."
+            detail=f"Page {page_num} not rendered or not found for contract {contract_id}.",
         )
     return FileResponse(path, media_type="image/png")
 
 
+# ---------------------------------------------------------------------------
+# Async streaming review  (Server-Sent Events)
+# ---------------------------------------------------------------------------
+
+async def _sse_event_stream(
+    contract_text: str,
+    contract_id: str | None,
+    perspective: str | None,
+    resume: bool,
+) -> AsyncGenerator[str, None]:
+    """Generate SSE-formatted strings from workflow progress events."""
+    from .workflows.async_workflow import AsyncContractReviewWorkflow
+
+    workflow = AsyncContractReviewWorkflow()
+    try:
+        async for event in workflow.run_streaming(
+            contract_text,
+            contract_id=contract_id,
+            perspective=perspective,
+            resume=resume,
+        ):
+            # Omit the full state blob from progress events to keep stream lean
+            payload = {k: v for k, v in event.items() if k != "state"}
+            if event.get("step") == "done":
+                payload["done"] = True
+            yield f"data: {json.dumps(payload)}\n\n"
+    except asyncio.CancelledError:
+        yield 'data: {"error": "stream cancelled"}\n\n'
+    except Exception as e:
+        yield f'data: {{"error": {json.dumps(str(e))}}}\n\n'
+
+
+@app.post("/api/v1/review/stream")
+async def review_stream(request: StreamReviewRequest):
+    """Run the async contract review workflow and stream progress via SSE.
+
+    Each event is a JSON object::
+
+        {"step": "<name>", "status": "started|completed|skipped|error", "detail": {...}}
+
+    The final event has ``"done": true``.
+    """
+    return StreamingResponse(
+        _sse_event_stream(
+            contract_text=request.contract_text,
+            contract_id=request.contract_id,
+            perspective=request.perspective,
+            resume=request.resume,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint status
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/review/{contract_id}/checkpoint")
+async def get_checkpoint_status(contract_id: str):
+    """Return which pipeline steps have been checkpointed for a contract."""
+    from .checkpointing.redis_checkpointer import RedisCheckpointer
+
+    checkpointer = RedisCheckpointer(contract_id=contract_id)
+    completed = await checkpointer.completed_steps()
+    return {"contract_id": contract_id, "completed_steps": completed}
+
+
+@app.delete("/api/v1/review/{contract_id}/checkpoint")
+async def delete_checkpoint(contract_id: str, step: str | None = None):
+    """Delete checkpoint(s) for a contract (all steps if step is omitted)."""
+    from .checkpointing.redis_checkpointer import RedisCheckpointer
+
+    checkpointer = RedisCheckpointer(contract_id=contract_id)
+    await checkpointer.delete(step)
+    return {"contract_id": contract_id, "deleted": step or "all"}

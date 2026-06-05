@@ -486,11 +486,18 @@ class AzureClientFactory:
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379").strip()
         self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small").strip()
 
+        # Eagerly initialise lightweight clients (no network calls)
         self.blob_service_client = self._init_blob_service()
         self.document_intelligence_client = self._init_document_intelligence_client()
         self.openai_client = self._init_openai_client()
-        self.redis_client = self._init_redis_client()
-        self.qdrant_client = self._init_qdrant_client()
+
+        # Redis and Qdrant are lazily initialised on first access to avoid
+        # network round-trips when these services are not needed (e.g. agents
+        # that never touch memory/vector-store).
+        self._redis_client: Redis | None = None
+        self._redis_initialised: bool = False
+        self._qdrant_client: Any | None = None
+        self._qdrant_initialised: bool = False
 
     def _build_storage_connection_string(self) -> str | None:
         if self.storage_connection_string:
@@ -554,6 +561,17 @@ class AzureClientFactory:
             return None
         return AzureOpenAIWrapper(self.openai_endpoint, self.openai_api_key, deployment)
 
+    def get_async_openai_client(self, deployment_name: str | None = None) -> "AsyncAzureOpenAIWrapper" | None:
+        """Return an async wrapper around the configured OpenAI client.
+        If no deployment is configured, returns None.
+        """
+        client = self.get_openai_client(deployment_name)
+        if client is None:
+            return None
+        # Import lazily to avoid circular imports
+        from .async_azure_client import AsyncAzureOpenAIWrapper
+        return AsyncAzureOpenAIWrapper(client)
+
     def get_openai_client_for_agent(self, agent_name: str) -> AzureOpenAIWrapper | None:
         agent_env_suffix = agent_name.upper()
         
@@ -612,6 +630,19 @@ class AzureClientFactory:
         except Exception:
             return None
 
+    @property
+    def redis_client(self) -> Redis | None:
+        """Lazily connect to Redis on first access."""
+        if not self._redis_initialised:
+            self._redis_initialised = True
+            self._redis_client = self._init_redis_client()
+        return self._redis_client
+
+    @redis_client.setter
+    def redis_client(self, value: Redis | None) -> None:  # allow external assignment
+        self._redis_client = value
+        self._redis_initialised = True
+
     def _init_qdrant_client(self) -> Any | None:
         qdrant_url = os.getenv("QDRANT_URL", "").strip()
         qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
@@ -626,6 +657,19 @@ class AzureClientFactory:
         except Exception as e:
             logger.warning(f"Qdrant client initialization failed: {e}")
             return None
+
+    @property
+    def qdrant_client(self) -> Any | None:
+        """Lazily connect to Qdrant on first access."""
+        if not self._qdrant_initialised:
+            self._qdrant_initialised = True
+            self._qdrant_client = self._init_qdrant_client()
+        return self._qdrant_client
+
+    @qdrant_client.setter
+    def qdrant_client(self, value: Any | None) -> None:  # allow external assignment
+        self._qdrant_client = value
+        self._qdrant_initialised = True
 
     def get_blob_container_client(self):
         if not self.blob_service_client or not self.container_name:
@@ -955,7 +999,7 @@ class MemoryStore:
                     
             if points:
                 client.upsert(collection_name=collection_name, points=points)
-                logger.info(f"Successfully indexed {len(points)} clauses in Qdrant contracts-memory collection.")
+                logger.info(f"Successfully indexed {len(points)} clauses in Qdrant '{collection_name}' collection.")
         except Exception as err:
             logger.warning(f"Failed to save clauses to Qdrant: {err}")
 

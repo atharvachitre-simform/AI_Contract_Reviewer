@@ -14,10 +14,11 @@ def test_chat_text_endpoint():
     """Verify text chat endpoint parses inputs, calls ContractChatService, and returns findings."""
     with patch("src.services.chat_service.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
-        mock_instance.ask.return_value = {
+        from unittest.mock import AsyncMock
+        mock_instance.ask = AsyncMock(return_value={
             "answer": "This is a mock answer based on text context.",
             "sources": [{"clause_type": "Governing Law", "text": "This Agreement is governed by Delaware law.", "source_page": 2}]
-        }
+        })
         mock_service_class.return_value = mock_instance
 
         payload = {
@@ -41,10 +42,11 @@ def test_chat_image_endpoint():
     """Verify multimodal vision chat endpoint processes form fields and upload file."""
     with patch("src.services.chat_service.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
-        mock_instance.ask_with_image.return_value = {
+        from unittest.mock import AsyncMock
+        mock_instance.ask_with_image = AsyncMock(return_value={
             "answer": "This is a mock answer based on the page image.",
             "sources": [{"clause_type": "Limitation of Liability", "text": "Liability is limited to $10,000.", "source_page": 4}]
-        }
+        })
         mock_service_class.return_value = mock_instance
 
         # We send form-data with a file
