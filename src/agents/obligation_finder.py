@@ -216,6 +216,7 @@ class ObligationFinderAgent:
                 )
             )
 
+        refined_obligations = self._merge_similar_obligations(refined_obligations)
         state["obligations"] = refined_obligations
 
         # Categorize
@@ -506,6 +507,91 @@ class ObligationFinderAgent:
             idx = lower.find("if ")
             return lower[idx : idx + 240]
         return None
+
+    def _find_longest_common_prefix_words(self, s1: str, s2: str) -> tuple[str, str, str]:
+        s1_clean = " ".join(s1.split())
+        s2_clean = " ".join(s2.split())
+        
+        words1 = s1_clean.split()
+        words2 = s2_clean.split()
+        
+        common_words = []
+        min_len = min(len(words1), len(words2))
+        for i in range(min_len):
+            if words1[i].lower() == words2[i].lower():
+                common_words.append(words1[i])
+            else:
+                break
+                
+        if len(common_words) >= 2:
+            prefix = " ".join(words1[:len(common_words)])
+            suffix1 = " ".join(words1[len(common_words):])
+            suffix2 = " ".join(words2[len(common_words):])
+            return prefix, suffix1, suffix2
+        return "", s1, s2
+
+    def _merge_similar_obligations(self, items: list[ObligationItem]) -> list[ObligationItem]:
+        if not items:
+            return []
+        
+        current_list = list(items)
+        merged_any = True
+        
+        while merged_any:
+            merged_any = False
+            new_list = []
+            skip_indices = set()
+            
+            for i in range(len(current_list)):
+                if i in skip_indices:
+                    continue
+                
+                merged_item = current_list[i]
+                for j in range(i + 1, len(current_list)):
+                    if j in skip_indices:
+                        continue
+                    
+                    item2 = current_list[j]
+                    
+                    same_party = (merged_item.party or "").strip().lower() == (item2.party or "").strip().lower()
+                    same_type = (merged_item.obligation_type or "").strip().lower() == (item2.obligation_type or "").strip().lower()
+                    same_due = (merged_item.due_date or "").strip().lower() == (item2.due_date or "").strip().lower()
+                    same_freq = (merged_item.frequency or "").strip().lower() == (item2.frequency or "").strip().lower()
+                    same_cond = (merged_item.condition or "").strip().lower() == (item2.condition or "").strip().lower()
+                    
+                    if same_party and same_type and same_due and same_freq and same_cond:
+                        prefix, suffix1, suffix2 = self._find_longest_common_prefix_words(merged_item.obligation or "", item2.obligation or "")
+                        if prefix and suffix1.strip() and suffix2.strip():
+                            s1 = suffix1.rstrip(".,; ")
+                            s2 = suffix2.rstrip(".,; ")
+                            
+                            if s1.lower().startswith("and "):
+                                s1 = s1[4:]
+                            if s2.lower().startswith("and "):
+                                s2 = s2[4:]
+                                
+                            new_text = f"{prefix} {s1}, and {s2}."
+                            new_text = " ".join(new_text.split())
+                            new_text = new_text.rstrip(".") + "."
+                            
+                            merged_item = ObligationItem(
+                                party=merged_item.party,
+                                obligation=new_text,
+                                due_date=merged_item.due_date,
+                                frequency=merged_item.frequency,
+                                condition=merged_item.condition,
+                                obligation_type=merged_item.obligation_type,
+                                source_clause=f"{merged_item.source_clause or ''}; {item2.source_clause or ''}".strip("; "),
+                            )
+                            skip_indices.add(j)
+                            merged_any = True
+                
+                new_list.append(merged_item)
+            current_list = new_list
+            if not merged_any:
+                break
+                
+        return current_list
 
 
 def find_obligations(clause_extraction: ClauseExtractorOutput, llm_client: Any | None = None, memory_context: dict[str, Any] | None = None, perspective: str | None = None) -> ObligationFinderOutput:

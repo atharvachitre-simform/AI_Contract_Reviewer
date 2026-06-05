@@ -79,7 +79,9 @@ def build_risk_scorer_prompt(
                 prior_context_block += f"- Previous main findings: {key_risks}\n"
             prior_context_block += "Check whether these risks have been mitigated in this version of the contract.\n\n"
 
-    prompt = f"""You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
+    prompt = f"""CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.
+
+You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
 
 ROLE & OBJECTIVE:
 Analyze the provided contract clauses and identify every risk exposure, including material and minor risk factors. Score each identified issue by risk level and provide a practical negotiation recommendation. Use reference patterns from similar contracts to inform your assessment.

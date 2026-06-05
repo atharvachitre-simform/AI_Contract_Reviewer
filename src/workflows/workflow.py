@@ -55,6 +55,7 @@ class ContractReviewWorkflow:
 		perspective: str | None = None,
 	) -> ContractReviewState:
 		trace_id = trace_id or str(uuid.uuid4())
+		LangFuseTracer.set_current_trace_id(trace_id)
 		state = ContractReviewState(
 			contract_id=contract_id,
 			source_file=source_file,
@@ -98,7 +99,12 @@ class ContractReviewWorkflow:
 
 		# Cooperative Sequential Flow:
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
-		with ThreadPoolExecutor(max_workers=2) as executor:
+		# Pass trace_id into each worker thread via initializer so Langfuse
+		# can attribute all parallel agent token usage to the correct trace.
+		def _worker_initializer(tid: str) -> None:
+			LangFuseTracer.set_current_trace_id(tid)
+
+		with ThreadPoolExecutor(max_workers=2, initializer=_worker_initializer, initargs=(trace_id,)) as executor:
 			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context, perspective)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client, perspective)
 

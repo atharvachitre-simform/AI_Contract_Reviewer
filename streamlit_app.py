@@ -268,7 +268,7 @@ def render_chat_tab(contract_id: str) -> None:
 
             with col_img:
                 with st.expander(f"Image: Rendered Page {selected_page}", expanded=False):
-                    st.image(str(page_path), caption=f"Rendered Page {selected_page}", use_container_width=True)
+                    st.image(str(page_path), caption=f"Rendered Page {selected_page}", width="stretch")
         else:
             st.info("No rendered document pages available. To enable visual document viewer, upload a PDF contract.")
             uploaded_screenshot = st.file_uploader(
@@ -458,22 +458,14 @@ def main() -> None:
         st.session_state["active_tab"] = "Review Workspace"
 
     # Resolve active chatbot state and contract ID
+    st.session_state["active_tab"] = "Review Workspace"
     chatbot_active = False
     contract_id_for_sidebar = None
-    if st.session_state["active_tab"] == "💬 General Chatbot / Q&A":
-        chatbot_active = True
-        contract_id_for_sidebar = "general"
-    elif st.session_state["active_tab"] == "Review Workspace" and st.session_state.get("review_state") is not None and st.session_state.get("active_view") == "💬 Interactive Q&A & Viewer":
+    if st.session_state.get("review_state") is not None and st.session_state.get("active_view") == "💬 Interactive Q&A & Viewer":
         chatbot_active = True
         contract_id_for_sidebar = getattr(st.session_state["review_state"], "contract_id", None)
 
     with st.sidebar:
-        st.header("Navigation")
-        st.session_state["active_tab"] = st.radio(
-            "Go to:",
-            ["Review Workspace", "💬 General Chatbot / Q&A"],
-            index=0 if st.session_state["active_tab"] == "Review Workspace" else 1
-        )
         
         if chatbot_active and contract_id_for_sidebar:
             st.divider()
@@ -529,8 +521,7 @@ def main() -> None:
                     service.local_summary_path.unlink()
                 st.rerun()
         else:
-            st.header("Available Models")
-            selected_model = st.radio("Model / pipeline", MODEL_OPTIONS)
+            selected_model = "Full Contract Review Pipeline"
             
             st.header("Review Perspective")
             perspective = st.selectbox(
@@ -539,10 +530,7 @@ def main() -> None:
                 help="Review the contract from the perspective of a specific party to tailor risk scoring and red flags."
             )
 
-    # Route immediately to General Chat Mode if selected
-    if st.session_state["active_tab"] == "💬 General Chatbot / Q&A":
-        render_chat_tab("general")
-        return
+
 
     uploaded_file = st.file_uploader(
         "Upload contract text or PDF",

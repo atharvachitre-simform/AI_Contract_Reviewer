@@ -172,6 +172,8 @@ class AzureOpenAIWrapper:
         self.groq_client: Any | None = None
         self.use_openai_fallback = False
         self.use_groq = False
+        self.agent_name = "default"
+        self._last_response = None
 
         # Clean prefix if present
         is_groq_deployment = False
@@ -253,23 +255,61 @@ class AzureOpenAIWrapper:
     )
     def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800, response_format: dict[str, Any] | None = None, system_prompt: str | None = None) -> str:
         """Send chat completion with content-filtering detection, sanitization, and fallback resilience."""
+        res = ""
         try:
-            return self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
+            self._last_response = None
+            res = self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
         except Exception as e:
             if is_content_filter_error(e):
                 logger.warning("Azure OpenAI content filter triggered. Attempting prompt sanitization & retry...")
                 sanitized_prompt = sanitize_prompt_for_content_filter(prompt)
                 sanitized_system = sanitize_prompt_for_content_filter(system_prompt) if system_prompt else None
                 try:
-                    return self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
+                    res = self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
                 except Exception as retry_err:
                     if is_content_filter_error(retry_err):
                         logger.error("Sanitized prompt still triggered Azure content policy. Generating graceful fallback response.")
                         if response_format is not None:
-                            return get_fallback_json_for_prompt(prompt)
-                        return "Content filtered: Request blocked by Azure content policies."
-                    raise
-            raise
+                            res = get_fallback_json_for_prompt(prompt)
+                        else:
+                            res = "Content filtered: Request blocked by Azure content policies."
+                    else:
+                        raise
+            else:
+                raise
+
+        # Log to Langfuse using the v3 API via log_generation()
+        try:
+            from .langfuse_tracer import LangFuseTracer
+            tracer = LangFuseTracer()
+            trace_id = tracer.get_current_trace_id()
+            if trace_id and tracer.enabled:
+                p_tok = 0
+                c_tok = 0
+                t_tok = 0
+                if getattr(self, "_last_response", None) is not None:
+                    usage = getattr(self._last_response, "usage", None)
+                    if usage:
+                        p_tok = getattr(usage, "prompt_tokens", 0) or 0
+                        c_tok = getattr(usage, "completion_tokens", 0) or 0
+                        t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
+
+                sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+                messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
+                tracer.log_generation(
+                    name=getattr(self, "agent_name", "chat_complete"),
+                    model=self.deployment_name,
+                    input_messages=messages,
+                    output=res,
+                    input_tokens=p_tok,
+                    output_tokens=c_tok,
+                    total_tokens=t_tok,
+                    trace_id=trace_id,
+                )
+        except Exception as lf_err:
+            logger.debug(f"Failed to log generation to Langfuse: {lf_err}")
+
+        return res
 
     def _is_rate_limit_error(self, exception: Exception) -> bool:
         exc_name = type(exception).__name__
@@ -323,6 +363,7 @@ class AzureOpenAIWrapper:
                     raise
             if not getattr(response, "choices", None):
                 return ""
+            self._last_response = response
             return response.choices[0].message.content or ""
 
         try:
@@ -351,6 +392,7 @@ class AzureOpenAIWrapper:
                         raise
                 if not response.choices:
                     return ""
+                self._last_response = response
                 return response.choices[0].message.content or ""
 
             if self.openai_client is not None:
@@ -366,6 +408,7 @@ class AzureOpenAIWrapper:
                 )
                 if not getattr(response, "choices", None):
                     return ""
+                self._last_response = response
                 choice = response.choices[0]
                 message = getattr(choice, "message", None)
                 if message is not None:
@@ -380,33 +423,69 @@ class AzureOpenAIWrapper:
                     deployment_name=f"groq:{config.GROQ_DEFAULT_MODEL}"
                 )
                 if fallback_wrapper.is_configured():
-                    return fallback_wrapper.chat_complete(
+                    res = fallback_wrapper.chat_complete(
                         prompt=prompt,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         response_format=response_format,
                         system_prompt=system_prompt
                     )
+                    self._last_response = getattr(fallback_wrapper, "_last_response", None)
+                    return res
             raise
 
         raise RuntimeError("Azure OpenAI client is not configured")
 
     def chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> str:
         """Send multimodal vision request with content-filtering detection, sanitization, and fallback resilience."""
+        res = ""
         try:
-            return self._execute_chat_complete_multimodal(messages, max_tokens, temperature)
+            self._last_response = None
+            res = self._execute_chat_complete_multimodal(messages, max_tokens, temperature)
         except Exception as e:
             if is_content_filter_error(e):
                 logger.warning("Azure OpenAI content filter triggered on multimodal request. Sanitizing messages and retrying...")
                 sanitized_messages = sanitize_messages_for_content_filter(messages)
                 try:
-                    return self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
+                    res = self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
                 except Exception as retry_err:
                     if is_content_filter_error(retry_err):
                         logger.error("Sanitized multimodal request still triggered content filter. Returning graceful fallback.")
-                        return "Content filtered: Multimodal request blocked by Azure content policies."
-                    raise
-            raise
+                        res = "Content filtered: Multimodal request blocked by Azure content policies."
+                    else:
+                        raise
+            else:
+                raise
+
+        # Log to Langfuse using the v3 API via log_generation()
+        try:
+            from .langfuse_tracer import LangFuseTracer
+            tracer = LangFuseTracer()
+            trace_id = tracer.get_current_trace_id()
+            if trace_id and tracer.enabled:
+                p_tok = 0
+                c_tok = 0
+                t_tok = 0
+                if getattr(self, "_last_response", None) is not None:
+                    usage = getattr(self._last_response, "usage", None)
+                    if usage:
+                        p_tok = getattr(usage, "prompt_tokens", 0) or 0
+                        c_tok = getattr(usage, "completion_tokens", 0) or 0
+                        t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
+                tracer.log_generation(
+                    name=getattr(self, "agent_name", "chat_complete_multimodal"),
+                    model=self.deployment_name,
+                    input_messages=messages,
+                    output=res,
+                    input_tokens=p_tok,
+                    output_tokens=c_tok,
+                    total_tokens=t_tok,
+                    trace_id=trace_id,
+                )
+        except Exception as lf_err:
+            logger.debug(f"Failed to log generation to Langfuse in multimodal: {lf_err}")
+
+        return res
 
     def _execute_chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> str:
         if not self.is_configured():
@@ -422,6 +501,7 @@ class AzureOpenAIWrapper:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+            self._last_response = response
             return response.choices[0].message.content
 
         try:
@@ -432,6 +512,7 @@ class AzureOpenAIWrapper:
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+                self._last_response = response
                 return response.choices[0].message.content
             elif self.azure_client is not None:
                 response = self.azure_client.get_chat_completions(
@@ -440,6 +521,7 @@ class AzureOpenAIWrapper:
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+                self._last_response = response
                 return response.choices[0].message.content
         except Exception as e:
             if self._is_rate_limit_error(e) and config.GROQ_API_KEY and not self.use_groq:
@@ -450,11 +532,13 @@ class AzureOpenAIWrapper:
                     deployment_name="groq:llama-3.2-11b-vision-preview"
                 )
                 if fallback_wrapper.is_configured():
-                    return fallback_wrapper.chat_complete_multimodal(
+                    res = fallback_wrapper.chat_complete_multimodal(
                         messages=messages,
                         max_tokens=max_tokens,
                         temperature=temperature
                     )
+                    self._last_response = getattr(fallback_wrapper, "_last_response", None)
+                    return res
             raise
 
         raise RuntimeError("No configured client supports multimodal completions.")
@@ -596,12 +680,14 @@ class AzureClientFactory:
             if not groq_key:
                 logger.warning(f"Groq model {deployment} requested for {agent_name} but GROQ_API_KEY is not set.")
                 return None
-            return AzureOpenAIWrapper(
+            w = AzureOpenAIWrapper(
                 endpoint="",
                 api_key=groq_key,
                 deployment_name=deployment,
                 api_version=""
             )
+            w.agent_name = agent_name
+            return w
 
         # Route Gemini/Gemma deployments to Google API base URL if no agent-specific endpoint is configured
         if (deployment.startswith("gemini-") or deployment.startswith("gemma-")) and not agent_endpoint:
@@ -609,18 +695,22 @@ class AzureClientFactory:
             if not gemini_key:
                 logger.warning(f"Gemini/Gemma model {deployment} requested for {agent_name} but GEMINI_API_KEY is not set.")
                 return None
-            return AzureOpenAIWrapper(
+            w = AzureOpenAIWrapper(
                 endpoint="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=gemini_key,
                 deployment_name=deployment,
                 api_version=""
             )
+            w.agent_name = agent_name
+            return w
             
         if not endpoint or not api_key:
             logger.warning(f"Endpoint or API key not configured for agent {agent_name} (deployment: {deployment}).")
             return None
             
-        return AzureOpenAIWrapper(endpoint, api_key, deployment)
+        w = AzureOpenAIWrapper(endpoint, api_key, deployment)
+        w.agent_name = agent_name
+        return w
 
     def _init_redis_client(self) -> Redis | None:
         if not self.redis_url:
@@ -652,10 +742,11 @@ class AzureClientFactory:
             from qdrant_client import QdrantClient
             return QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         except ImportError:
-            logger.warning("qdrant-client is not installed; Qdrant integration is disabled.")
+            # Not installed — expected in deployments that don't use Qdrant
+            logger.debug("qdrant-client is not installed; Qdrant integration is disabled.")
             return None
         except Exception as e:
-            logger.warning(f"Qdrant client initialization failed: {e}")
+            logger.debug(f"Qdrant client initialization failed: {e}")
             return None
 
     @property
@@ -787,10 +878,29 @@ class AzureClientFactory:
                 
                 results = []
                 for item in response:
-                    results.append({"document": item, "score": getattr(item, "@search.score", None)})
+                    # Unwrap Azure Search result into a flat dict for consistent downstream consumption
+                    doc_text = (
+                        getattr(item, "content", None)
+                        or getattr(item, "text", None)
+                        or getattr(item, "chunk", None)
+                        or (item.get("content") if isinstance(item, dict) else None)
+                        or str(item)
+                    )
+                    results.append({
+                        "document": item,
+                        "text": doc_text,
+                        "score": getattr(item, "@search.score", None),
+                        "clause_type": getattr(item, "clause_type", None) or (item.get("clause_type") if isinstance(item, dict) else None),
+                        "source_page": getattr(item, "source_page", None) or (item.get("source_page") if isinstance(item, dict) else None),
+                    })
                 return results
             except Exception as err:
-                logger.warning(f"Azure AI Search query failed: {err}. Trying Qdrant fallback.")
+                err_str = str(err)
+                # Index-not-found is a configuration issue, not a runtime error — log quietly
+                if "was not found" in err_str or "404" in err_str:
+                    logger.debug(f"Azure AI Search index not found for '{index_name}': {err}")
+                else:
+                    logger.warning(f"Azure AI Search query failed: {err}")
 
         # 3. Fallback to Qdrant (if configured and query vector was successfully generated)
         if self.qdrant_client and query_vector:
@@ -807,7 +917,7 @@ class AzureClientFactory:
                 logger.info(f"Successfully retrieved {len(qdrant_results)} results from Qdrant fallback collection {index_name}.")
                 return qdrant_results
             except Exception as q_err:
-                logger.warning(f"Qdrant fallback query failed: {q_err}")
+                logger.debug(f"Qdrant fallback query failed: {q_err}")
 
         return [{"index": index_name, "query": query, "result": "Knowledge base integration is not configured or failed."}]
 
@@ -991,7 +1101,8 @@ class MemoryStore:
                             "clause_type": clause_type,
                             "text": raw_text,
                             "confidence": confidence,
-                            "source_page": getattr(c, "page_number", None) or (c.get("page_number") if isinstance(c, dict) else None)
+                            # Fix: ClauseSpan uses 'source_page', not 'page_number'
+                            "source_page": getattr(c, "source_page", None) or (c.get("source_page") if isinstance(c, dict) else None)
                         }
                     ))
                 except Exception as e:

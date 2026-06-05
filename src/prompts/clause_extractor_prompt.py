@@ -6,6 +6,7 @@ from typing import Any
 import json
 
 SYSTEM_INSTRUCTION = (
+    "CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.\n\n"
     "You are a contract analysis agent. Your task is to extract structured clauses and contract metadata from the provided contract text. "
     "Keep working until the extraction is complete, and return only valid JSON with no extra commentary."
 )

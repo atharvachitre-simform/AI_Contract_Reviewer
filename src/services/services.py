@@ -317,6 +317,7 @@ class ContractReviewService:
 
         logger.info("Starting contract review process")
         self.current_trace_id = self.tracer.create_trace_id(seed=contract_id or session_id)
+        self.tracer.set_current_trace_id(self.current_trace_id)
         self._trace(
             "process_contract",
             "Begin end-to-end contract review.",
@@ -379,15 +380,23 @@ class ContractReviewService:
             index_name: Name of the search index (legal, contracts, or redflags)
             
         Returns:
-            List of relevant documents
+            List of relevant documents, or empty list when retrieval is unavailable or fails.
         """
         logger.info(f"Retrieving from knowledge base - index: {index_name}, query: {query}")
         if self.azure.search_endpoint and self.azure.search_api_key:
             try:
-                return self.azure.search_documents(query, index_name)
+                results = self.azure.search_documents(query, index_name)
+                # Filter out any error/placeholder dicts that have no document content
+                clean_results = [
+                    r for r in results
+                    if isinstance(r, dict) and (r.get("document") or r.get("text") or r.get("content"))
+                ]
+                return clean_results
             except Exception as err:
                 logger.warning(f"Azure Search query failed: {err}")
-        return [{"index": index_name, "query": query, "result": "Knowledge base integration is not configured or failed."}]
+        # Return empty list so callers don't treat failure as valid context
+        return []
+
 
     def extract_from_pdf(self, pdf_path: str) -> str:
         """Extract text from PDF document.
