@@ -96,8 +96,11 @@ def clean_extracted_pages(pages: list[str]) -> str:
             
         cleaned_pages.append("\n".join(cleaned_lines))
         
-    # Join the pages with standard separation
-    merged_text = "\n\n".join(cleaned_pages)
+    # Join the pages with page markers to facilitate page mapping
+    cleaned_pages_with_markers = []
+    for idx, page_text in enumerate(cleaned_pages, start=1):
+        cleaned_pages_with_markers.append(f"--- PAGE {idx} ---\n{page_text}")
+    merged_text = "\n\n".join(cleaned_pages_with_markers)
     
     # Return cleaned text
     return merged_text

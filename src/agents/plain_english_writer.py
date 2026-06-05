@@ -26,6 +26,7 @@ class PlainEnglishWriterState(TypedDict):
 	plain_english_risk_notes: list[str]
 	llm_attempt_success: bool
 	error_messages: list[str]
+	perspective: str | None
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -89,9 +90,22 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 		prompt = build_plain_english_writer_prompt(
 			clauses_text,
 			risks_text=state.get("risks_text", ""),
-			red_flags_text=state.get("red_flags_text", "")
+			red_flags_text=state.get("red_flags_text", ""),
+			perspective=state.get("perspective"),
 		)
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS)
+		sep = "CONTRACT CLAUSES TO ANALYZE:\n"
+		if sep in prompt:
+			system_prompt, user_prompt = prompt.split(sep, 1)
+			user_prompt = sep + user_prompt
+		else:
+			system_prompt = None
+			user_prompt = prompt
+		response_text = llm_client.chat_complete(
+			user_prompt,
+			temperature=0.0,
+			max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS,
+			system_prompt=system_prompt,
+		)
 
 		parsed = _parse_plain_english_response(response_text)
 		if not parsed or not isinstance(parsed, dict):
@@ -175,7 +189,7 @@ class PlainEnglishWriterAgent:
 
 		return workflow.compile()
 
-	def write(self, clause_extraction: ClauseExtractorOutput, risks_text: str = "", red_flags_text: str = "") -> PlainEnglishWriterOutput:
+	def write(self, clause_extraction: ClauseExtractorOutput, risks_text: str = "", red_flags_text: str = "", perspective: str | None = None) -> PlainEnglishWriterOutput:
 		initial_state: PlainEnglishWriterState = {
 			"clause_extraction": clause_extraction,
 			"risks_text": risks_text,
@@ -186,6 +200,7 @@ class PlainEnglishWriterAgent:
 			"plain_english_risk_notes": [],
 			"llm_attempt_success": False,
 			"error_messages": [],
+			"perspective": perspective,
 		}
 
 		graph = self._create_graph(self.llm_client)
@@ -203,7 +218,8 @@ def generate_plain_english(
 	clause_extraction: ClauseExtractorOutput,
 	llm_client: Any | None = None,
 	risks_text: str = "",
-	red_flags_text: str = ""
+	red_flags_text: str = "",
+	perspective: str | None = None,
 ) -> PlainEnglishWriterOutput:
 	"""Convenience function for plain-English summaries."""
 	if llm_client is None:
@@ -212,4 +228,4 @@ def generate_plain_english(
 			llm_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
 		except Exception:
 			pass
-	return PlainEnglishWriterAgent(llm_client=llm_client).write(clause_extraction, risks_text, red_flags_text)
+	return PlainEnglishWriterAgent(llm_client=llm_client).write(clause_extraction, risks_text, red_flags_text, perspective=perspective)

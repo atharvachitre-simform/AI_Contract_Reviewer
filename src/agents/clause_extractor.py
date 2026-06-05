@@ -30,7 +30,7 @@ from ..helpers.contract_analysis import (
     extract_numbers_and_periods,
     normalize_whitespace,
 )
-from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata
+from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata, ContractParty
 from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt
 from ..helpers.coverage_validator import calculate_coverage
 
@@ -263,23 +263,58 @@ def confidence_validation_node(state: ClauseExtractorState) -> ClauseExtractorSt
     return state
 
 
+def get_page_number_for_text(full_text: str, clause_text: str) -> int | None:
+    """Find the page number where a clause appears by locating preceding page markers."""
+    if not clause_text or not full_text:
+        return None
+    
+    # Normalize spaces to match regardless of spacing differences
+    norm_clause = re.sub(r"\s+", " ", clause_text.strip().lower())
+    norm_full = re.sub(r"\s+", " ", full_text.lower())
+    
+    idx = norm_full.find(norm_clause[:100]) # search for the start of the clause
+    if idx == -1:
+        return None
+        
+    preceding_text = norm_full[:idx]
+    matches = list(re.finditer(r"---\s*page\s*(\d+)\s*---", preceding_text))
+    if matches:
+        return int(matches[-1].group(1))
+    return 1
+
+
 def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
     """Step 5: Build final output with metadata."""
     method = state.get("used_extraction_method", "llm")
     logger.info(f"Clause extraction completed using method: {method}")
     
     # Calculate coverage completeness
+    full_text = state.get("cleaned_text") or state.get("contract_text") or ""
     coverage_info = calculate_coverage(
-        contract_text=state.get("cleaned_text") or state.get("contract_text") or "",
+        contract_text=full_text,
         clauses=state.get("clauses") or [],
     )
+    
+    # Count total pages and map clauses to source page numbers
+    page_markers = re.findall(r"---\s*page\s*(\d+)\s*---", full_text.lower())
+    page_count = len(page_markers) if page_markers else 1
+    
+    def map_clause_pages(clause_list: list[Any]):
+        for c in clause_list:
+            page = get_page_number_for_text(full_text, c.raw_text)
+            c.page_number = page
+            c.source_page = page
+            if getattr(c, "subclauses", None):
+                map_clause_pages(c.subclauses)
+                
+    map_clause_pages(state.get("clauses") or [])
     
     return ClauseExtractorOutput(
         metadata=state["metadata"],
         clauses=state["clauses"],
         cuad_labels=state["cuad_labels"],
         raw_contract_text=state["cleaned_text"],
-        page_count=None,
+        page_count=page_count,
         extraction_method=method,
         coverage_score=coverage_info["coverage_score"],
         highest_clause_number=coverage_info["highest_clause_number"],
@@ -499,7 +534,7 @@ def _merge_metadata(existing: ContractMetadata, new_metadata: dict[str, Any]) ->
     
     if existing.parties == [] and isinstance(new_metadata.get("parties"), list):
         existing.parties = [
-            ContractMetadata.__fields__["parties"].outer_type_.__args__[0](name=str(item), role=None)
+            ContractParty(name=str(item), role=None)
             if isinstance(item, str)
             else None
             for item in new_metadata.get("parties", [])

@@ -39,7 +39,30 @@ def build_risk_scorer_prompt(
     
     perspective_instruction = ""
     if perspective:
-        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are reviewing this contract from the perspective of the {perspective.upper()}. Prioritize identifying and flagging terms that are unfavorable to the {perspective.upper()} and tailor the negotiation suggestions to protect the {perspective.upper()}'s interests.\n\n"
+        upper_p = perspective.upper()
+        if upper_p == "CUSTOMER":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: CUSTOMER\n"
+                "You are reviewing this contract from the perspective of the CUSTOMER. Your primary goal is to minimize cost, limit liability, maximize warranty protections, and ensure favorable termination and service level terms.\n"
+                "Specifically:\n"
+                "- Flag Vendor-favorable terms as HIGH risk (e.g., broad Vendor limitations of liability, Vendor-friendly IP assignment, Customer indemnification of Vendor, unilateral price increases, auto-renewals with no opt-out, high termination fees).\n"
+                "- Rate Customer-favorable terms as LOW risk (e.g., uncapped Vendor liability, broad Vendor warranties, Customer termination for convenience without penalty).\n"
+                "- Tailor negotiation recommendations to aggressively shift risk to the Vendor, request mutual indemnification, capped liability, and opt-out rights.\n\n"
+            )
+        elif upper_p == "VENDOR":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: VENDOR\n"
+                "You are reviewing this contract from the perspective of the VENDOR. Your primary goal is to protect your Intellectual Property, limit your liability, secure predictable revenue/payment terms, and prevent unlimited warranty or indemnity exposure.\n"
+                "Specifically:\n"
+                "- Flag Customer-favorable terms as HIGH risk (e.g., uncapped Vendor liability, Customer ownership of Vendor pre-existing IP, broad Vendor indemnity for Customer, Customer termination for convenience with no payment for work done, long payment terms over 30 days).\n"
+                "- Rate Vendor-favorable terms as LOW risk (e.g., standard Vendor caps on liability, disclaimer of consequential damages, payment due on receipt).\n"
+                "- Tailor negotiation recommendations to protect the Vendor's revenue, limit warranty periods, add liability caps, and secure IP ownership.\n\n"
+            )
+        elif upper_p == "NEUTRAL":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: NEUTRAL\n"
+                "Review the contract from an unbiased, neutral perspective. Identify terms that deviate from standard commercial guidelines or present extreme risk to either party, providing balanced and fair negotiation recommendations.\n\n"
+            )
 
     prior_context_block = ""
     if memory_context:

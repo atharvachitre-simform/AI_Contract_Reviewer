@@ -29,9 +29,11 @@ def test_retry_on_transient_error():
         mock_response
     ]
     
-    # Patch tenacity wait_exponential to wait 0 seconds in tests
-    with patch("tenacity.wait_exponential", return_value=lambda *args, **kwargs: 0):
+    # Patch tenacity wait_exponential to wait 0 seconds in tests and clear Groq key
+    with patch("tenacity.wait_exponential", return_value=lambda *args, **kwargs: 0), \
+         patch("src.services.azure_clients.config.GROQ_API_KEY", ""):
         result = wrapper.chat_complete("Test prompt")
         
     assert result == "Success response"
     assert mock_client.chat.completions.create.call_count == 3
+
