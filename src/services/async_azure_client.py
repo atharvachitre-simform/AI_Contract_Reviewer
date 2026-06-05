@@ -66,7 +66,32 @@ class AsyncAzureOpenAIWrapper:
                 resp = await client.post(url, json=payload, headers=headers, timeout=30)
                 resp.raise_for_status()
                 data = resp.json()
-                return data["choices"][0]["message"]["content"] or ""
+                content = data["choices"][0]["message"]["content"] or ""
+                # Log to Langfuse
+                try:
+                    from .langfuse_tracer import LangFuseTracer
+                    tracer = LangFuseTracer()
+                    trace_id = tracer.get_current_trace_id()
+                    if trace_id and tracer.enabled:
+                        usage = data.get("usage", {})
+                        p_tok = usage.get("prompt_tokens", 0)
+                        c_tok = usage.get("completion_tokens", 0)
+                        t_tok = usage.get("total_tokens", p_tok + c_tok)
+                        tracer.client.generation(
+                            trace_id=trace_id,
+                            name=getattr(self._wrapper, "agent_name", "chat_complete"),
+                            model=self.deployment_name,
+                            input=messages,
+                            output=content,
+                            usage={
+                                "input": p_tok,
+                                "output": c_tok,
+                                "total": t_tok
+                            }
+                        )
+                except Exception as lf_err:
+                    logger.debug(f"Failed to log generation to Langfuse in async: {lf_err}")
+                return content
 
         # Azure/OpenAI SDKs are sync – run in executor
         return await self._run_sync_in_executor(
@@ -103,7 +128,32 @@ class AsyncAzureOpenAIWrapper:
                 resp = await client.post(url, json=payload, headers=headers, timeout=30)
                 resp.raise_for_status()
                 data = resp.json()
-                return data["choices"][0]["message"]["content"] or ""
+                content = data["choices"][0]["message"]["content"] or ""
+                # Log to Langfuse
+                try:
+                    from .langfuse_tracer import LangFuseTracer
+                    tracer = LangFuseTracer()
+                    trace_id = tracer.get_current_trace_id()
+                    if trace_id and tracer.enabled:
+                        usage = data.get("usage", {})
+                        p_tok = usage.get("prompt_tokens", 0)
+                        c_tok = usage.get("completion_tokens", 0)
+                        t_tok = usage.get("total_tokens", p_tok + c_tok)
+                        tracer.client.generation(
+                            trace_id=trace_id,
+                            name=getattr(self._wrapper, "agent_name", "chat_complete_multimodal"),
+                            model=self.deployment_name,
+                            input=messages,
+                            output=content,
+                            usage={
+                                "input": p_tok,
+                                "output": c_tok,
+                                "total": t_tok
+                            }
+                        )
+                except Exception as lf_err:
+                    logger.debug(f"Failed to log generation to Langfuse in async multimodal: {lf_err}")
+                return content
 
         # Fallback to sync multimodal method
         return await self._run_sync_in_executor(

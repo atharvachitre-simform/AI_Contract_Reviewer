@@ -166,13 +166,16 @@ class ContractChatService:
                             c_text = getattr(c, "raw_text", "") or (c.get("raw_text", "") if isinstance(c, dict) else "")
                             c_type = getattr(c, "clause_type", "") or (c.get("clause_type", "") if isinstance(c, dict) else "")
                             c_page = getattr(c, "source_page", None) or (c.get("source_page") if isinstance(c, dict) else None)
-                            
+
                             word_overlap = len(query_words.intersection(set(re.findall(r"\w+", c_text.lower() + " " + c_type.lower()))))
-                            ranked_clauses.append((word_overlap, {
-                                "clause_type": c_type,
-                                "text": c_text,
-                                "source_page": c_page
-                            }))
+                            # Only include clauses with at least 2 matching query words
+                            # to avoid injecting completely irrelevant context
+                            if word_overlap >= 2:
+                                ranked_clauses.append((word_overlap, {
+                                    "clause_type": c_type,
+                                    "text": c_text,
+                                    "source_page": c_page
+                                }))
                         
                         # Sort descending by word overlap
                         ranked_clauses.sort(key=lambda x: x[0], reverse=True)
@@ -293,6 +296,15 @@ class ContractChatService:
         prompt_parts = []
         if context:
             prompt_parts.append(f"RETRIEVED CONTRACT CONTEXT:\n{context}\n")
+        else:
+            # Explicitly tell the model that no clause context was retrieved so it
+            # does not fabricate clause citations or evidence.
+            prompt_parts.append(
+                "RETRIEVED CONTRACT CONTEXT: None available. "
+                "The contract clauses could not be retrieved for this session. "
+                "Do not fabricate contract clause text or citations. "
+                "Answer based on general legal knowledge only and clearly state that no document context is available."
+            )
         if summary:
             prompt_parts.append(f"SUMMARY OF PRIOR CONVERSATION:\n{summary}\n")
         prompt_parts.append(f"USER QUESTION: {question}")

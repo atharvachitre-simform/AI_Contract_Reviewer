@@ -102,19 +102,20 @@ AI_Contract_Reviewer/
 
 ## Agents
 
-The contract review pipeline currently implements the following agents:
+The contract review pipeline currently implements the following agents (all fully LLM-driven):
 
-1. **Clause Extractor** - LLM-driven with LangGraph state workflow and heuristic fallback
-2. **Risk Scorer** - Heuristic-based risk evaluation
-3. **Obligation Finder** - Heuristic-based obligation extraction
-4. **Red Flag Detector** - Heuristic pattern detection for risky terms
-5. **Plain English Writer** - Heuristic plain-language summarization
-6. **Report Assembler** - Heuristic summary and verdict assembly
+1. **Clause Extractor** - `GPT-4o` driven LangGraph state workflow for structured hierarchical extraction
+2. **Obligation Finder** - `GPT-4o-mini` driven extraction of party obligations and deadlines
+3. **Red Flag Detector** - `GPT-4o-mini` driven LangGraph workflow for identifying risky patterns
+4. **Risk Scorer** - `GPT-4o` driven LangGraph workflow with RAG for quantitative risk scoring
+5. **Plain English Writer** - `GPT-4o-mini` driven LangGraph workflow for non-legal summaries
+6. **Report Assembler** - `GPT-4o` driven LangGraph workflow for holistic synthesis and verdict
 
 ## Notes
 
-- The Clause Extractor is the most production-ready agent and uses a LangGraph workflow in `src/agents/clause_extractor.py`.
-- The remaining agents are integrated into the review workflow and currently use local heuristic logic.
+- All core agents are fully operational and powered by Azure OpenAI (`GPT-4o` and `GPT-4o-mini`).
+- The pipeline executes sequentially and in parallel using a cooperative context-passing architecture.
+- Qdrant integration is fully supported for semantic clause memory.
 - Azure Document Intelligence extraction is implemented with a local PyMuPDF fallback.
 - `uv` is the preferred package manager for environment and dependency management.
 

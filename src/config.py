@@ -47,7 +47,7 @@ RELEVANCE_GATING_MAX_CHARS = int(os.getenv("RELEVANCE_GATING_MAX_CHARS", "1500")
 # --- Chat and Page Rendering Configuration ---
 CHAT_MAX_HISTORY_TURNS = int(os.getenv("CHAT_MAX_HISTORY_TURNS", "10"))
 CHAT_TOP_K_CLAUSES = int(os.getenv("CHAT_TOP_K_CLAUSES", "5"))
-PAGE_IMAGE_DPI = int(os.getenv("PAGE_IMAGE_DPI", "150"))
+PAGE_IMAGE_DPI = int(os.getenv("PAGE_IMAGE_DPI", "300"))
 STORE_PAGE_IMAGES = os.getenv("STORE_PAGE_IMAGES", "true").lower() == "true"
 
 # --- Map-Reduce Chunk Size ---
