@@ -40,7 +40,7 @@ PROMPT_GUIDELINES = (
 )
 
 
-def build_plain_english_writer_prompt(clauses_text: str, risks_text: str = "", red_flags_text: str = "") -> str:
+def build_plain_english_writer_prompt(clauses_text: str, risks_text: str = "", red_flags_text: str = "", perspective: str | None = None) -> str:
     """Build a prompt for the plain English writer agent."""
     context_section = ""
     if risks_text or red_flags_text:
@@ -49,8 +49,13 @@ def build_plain_english_writer_prompt(clauses_text: str, risks_text: str = "", r
             f"Risks Detected:\n{risks_text}\n\n"
             f"Red Flags Detected:\n{red_flags_text}\n\n"
         )
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are summarizing this contract from the perspective of the {perspective.upper()}. In your executive summary and key points, focus on terms that affect the {perspective.upper()}, explaining their business implications in simple terms.\n\n"
+
     return (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        f"{perspective_instruction}"
         "INSTRUCTIONS:\n"
         f"{PROMPT_GUIDELINES}\n\n"
         "OUTPUT_SCHEMA:\n"

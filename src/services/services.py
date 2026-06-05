@@ -311,6 +311,8 @@ class ContractReviewService:
             )
 
         session_id = contract_id or str(uuid.uuid4())
+        if not contract_id:
+            contract_id = session_id
         memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
 
         logger.info("Starting contract review process")
@@ -340,6 +342,9 @@ class ContractReviewService:
             )
             state.trace_id = self.current_trace_id
             self._save_memory(contract_id, session_id, state)
+            self.save_checkpoint(session_id, state)
+            if contract_id:
+                self.save_checkpoint(contract_id, state)
             self._trace(
                 "process_contract",
                 "End-to-end contract review completed.",

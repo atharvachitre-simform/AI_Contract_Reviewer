@@ -207,7 +207,19 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 			perspective=state.get("perspective"),
 		)
 
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS)
+		sep = "AGENT INPUTS:\n"
+		if sep in prompt:
+			system_prompt, user_prompt = prompt.split(sep, 1)
+			user_prompt = sep + user_prompt
+		else:
+			system_prompt = None
+			user_prompt = prompt
+		response_text = llm_client.chat_complete(
+			user_prompt,
+			temperature=0.0,
+			max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS,
+			system_prompt=system_prompt,
+		)
 
 		parsed = _parse_report_response(response_text)
 		if not parsed or not isinstance(parsed, dict):

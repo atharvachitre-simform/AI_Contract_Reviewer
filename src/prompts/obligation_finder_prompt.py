@@ -24,7 +24,7 @@ OUTPUT_SCHEMA = {
 }
 
 
-def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[str, Any] | None = None) -> str:
+def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[str, Any] | None = None, perspective: str | None = None) -> str:
     """Build a prompt for the obligation finder agent from ClauseExtractorOutput or list of clauses."""
     # Accept either the full output object or raw list
     clauses = []
@@ -57,8 +57,13 @@ def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[
             if flag_names:
                 prior_context_block = f"PRIOR REVIEW WARNINGS:\nPrevious review flagged issues in these areas: {', '.join(flag_names)}. Pay extra attention to obligations or compliance requirements related to these subjects.\n\n"
 
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are extracting obligations from the perspective of the {perspective.upper()}. Pay extra attention to obligations, deadlines, or payment conditions that apply to or protect the {perspective.upper()}.\n\n"
+
     prompt = (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        f"{perspective_instruction}"
         "INSTRUCTIONS:\n"
         "- Identify all obligations and populate the required fields.\n"
         "- For missing values use null.\n"

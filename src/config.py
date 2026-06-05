@@ -38,8 +38,24 @@ SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "5"))
 # --- Qdrant Backup Vector Store ---
 QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "contracts-memory").strip()
 
 # --- Memory and Relevance Gating Configuration ---
 MEMORY_SHORT_TERM_TTL_SECONDS = int(os.getenv("MEMORY_SHORT_TERM_TTL_SECONDS", "7200"))
 RELEVANCE_GATING_MAX_CHARS = int(os.getenv("RELEVANCE_GATING_MAX_CHARS", "1500"))
+
+# --- Chat and Page Rendering Configuration ---
+CHAT_MAX_HISTORY_TURNS = int(os.getenv("CHAT_MAX_HISTORY_TURNS", "10"))
+CHAT_TOP_K_CLAUSES = int(os.getenv("CHAT_TOP_K_CLAUSES", "5"))
+PAGE_IMAGE_DPI = int(os.getenv("PAGE_IMAGE_DPI", "150"))
+STORE_PAGE_IMAGES = os.getenv("STORE_PAGE_IMAGES", "true").lower() == "true"
+
+# --- Map-Reduce Chunk Size ---
+AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "20"))
+
+# --- Groq Configuration ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()
+
+
 

@@ -183,68 +183,90 @@ class RiskScorerAgent:
 
         try:
             clause_extraction = state["clause_extraction"]
-            clauses_text = "\n\n".join([
-                f"[{i+1}] Type: {clause.clause_type}\nText: {clause.raw_text[:self.CLAUSE_TEXT_TRUNCATION]}"
-                for i, clause in enumerate(clause_extraction.clauses[: self.MAX_CLAUSES_TO_ANALYZE])
-            ])
-
-            prompt = build_risk_scorer_prompt(
-                clauses_text=clauses_text,
-                reference_risks=state["reference_risks"],
-                memory_context=state.get("memory_context"),
-                perspective=state.get("perspective"),
-            )
-
-            logger.info(
-                f"Calling LLM for risk analysis with {len(clause_extraction.clauses)} clauses; sending {min(len(clause_extraction.clauses), self.MAX_CLAUSES_TO_ANALYZE)} clauses to prompt"
-            )
-            response_text = llm_client.chat_complete(
-                prompt,
-                temperature=0.0,
-                max_tokens=config.RISK_SCORER_MAX_TOKENS,
-            ).strip()
-
-            logger.debug(f"LLM response (first 300 chars): {response_text[:300]}")
-            if not response_text:
-                logger.warning("LLM returned an empty response for risk analysis")
-                state["llm_risks"] = []
-                return state
-
-            result = self._parse_risk_response(response_text)
-            if result is None:
-                logger.error(
-                    "Unable to parse JSON from LLM risk response."
-                    f" Response (first 1000 chars): {response_text[:1000]}"
-                )
-                state["llm_risks"] = []
-                return state
+            clauses_to_analyze = (clause_extraction.clauses or [])[: self.MAX_CLAUSES_TO_ANALYZE]
+            chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
+            
+            # Divide into chunks
+            chunks = [clauses_to_analyze[i:i + chunk_size] for i in range(0, len(clauses_to_analyze), chunk_size)]
             llm_risks: list[RiskIssue] = []
-            for issue_dict in result.get("issues", []):
-                if not isinstance(issue_dict, dict):
-                    logger.warning("Skipping invalid issue entry, expected dict.")
+            global_idx = 0
+
+            for chunk_idx, chunk in enumerate(chunks):
+                logger.info(f"Processing risk scorer chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
+                
+                clause_lines = []
+                for clause in chunk:
+                    clause_lines.append(
+                        f"[{global_idx + 1}] Type: {clause.clause_type}\nText: {clause.raw_text[:self.CLAUSE_TEXT_TRUNCATION]}"
+                    )
+                    global_idx += 1
+                clauses_text = "\n\n".join(clause_lines)
+
+                prompt = build_risk_scorer_prompt(
+                    clauses_text=clauses_text,
+                    reference_risks=state["reference_risks"],
+                    memory_context=state.get("memory_context"),
+                    perspective=state.get("perspective"),
+                )
+
+                # Split prompt into system_prompt and user_prompt
+                sep = "CONTRACT CLAUSES TO ANALYZE:\n"
+                if sep in prompt:
+                    system_prompt, user_prompt = prompt.split(sep, 1)
+                    user_prompt = sep + user_prompt
+                else:
+                    system_prompt = None
+                    user_prompt = prompt
+
+                response_text = llm_client.chat_complete(
+                    user_prompt,
+                    temperature=0.0,
+                    max_tokens=config.RISK_SCORER_MAX_TOKENS,
+                    system_prompt=system_prompt,
+                ).strip()
+
+                logger.debug(f"LLM response chunk {chunk_idx + 1} (first 300 chars): {response_text[:300]}")
+                if not response_text:
+                    logger.warning(f"LLM returned an empty response for risk analysis chunk {chunk_idx + 1}")
                     continue
 
-                risk_score = 0.0
-                try:
-                    risk_score = float(issue_dict.get("risk_score", 0.0))
-                except (TypeError, ValueError):
-                    logger.warning("Invalid risk_score value in issue entry, defaulting to 0.0")
-
-                risk_score = max(0.0, min(1.0, risk_score))
-                risk_level = self._normalize_risk_level(issue_dict.get("risk_level"))
-
-                llm_risks.append(
-                    RiskIssue(
-                        clause_type=str(issue_dict.get("clause_type", "Unknown")) or "Unknown",
-                        risk_level=risk_level,
-                        risk_score=risk_score,
-                        issue=str(issue_dict.get("issue", "")).strip(),
-                        rationale=str(issue_dict.get("rationale", "")).strip(),
-                        negotiation_suggestion=str(issue_dict.get("negotiation_suggestion", "")).strip(),
-                        evidence=issue_dict.get("evidence", []) if isinstance(issue_dict.get("evidence", []), list) else [str(issue_dict.get("evidence", ""))],
-                        related_categories=issue_dict.get("related_categories", []) if isinstance(issue_dict.get("related_categories", []), list) else [],
+                result = self._parse_risk_response(response_text)
+                if result is None:
+                    logger.error(
+                        f"Unable to parse JSON from LLM risk response for chunk {chunk_idx + 1}."
+                        f" Response (first 1000 chars): {response_text[:1000]}"
                     )
-                )
+                    continue
+
+                for issue_dict in result.get("issues", []):
+                    if not isinstance(issue_dict, dict):
+                        logger.warning("Skipping invalid issue entry, expected dict.")
+                        continue
+
+                    risk_score = 0.0
+                    try:
+                        risk_score = float(issue_dict.get("risk_score", 0.0))
+                    except (TypeError, ValueError):
+                        logger.warning("Invalid risk_score value in issue entry, defaulting to 0.0")
+
+                    risk_score = max(0.0, min(1.0, risk_score))
+                    risk_level = self._normalize_risk_level(issue_dict.get("risk_level"))
+
+                    llm_risks.append(
+                        RiskIssue(
+                            clause_type=str(issue_dict.get("clause_type", "Unknown")) or "Unknown",
+                            risk_level=risk_level,
+                            risk_score=risk_score,
+                            issue=str(issue_dict.get("issue", "")).strip(),
+                            rationale=str(issue_dict.get("rationale", "")).strip(),
+                            negotiation_suggestion=str(issue_dict.get("negotiation_suggestion", "")).strip(),
+                            evidence=issue_dict.get("evidence", []) if isinstance(issue_dict.get("evidence", []), list) else [str(issue_dict.get("evidence", ""))],
+                            related_categories=issue_dict.get("related_categories", []) if isinstance(issue_dict.get("related_categories", []), list) else [],
+                        )
+                    )
+
+            logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")
+            state["llm_risks"] = llm_risks
 
             logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")
             state["llm_risks"] = llm_risks

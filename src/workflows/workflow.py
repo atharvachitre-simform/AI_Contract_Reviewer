@@ -99,7 +99,7 @@ class ContractReviewWorkflow:
 		# Cooperative Sequential Flow:
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
 		with ThreadPoolExecutor(max_workers=2) as executor:
-			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context)
+			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context, perspective)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client, perspective)
 
 			state.obligation_finding = obligation_future.result()
@@ -157,7 +157,8 @@ class ContractReviewWorkflow:
 			clause_extraction,
 			plain_llm_client,
 			risks_text=risks_text,
-			red_flags_text=red_flags_text
+			red_flags_text=red_flags_text,
+			perspective=perspective,
 		)
 		state.api_trace.append({
 			"step": "plain_english",

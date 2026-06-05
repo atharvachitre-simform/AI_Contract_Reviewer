@@ -41,6 +41,7 @@ def load_text_from_upload(uploaded_file) -> str:
     name = uploaded_file.name.lower()
     data = uploaded_file.read()
     if name.endswith(".pdf"):
+        st.session_state["uploaded_pdf_bytes"] = data
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(data)
             tmp_path = Path(tmp.name)
@@ -48,6 +49,8 @@ def load_text_from_upload(uploaded_file) -> str:
             return ContractReviewService().extract_from_pdf(str(tmp_path))
         finally:
             tmp_path.unlink(missing_ok=True)
+    else:
+        st.session_state["uploaded_pdf_bytes"] = None
 
     try:
         return data.decode("utf-8")
@@ -198,6 +201,115 @@ def render_report_assembler(output: object) -> None:
                 st.write(f"- {step}")
 
 
+def render_chat_tab(contract_id: str) -> None:
+    """Render the chatbot UI session inside a Streamlit tab."""
+    from src.services.chat_service import ContractChatService
+    import re
+
+    st.subheader("💬 Interactive Contract Chat Q&A")
+    st.markdown(
+        "Ask questions about the contract. Use the document viewer below to select "
+        "and visually analyze specific pages using multimodal vision."
+    )
+
+    chat_service = ContractChatService(contract_id=contract_id)
+    summary, history = chat_service._load_history()
+
+    # 1. Document Page Viewer and Multi-modal input setup
+    pages_dir = Path("logs/pages") / contract_id
+    available_pages = []
+    if pages_dir.exists():
+        for file in pages_dir.glob("page_*.png"):
+            m = re.match(r"page_(\d+)\.png", file.name)
+            if m:
+                available_pages.append(int(m.group(1)))
+    available_pages.sort()
+
+    selected_page_bytes = None
+    selected_page = None
+
+    # Premium side-by-side or layout columns for document viewer
+    if available_pages:
+        st.write("---")
+        st.markdown("### 📄 Contract Document Viewer")
+        col_img, col_info = st.columns([2, 1])
+        with col_info:
+            selected_page = st.selectbox(
+                "Go to page number:",
+                available_pages,
+                help="Select a page to view or reference."
+            )
+            page_path = pages_dir / f"page_{selected_page}.png"
+            
+            # Allow using this page in vision QA
+            use_vision = st.checkbox("🔍 Query this page with Multimodal Vision", value=False)
+            if use_vision:
+                selected_page_bytes = page_path.read_bytes()
+                st.info(f"Vision query active: Assistant will examine Page {selected_page} screenshot.")
+                
+            uploaded_screenshot = st.file_uploader(
+                "Or upload another page screenshot (PNG/JPG):",
+                type=["png", "jpg", "jpeg"],
+            )
+            if uploaded_screenshot:
+                selected_page_bytes = uploaded_screenshot.getvalue()
+                st.info("Vision query active: Assistant will examine uploaded screenshot.")
+
+        with col_img:
+            st.image(str(page_path), caption=f"Rendered Page {selected_page}", use_container_width=True)
+    else:
+        st.info("No rendered document pages available. To enable visual document viewer, upload a PDF contract.")
+        uploaded_screenshot = st.file_uploader(
+            "Upload page screenshot to query with Vision (PNG/JPG):",
+            type=["png", "jpg", "jpeg"],
+        )
+        if uploaded_screenshot:
+            selected_page_bytes = uploaded_screenshot.getvalue()
+            st.image(uploaded_screenshot, caption="Uploaded Screenshot", width=400)
+
+    st.write("---")
+    st.markdown("### 💬 Conversation")
+
+    # Render history
+    for turn in history:
+        with st.chat_message(turn["role"]):
+            st.markdown(turn["content"])
+
+    # Chat Input
+    if prompt := st.chat_input("Ask a question about this contract..."):
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Generating answer using contract index & memory..."):
+                if selected_page_bytes:
+                    res = chat_service.ask_with_image(prompt, selected_page_bytes)
+                else:
+                    res = chat_service.ask(prompt)
+
+                st.markdown(res["answer"])
+
+                # Draw grounding sources
+                sources = res.get("sources", [])
+                if sources:
+                    st.write("")
+                    st.markdown("**Grounding references found in contract:**")
+                    for idx, src in enumerate(sources, 1):
+                        clause_type = src.get("clause_type", "General")
+                        page = src.get("source_page")
+                        page_str = f"Page {page}" if page else ""
+                        snippet = src.get("text", "")
+                        
+                        title = f"Reference {idx}: {clause_type} {page_str}".strip()
+                        with st.expander(title):
+                            st.write(snippet)
+                            if page and available_pages:
+                                page_img_path = pages_dir / f"page_{page}.png"
+                                if page_img_path.exists():
+                                    st.image(str(page_img_path), caption=f"Page {page} preview", width=300)
+        st.rerun()
+
+
 def render_full_review(state: object) -> None:
     st.subheader("Final Contract Review")
     if getattr(state, "trace_id", None):
@@ -205,17 +317,73 @@ def render_full_review(state: object) -> None:
     if getattr(state, "trace_url", None):
         st.markdown(f"**Langfuse trace:** [{state.trace_url}]({state.trace_url})")
     st.markdown(f"**Status:** {getattr(state, 'status', 'N/A')}")
-    if getattr(state, "contract_id", None):
-        st.markdown(f"**Contract ID:** {state.contract_id}")
+    contract_id = getattr(state, "contract_id", None)
+    if contract_id:
+        st.markdown(f"**Contract ID:** {contract_id}")
 
-    render_clause_extraction(state.clause_extraction)
-    render_risk_scoring(state.risk_scoring)
-    render_obligation_finding(state.obligation_finding)
-    render_red_flag_detection(state.red_flag_detection)
-    render_plain_english(state.plain_english)
-    render_report_assembler(state.final_report)
-    if getattr(state, "api_trace", None):
-        render_api_trace(state.api_trace)
+    if "active_view" not in st.session_state:
+        st.session_state["active_view"] = "📄 Review Report"
+
+    col_nav1, col_nav2 = st.columns(2)
+    with col_nav1:
+        if st.button("📄 View Review Report", use_container_width=True, type="primary" if st.session_state["active_view"] == "📄 Review Report" else "secondary"):
+            st.session_state["active_view"] = "📄 Review Report"
+            st.rerun()
+    with col_nav2:
+        if st.button("💬 Interactive Q&A & Viewer", use_container_width=True, type="primary" if st.session_state["active_view"] == "💬 Interactive Q&A & Viewer" else "secondary"):
+            st.session_state["active_view"] = "💬 Interactive Q&A & Viewer"
+            st.rerun()
+
+    st.write("")
+
+    if st.session_state["active_view"] == "📄 Review Report":
+        render_clause_extraction(state.clause_extraction)
+        render_risk_scoring(state.risk_scoring)
+        render_obligation_finding(state.obligation_finding)
+        render_red_flag_detection(state.red_flag_detection)
+        render_plain_english(state.plain_english)
+        render_report_assembler(state.final_report)
+        if getattr(state, "api_trace", None):
+            render_api_trace(state.api_trace)
+
+        # Download buttons
+        from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
+
+        st.divider()
+        st.subheader("📥 Download Full Report")
+        col1, col2, col3 = st.columns(3)
+        
+        report_id = contract_id or "report"
+
+        with col1:
+            st.download_button(
+                "⬇️ Markdown (.md)",
+                data=export_as_markdown(state),
+                file_name=f"contract_review_{report_id}.md",
+                mime="text/markdown",
+                key="download_md"
+            )
+        with col2:
+            st.download_button(
+                "⬇️ PDF (.pdf)",
+                data=export_as_pdf(state),
+                file_name=f"contract_review_{report_id}.pdf",
+                mime="application/pdf",
+                key="download_pdf"
+            )
+        with col3:
+            st.download_button(
+                "⬇️ Word (.docx)",
+                data=export_as_docx(state),
+                file_name=f"contract_review_{report_id}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="download_docx"
+            )
+    else:
+        if not contract_id:
+            st.warning("Chatbot requires a completed contract review with a valid Contract ID.")
+        else:
+            render_chat_tab(contract_id)
 
 
 def main() -> None:
@@ -224,6 +392,8 @@ def main() -> None:
     st.markdown(
         "Use the sidebar to select an available model and review contract text."
     )
+    if "active_view" not in st.session_state:
+        st.session_state["active_view"] = "📄 Review Report"
 
     with st.sidebar:
         st.header("Available Models")
@@ -258,38 +428,46 @@ def main() -> None:
         return
 
     if st.button("Run Model"):
+        # Clear previous states
+        st.session_state["review_state"] = None
+        st.session_state["single_model_output"] = None
+        st.session_state["single_model_type"] = None
+
         with st.spinner("Running contract review..."):
             if selected_model == "Full Contract Review Pipeline":
                 controller = ContractReviewController()
                 state = controller.review_contract(contract_text, perspective=perspective)
-                render_full_review(state)
+                st.session_state["review_state"] = state
+                
+                # Render PDF page images if PDF bytes exist in session state
+                if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
+                    from src.helpers.page_renderer import render_pdf_pages_as_images
+                    render_pdf_pages_as_images(st.session_state["uploaded_pdf_bytes"], state.contract_id)
             else:
                 clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
                 clause_output = extract_clauses(contract_text, llm_client=clause_client)
+                st.session_state["single_model_type"] = selected_model
+                
                 if selected_model == "Clause Extractor":
-                    render_clause_extraction(clause_output)
+                    st.session_state["single_model_output"] = clause_output
                 elif selected_model == "Risk Scorer":
                     risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
                     if not risk_client or not risk_client.is_configured():
                         st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
                     else:
-                        result = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
-                        render_risk_scoring(result)
+                        st.session_state["single_model_output"] = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
                 elif selected_model == "Obligation Finder":
                     obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
                     if not obligation_client or not obligation_client.is_configured():
                         st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
                     else:
-                        result = find_obligations(clause_output, llm_client=obligation_client)
-                        render_obligation_finding(result)
+                        st.session_state["single_model_output"] = find_obligations(clause_output, llm_client=obligation_client)
                 elif selected_model == "Red Flag Detector":
                     red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                    result = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
-                    render_red_flag_detection(result)
+                    st.session_state["single_model_output"] = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
                 elif selected_model == "Plain English Writer":
                     plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
-                    result = generate_plain_english(clause_output, llm_client=plain_client)
-                    render_plain_english(result)
+                    st.session_state["single_model_output"] = generate_plain_english(clause_output, llm_client=plain_client)
                 elif selected_model == "Report Assembler":
                     risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
                     if not risk_client or not risk_client.is_configured():
@@ -301,7 +479,7 @@ def main() -> None:
                         plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
                         plain_output = generate_plain_english(clause_output, llm_client=plain_client)
                         assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
-                        report_output = assemble_report(
+                        st.session_state["single_model_output"] = assemble_report(
                             clause_extraction=clause_output,
                             risk_scoring=risk_output,
                             red_flags=red_flag_output,
@@ -309,7 +487,25 @@ def main() -> None:
                             llm_client=assembler_client,
                             perspective=perspective,
                         )
-                        render_report_assembler(report_output)
+
+    # Render persisted state
+    if st.session_state.get("review_state") is not None:
+        render_full_review(st.session_state["review_state"])
+    elif st.session_state.get("single_model_output") is not None:
+        mtype = st.session_state["single_model_type"]
+        out = st.session_state["single_model_output"]
+        if mtype == "Clause Extractor":
+            render_clause_extraction(out)
+        elif mtype == "Risk Scorer":
+            render_risk_scoring(out)
+        elif mtype == "Obligation Finder":
+            render_obligation_finding(out)
+        elif mtype == "Red Flag Detector":
+            render_red_flag_detection(out)
+        elif mtype == "Plain English Writer":
+            render_plain_english(out)
+        elif mtype == "Report Assembler":
+            render_report_assembler(out)
 
 
 if __name__ == "__main__":

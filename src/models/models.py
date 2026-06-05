@@ -161,6 +161,7 @@ class ClauseSpan(BaseModel):
     raw_text: str
     section_reference: str | None = None
     page_number: int | None = None
+    source_page: int | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     normalized_text: str | None = None
     cuad_category: CUADCategory | str | None = None

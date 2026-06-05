@@ -64,7 +64,22 @@ def build_report_assembler_prompt(
     
     perspective_instruction = ""
     if perspective:
-        perspective_instruction = f"ROLE / PERSPECTIVE:\nThe contract review is conducted from the perspective of the {perspective.upper()}. In compiling the final report, summarize findings and recommend next steps with the goal of protecting the {perspective.upper()}'s interests, prioritizing issues unfavorable to them, and framing negotiation priorities accordingly.\n\n"
+        upper_p = perspective.upper()
+        if upper_p == "CUSTOMER":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: CUSTOMER\n"
+                "The contract review is conducted from the perspective of the CUSTOMER. In compiling the final report, frame the overall verdict and recommended next steps to prioritize protecting the CUSTOMER's interests. Focus on highlighting Vendor obligations and severe Customer risks. Frame negotiation priorities as requests to limit Vendor advantage, obtain liability parity, and enforce SLA commitments.\n\n"
+            )
+        elif upper_p == "VENDOR":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: VENDOR\n"
+                "The contract review is conducted from the perspective of the VENDOR. In compiling the final report, frame the overall verdict and recommended next steps to protect the VENDOR's business model, intellectual property, and payment predictability. Frame negotiation priorities to reduce Vendor liability, disclaim warranties, and secure client payment obligations.\n\n"
+            )
+        elif upper_p == "NEUTRAL":
+            perspective_instruction = (
+                "ROLE / PERSPECTIVE: NEUTRAL\n"
+                "The contract review is conducted from a balanced, NEUTRAL perspective. Summarize findings and negotiate items impartially, aiming for fair risk sharing between both parties.\n\n"
+            )
 
     return (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"

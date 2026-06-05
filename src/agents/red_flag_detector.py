@@ -81,52 +81,77 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 		return state
 
 	try:
-		clauses_to_analyze = state["clause_extraction"].clauses[:20]
-		clause_lines = []
-		for idx, clause in enumerate(clauses_to_analyze, 1):
-			clause_lines.append(
-				f"Clause {idx}:\n"
-				f"Type: {clause.clause_type}\n"
-				f"Text: {clause.raw_text[:800]}\n"
-			)
-		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
-
-		prompt = build_red_flag_detector_prompt(clauses_text, state.get("perspective"))
-		response_text = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS)
-
-		parsed = _parse_red_flag_response(response_text)
-		if not parsed or not isinstance(parsed, dict):
-			state["llm_attempt_success"] = False
-			state["error_messages"].append("Failed to parse LLM response.")
-			return state
-
+		all_clauses = state["clause_extraction"].clauses or []
+		chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
+		
+		# Divide into chunks
+		chunks = [all_clauses[i:i + chunk_size] for i in range(0, len(all_clauses), chunk_size)]
 		red_flags = []
-		for item in parsed.get("red_flags", []):
-			if not isinstance(item, dict):
+		summaries = []
+		global_idx = 0
+
+		for chunk_idx, chunk in enumerate(chunks):
+			logger.info(f"Processing red flag detector chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
+			clause_lines = []
+			for clause in chunk:
+				clause_lines.append(
+					f"Clause {global_idx + 1}:\n"
+					f"Type: {clause.clause_type}\n"
+					f"Text: {clause.raw_text[:800]}\n"
+				)
+				global_idx += 1
+			clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+
+			prompt = build_red_flag_detector_prompt(clauses_text, state.get("perspective"))
+			sep = "CONTRACT CLAUSES TO ANALYZE:\n"
+			if sep in prompt:
+				system_prompt, user_prompt = prompt.split(sep, 1)
+				user_prompt = sep + user_prompt
+			else:
+				system_prompt = None
+				user_prompt = prompt
+			response_text = llm_client.chat_complete(
+				user_prompt,
+				temperature=0.0,
+				max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS,
+				system_prompt=system_prompt,
+			)
+
+			parsed = _parse_red_flag_response(response_text)
+			if not parsed or not isinstance(parsed, dict):
+				logger.warning(f"Failed to parse LLM response for red flag chunk {chunk_idx + 1}.")
 				continue
 
-			severity = _normalize_severity(item.get("severity"))
-			evidence_list = item.get("evidence", [])
-			if not isinstance(evidence_list, list):
-				evidence_list = [str(evidence_list)] if evidence_list else []
-			else:
-				evidence_list = [str(e) for e in evidence_list if e]
+			for item in parsed.get("red_flags", []):
+				if not isinstance(item, dict):
+					continue
 
-			red_flags.append(
-				RedFlagItem(
-					pattern_name=str(item.get("pattern_name") or "Red Flag"),
-					severity=severity,
-					description=str(item.get("description") or ""),
-					evidence=evidence_list,
-					safer_alternative=str(item.get("safer_alternative") or "") or None,
-					matched_category=item.get("matched_category"),
+				severity = _normalize_severity(item.get("severity"))
+				evidence_list = item.get("evidence", [])
+				if not isinstance(evidence_list, list):
+					evidence_list = [str(evidence_list)] if evidence_list else []
+				else:
+					evidence_list = [str(e) for e in evidence_list if e]
+
+				red_flags.append(
+					RedFlagItem(
+						pattern_name=str(item.get("pattern_name") or "Red Flag"),
+						severity=severity,
+						description=str(item.get("description") or ""),
+						evidence=evidence_list,
+						safer_alternative=str(item.get("safer_alternative") or "") or None,
+						matched_category=item.get("matched_category"),
+					)
 				)
-			)
+			
+			chunk_summary = parsed.get("summary")
+			if chunk_summary:
+				summaries.append(str(chunk_summary).strip())
 
 		state["red_flags"] = red_flags
 		high_severity_count = sum(1 for item in red_flags if item.severity in {RiskLevel.HIGH, RiskLevel.CRITICAL})
 		state["high_severity_count"] = high_severity_count
-		state["summary"] = str(parsed.get("summary") or f"Detected {len(red_flags)} potential red flags.").strip()
+		state["summary"] = "; ".join(summaries) if summaries else f"Detected {len(red_flags)} potential red flags."
 		state["llm_attempt_success"] = True
 
 	except Exception as e:
