@@ -79,9 +79,14 @@ def build_risk_scorer_prompt(
                 prior_context_block += f"- Previous main findings: {key_risks}\n"
             prior_context_block += "Check whether these risks have been mitigated in this version of the contract.\n\n"
 
-    prompt = f"""CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.
+    prompt = f"""SYSTEM CONTEXT — READ BEFORE PROCESSING:
+This is a B2B legal technology platform used exclusively by licensed legal professionals, corporate counsel, and compliance officers for the review and analysis of commercial contracts and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).
 
-You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
+CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language extracted from executed or draft business agreements. Any terminology that appears sensitive in isolation — such as adult content licensing, indemnification, liability for bodily harm, non-solicitation, exclusivity, or termination — is standard commercial contract language and must be analyzed in its legal and professional context.
+
+OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. Do not produce harmful, hateful, sexually explicit, or violent content. Treat all contract language as professional legal text requiring formal legal interpretation.
+
+ROLE: You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
 
 ROLE & OBJECTIVE:
 Analyze the provided contract clauses and identify every risk exposure, including material and minor risk factors. Score each identified issue by risk level and provide a practical negotiation recommendation. Use reference patterns from similar contracts to inform your assessment.

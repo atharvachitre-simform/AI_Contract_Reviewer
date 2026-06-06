@@ -30,7 +30,6 @@ from ..agents.red_flag_detector import detect_red_flags
 from ..agents.report_assembler import assemble_report
 from ..agents.risk_scorer import score_risks
 from ..models import ContractReviewState, ProcessingStatus
-from ..workflows.workflow import run_contract_review
 
 load_dotenv()
 
@@ -260,34 +259,53 @@ class ContractReviewService:
         raise ValueError("Incomplete analysis results for report assembly")
 
     def is_document_contract(self, text: str) -> bool:
-        """Verify if the uploaded text is a contract or legal document using Gemini."""
-        sample = text[:config.RELEVANCE_GATING_MAX_CHARS].strip()
-        if not sample:
+        """Verify if the uploaded text is a contract or legal document.
+
+        Uses a fast local keyword heuristic — no LLM call needed.
+        This avoids content filter false positives, extra API costs, and
+        latency on every upload. Rejects only clear non-contracts
+        (invoices, resumes, news articles, etc.)
+        """
+        if not text or not text.strip():
             return False
-            
-        llm_client = (
-            self.azure.get_openai_client_for_agent("relevance_gater")
-            or self.azure.get_openai_client("gemini-2.5-flash")
-            or self.azure.get_openai_client_for_agent("obligation_finder")
-        )
-        if not llm_client:
-            logger.warning("No LLM client available for document relevance check. Bypassing gating.")
+
+        sample = text[:5000].lower()
+
+        # Strong contract indicators — if ANY are present, it's a contract
+        CONTRACT_SIGNALS = [
+            "agreement", "contract", "whereas", "hereby", "herein",
+            "licensor", "licensee", "licens", "vendor", "indemnif",
+            "shall ", "party", "parties", "effective date", "term of",
+            "termination", "governing law", "jurisdiction", "covenant",
+            "representations and warranties", "intellectual property",
+            "confidential", "non-disclosure", "assignment", "sublicense",
+            "force majeure", "arbitration", "in witness whereof",
+            "executed by", "by and between", "now therefore",
+            "obligations", "exclusivity", "renewal", "liability",
+        ]
+
+        # Clear non-contract indicators — only reject if MANY appear and NO contract signals
+        NON_CONTRACT_SIGNALS = [
+            "dear hiring manager", "to whom it may concern",
+            "curriculum vitae", "work experience", "references available",
+            "invoice number", "bill to:", "subtotal", "grand total",
+            "breaking news", "subscribe to our newsletter",
+        ]
+
+        contract_hits = sum(1 for s in CONTRACT_SIGNALS if s in sample)
+        non_contract_hits = sum(1 for s in NON_CONTRACT_SIGNALS if s in sample)
+
+        if contract_hits >= 2:
+            logger.info(f"Relevance gating: PASS (contract signals={contract_hits})")
             return True
-            
-        prompt = (
-            "You are a legal document gatekeeper. Determine if the following text is from a contract, "
-            "agreement, covenant, lease, or legal addendum. Answer only with YES or NO.\n"
-            "If the document is irrelevant (e.g. a hospital bill, medical receipt, invoice, resume, "
-            "general article, recipe, or random text), you must answer NO.\n\n"
-            f"Document text sample:\n{sample}"
-        )
-        try:
-            response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=10).strip().upper()
-            logger.info(f"Relevance gating check response: {response}")
-            return "YES" in response
-        except Exception as e:
-            logger.warning(f"Relevance gating check failed: {e}. Bypassing gating.")
-            return True
+        if non_contract_hits >= 3 and contract_hits == 0:
+            logger.warning(f"Relevance gating: FAIL (non-contract signals={non_contract_hits}, contract signals=0)")
+            return False
+
+        # Ambiguous — default to allowing (better to process a non-contract than block a real one)
+        logger.info(f"Relevance gating: PASS (ambiguous — contract={contract_hits}, non-contract={non_contract_hits})")
+        return True
+
 
     def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None, perspective: str | None = None) -> ContractReviewState:
         """End-to-end contract review process.
@@ -326,6 +344,7 @@ class ContractReviewService:
             self.current_trace_id,
         )
         try:
+            from ..workflows.workflow import run_contract_review
             state = run_contract_review(
                 contract_text,
                 trace_id=self.current_trace_id,

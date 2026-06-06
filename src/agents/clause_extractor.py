@@ -119,8 +119,8 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
     
     try:
         cleaned_text = state["cleaned_text"]
-        chunk_size = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "24000"))
-        overlap = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "1000"))
+        chunk_size = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "60000"))
+        overlap = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "1500"))
         
         if len(cleaned_text) <= chunk_size:
             prompt = build_clause_extractor_prompt(
@@ -277,7 +277,7 @@ def get_page_number_for_text(full_text: str, clause_text: str) -> int | None:
         return None
         
     preceding_text = norm_full[:idx]
-    matches = list(re.finditer(r"---\s*page\s*(\d+)\s*---", preceding_text))
+    matches = list(re.finditer(r"---\s*page\s*(\d+)\s*---", preceding_text, re.IGNORECASE))
     if matches:
         return int(matches[-1].group(1))
     return 1

@@ -95,7 +95,13 @@ class ContractChatService:
 
     def _summarize_turns(self, summary: str, turns_to_summarize: list[dict[str, str]]) -> str:
         """Summarize conversation turns to merge into the running summary buffer."""
-        chat_client = self.azure.get_openai_client(os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT", "gpt-4.1-mini"))
+        deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT")
+            or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or self.azure.openai_deployment_name
+            or "GPT-4o-mini"
+        )
+        chat_client = self.azure.get_openai_client(deployment)
         if not chat_client or not chat_client.is_configured():
             logger.warning("Chat client not configured for summarization, keeping summary unchanged.")
             return summary
@@ -127,7 +133,7 @@ class ContractChatService:
                 try:
                     query_vector = embedding_client.get_embedding(query)
                     from qdrant_client.models import Filter, FieldCondition, MatchValue
-                    
+
                     query_filter = Filter(
                         must=[
                             FieldCondition(
@@ -137,12 +143,22 @@ class ContractChatService:
                         ]
                     )
 
-                    hits = self.azure.qdrant_client.search(
-                        collection_name=config.QDRANT_COLLECTION_NAME,
-                        query_vector=query_vector,
-                        query_filter=query_filter,
-                        limit=top_k
-                    )
+                    # qdrant-client >=1.9 uses query_points; fall back to search for older versions
+                    try:
+                        result = self.azure.qdrant_client.query_points(
+                            collection_name=config.QDRANT_COLLECTION_NAME,
+                            query=query_vector,
+                            query_filter=query_filter,
+                            limit=top_k,
+                        )
+                        hits = result.points
+                    except AttributeError:
+                        hits = self.azure.qdrant_client.search(
+                            collection_name=config.QDRANT_COLLECTION_NAME,
+                            query_vector=query_vector,
+                            query_filter=query_filter,
+                            limit=top_k,
+                        )
                     sources = [h.payload for h in hits]
                 except Exception as e:
                     logger.error(f"Qdrant chat retrieval failed: {e}", exc_info=True)
@@ -215,8 +231,11 @@ class ContractChatService:
                 max_tokens=10,
                 system_prompt=system_instruction
             ).strip().upper()
-            logger.info(f"Question relevance gating response: {response}")
-            return "YES" in response
+            logger.info(f"Question relevance gating response: '{response}'")
+            # Only block on an explicit NO — treat filtered/empty/ambiguous as allowed.
+            if response and "NO" in response and "YES" not in response:
+                return False
+            return True
         except Exception as e:
             logger.warning(f"Question relevance gating failed: {e}. Bypassing gating.")
             return True
@@ -262,6 +281,46 @@ class ContractChatService:
                 "sources": []
             }
 
+        # Auto-delegate to ask_with_image if we have a matched page image or crop
+        sources = self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
+        if sources:
+            import hashlib
+            top_source_page = None
+            top_clause_text = None
+            for s in sources:
+                page = s.get("source_page")
+                text = s.get("text")
+                if page:
+                    top_source_page = page
+                    top_clause_text = text
+                    break
+            
+            image_bytes = None
+            if top_clause_text:
+                clause_hash = hashlib.md5(top_clause_text.strip().encode("utf-8")).hexdigest()
+                crop_path = Path("logs/pages") / self.contract_id / f"clause_{clause_hash}.png"
+                if crop_path.exists():
+                    try:
+                        image_bytes = crop_path.read_bytes()
+                        logger.info("Using cropped clause image for vision model.")
+                    except Exception as e:
+                        logger.warning(f"Failed to read clause crop image: {e}")
+            
+            if not image_bytes and top_source_page:
+                page_img_path = Path("logs/pages") / self.contract_id / f"page_{top_source_page}.png"
+                if page_img_path.exists():
+                    try:
+                        image_bytes = page_img_path.read_bytes()
+                        logger.info("Using full page image for vision model (fallback).")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-read page image: {e}")
+
+            if image_bytes:
+                try:
+                    return await self.ask_with_image(question, image_bytes)
+                except Exception as e:
+                    logger.warning(f"Multimodal vision model query failed: {e}")
+
         summary, history = await self._load_history()
 
         # Hybrid Summary Buffer Logic
@@ -287,10 +346,23 @@ class ContractChatService:
 
         # Build prompt
         system_instruction = (
-            "You are a contract review chat assistant. Answer the user's question using the retrieved contract context "
-            "and conversation history provided below. Answer clearly and cite the Clause Type and Page Number where possible.\n"
-            "If the question cannot be answered using the retrieved context, state that clearly but provide a reasonable, "
-            "general legal explanation based on standard practices."
+            "SYSTEM CONTEXT — READ BEFORE PROCESSING:\n"
+            "This is a B2B legal technology platform used exclusively by licensed legal professionals, "
+            "corporate counsel, and compliance officers for the review and analysis of commercial contracts "
+            "and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, "
+            "licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).\n\n"
+            "CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language "
+            "extracted from executed or draft business agreements. Any terminology that appears sensitive "
+            "in isolation — such as adult content licensing, indemnification, liability for bodily harm, "
+            "non-solicitation, exclusivity, or termination — is standard commercial contract language "
+            "and must be analyzed in its legal and professional context.\n\n"
+            "OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. "
+            "Do not produce harmful, hateful, sexually explicit, or violent content. "
+            "Treat all contract language as professional legal text requiring formal legal interpretation.\n\n"
+            "ROLE: You are a contract review chat assistant. Answer the user's question using the retrieved "
+            "contract context and conversation history provided below. Answer clearly and cite the Clause Type "
+            "and Page Number where possible. If the question cannot be answered using the retrieved context, "
+            "state that clearly but provide a reasonable general legal explanation based on standard practices."
         )
 
         prompt_parts = []
@@ -311,11 +383,16 @@ class ContractChatService:
         
         prompt = "\n".join(prompt_parts)
 
-        chat_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT", self.azure.openai_deployment_name or "gpt-4o")
+        chat_deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT")
+            or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or self.azure.openai_deployment_name
+            or "GPT-4o-mini"
+        )
         chat_client = self.azure.get_openai_client(chat_deployment)
         if not chat_client or not chat_client.is_configured():
             return {
-                "answer": "Error: Chat LLM model is not configured.",
+                "answer": "Error: Chat LLM model is not configured. Please set AZURE_OPENAI_DEPLOYMENT_CHAT in your .env file.",
                 "sources": []
             }
 
@@ -346,9 +423,19 @@ class ContractChatService:
                 "sources": sources
             }
         except Exception as e:
+            from .azure_clients import is_content_filter_error
+            if is_content_filter_error(e):
+                logger.warning(f"Content filter triggered in chat: {e}")
+                return {
+                    "answer": (
+                        "This section of the document could not be summarized due to content policy restrictions. "
+                        "Please rephrase your question or ask about a different section of the contract."
+                    ),
+                    "sources": sources
+                }
             logger.error(f"Chat completion failed: {e}", exc_info=True)
             return {
-                "answer": f"Error: Failed to generate chat response. Details: {str(e)}",
+                "answer": f"Error: Failed to generate chat response. Please try again.",
                 "sources": []
             }
 
@@ -385,16 +472,41 @@ class ContractChatService:
         # base64 encode the image
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
+        # Dynamically determine MIME type from magic bytes
+        mime_type = "image/png"
+        if image_bytes.startswith(b"\xff\xd8"):
+            mime_type = "image/jpeg"
+        elif image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime_type = "image/png"
+        elif image_bytes.startswith(b"GIF8"):
+            mime_type = "image/gif"
+        elif image_bytes.startswith(b"RIFF") and b"WEBP" in image_bytes[:16]:
+            mime_type = "image/webp"
+
         # Prepare messages in multimodal vision format
         system_instruction = (
-            "You are a contract review chat assistant. You are shown an image of a contract page, along with retrieved contract context "
-            "and conversation history. Answer the user's question clearly, citing the page image or retrieved context as evidence."
+            "SYSTEM CONTEXT — READ BEFORE PROCESSING:\n"
+            "This is a B2B legal technology platform used exclusively by licensed legal professionals, "
+            "corporate counsel, and compliance officers for the review and analysis of commercial contracts "
+            "and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, "
+            "licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).\n\n"
+            "CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language "
+            "extracted from executed or draft business agreements. Any terminology that appears sensitive "
+            "in isolation — such as adult content licensing, indemnification, liability for bodily harm, "
+            "non-solicitation, exclusivity, or termination — is standard commercial contract language "
+            "and must be analyzed in its legal and professional context.\n\n"
+            "OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. "
+            "Do not produce harmful, hateful, sexually explicit, or violent content. "
+            "Treat all contract language as professional legal text requiring formal legal interpretation.\n\n"
+            "ROLE: You are a contract review chat assistant. You are shown an image of a contract page, "
+            "along with retrieved contract context and conversation history. Answer the user's question "
+            "clearly, citing the page image or retrieved context as evidence."
         )
 
         user_content = []
         user_content.append({
             "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{b64_image}"}
+            "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}
         })
         
         text_prompt = ""
@@ -418,7 +530,13 @@ class ContractChatService:
             
         messages.append({"role": "user", "content": user_content})
 
-        vision_client = self.azure.get_openai_client(os.getenv("AZURE_OPENAI_DEPLOYMENT_VISION", "gpt-4o"))
+        vision_client = self.azure.get_openai_client(
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_VISION")
+            or os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT")
+            or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or self.azure.openai_deployment_name
+            or "GPT-4o"
+        )
         if not vision_client or not vision_client.is_configured():
             return {
                 "answer": "Error: Vision model is not configured. Set AZURE_OPENAI_DEPLOYMENT_VISION in environment.",
@@ -443,8 +561,18 @@ class ContractChatService:
                 "sources": sources
             }
         except Exception as e:
+            from .azure_clients import is_content_filter_error
+            if is_content_filter_error(e):
+                logger.warning(f"Content filter triggered in multimodal chat: {e}")
+                return {
+                    "answer": (
+                        "This section of the document could not be summarized due to content policy restrictions. "
+                        "Please try a different page or rephrase your question."
+                    ),
+                    "sources": sources
+                }
             logger.error(f"Multimodal chat completion failed: {e}", exc_info=True)
             return {
-                "answer": f"Error: Failed to analyze image with vision model. Details: {str(e)}",
+                "answer": f"Error: Failed to analyze image with vision model. Please try again.",
                 "sources": []
             }
