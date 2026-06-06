@@ -409,10 +409,88 @@ def main() -> None:
         chatbot_active = True
         contract_id_for_sidebar = getattr(st.session_state["review_state"], "contract_id", None)
 
+    # Initialize defaults to prevent NameError if Run Model is clicked in chatbot view
+    selected_model = "Full Contract Review Pipeline"
+    perspective = "Neutral"
+
     with st.sidebar:
         
+        # --- 1. Load Past Reviewed Contracts Section ---
+        st.header("Past Reviewed Contracts")
+        checkpoint_dir = Path("logs/checkpoints")
+        past_checkpoints = []
+        if checkpoint_dir.exists():
+            import json
+            past_checkpoints = sorted(
+                list(checkpoint_dir.glob("*.json")),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            
+        if past_checkpoints:
+            options = [("", "Select a past contract...")]
+            for p in past_checkpoints:
+                c_id = p.name.replace(".json", "")
+                try:
+                    checkpoint_data = json.loads(p.read_text(encoding="utf-8"))
+                    metadata = checkpoint_data.get("metadata", {})
+                    doc_name = metadata.get("source_file") or metadata.get("document_name")
+                    if doc_name and ("/" in doc_name or "\\" in doc_name):
+                        doc_name = doc_name.replace("\\", "/").rsplit("/", 1)[-1]
+                        
+                    # If document_name is a page header or missing, extract first substantive line of contract text
+                    import re
+                    from src.helpers.contract_analysis import normalize_whitespace
+                    if not doc_name or doc_name.strip() == "--- PAGE 1 ---" or re.match(r'^---\s*PAGE\s*\d+\s*---$', str(doc_name).strip(), re.IGNORECASE):
+                        contract_text_raw = checkpoint_data.get("contract_text", "")
+                        if contract_text_raw:
+                            cleaned_text = normalize_whitespace(contract_text_raw)
+                            first_substantive = next(
+                                (line.strip() for line in cleaned_text.split("\n")
+                                 if line.strip() and not re.match(r'^---\s*PAGE\s*\d+\s*---$', line.strip(), re.IGNORECASE)),
+                                None
+                            )
+                            if first_substantive:
+                                doc_name = first_substantive
+                                
+                    if not doc_name:
+                        doc_name = c_id
+                        
+                    if len(doc_name) > 35:
+                        display_name = f"{doc_name[:35]}..."
+                    else:
+                        display_name = doc_name
+                    options.append((c_id, f"📁 {display_name}"))
+                except Exception:
+                    options.append((c_id, f"📁 {c_id[:8]}"))
+            
+            selected_past = st.selectbox(
+                "Load Past Review",
+                options=options,
+                format_func=lambda opt: opt[1],
+                key="past_contract_selector"
+            )
+            
+            if selected_past and selected_past[0]:
+                c_id = selected_past[0]
+                if st.button("🔄 Load Selected Review", use_container_width=True):
+                    from src.services.services import ContractReviewService
+                    service = ContractReviewService()
+                    loaded_state = service.load_checkpoint(c_id)
+                    if loaded_state:
+                        st.session_state["review_state"] = loaded_state
+                        st.session_state["active_view"] = "📄 Review Report"
+                        st.session_state["chat_session_id"] = c_id
+                        st.rerun()
+                    else:
+                        st.error("Failed to load selected checkpoint.")
+        else:
+            st.info("No past reviews found on disk.")
+            
+        st.divider()
+
+        # --- 2. Chat Sessions Section ---
         if chatbot_active and contract_id_for_sidebar:
-            st.divider()
             st.header("Chat Sessions")
             chat_dir = Path("logs/chat") / contract_id_for_sidebar
             session_files = []
@@ -432,11 +510,44 @@ def main() -> None:
 
             if "chat_session_id" not in st.session_state:
                 st.session_state["chat_session_id"] = contract_id_for_sidebar
+
+            # Formatter for friendly chat session labels
+            def format_session(s_id: str) -> str:
+                if s_id == "Default Session" or s_id == contract_id_for_sidebar:
+                    return "Default Session"
                 
+                # Check summary text
+                summary_file = chat_dir / f"{s_id}_summary.txt"
+                if summary_file.exists():
+                    try:
+                        summary_text = summary_file.read_text(encoding="utf-8").strip()
+                        if summary_text:
+                            clean_text = summary_text.replace("\n", " ")
+                            if len(clean_text) > 35:
+                                return f"Session: {clean_text[:35]}..."
+                            return f"Session: {clean_text}"
+                    except Exception:
+                        pass
+                
+                # Check history file modification time
+                history_file = chat_dir / f"{s_id}_history.json"
+                if history_file.exists():
+                    try:
+                        import time
+                        from datetime import datetime
+                        mtime = os.path.getmtime(str(history_file))
+                        date_str = datetime.fromtimestamp(mtime).strftime("%b %d, %H:%M")
+                        return f"Session ({date_str})"
+                    except Exception:
+                        pass
+                
+                return f"Session ({s_id[:8]})"
+
             selected_session = st.selectbox(
                 "Select Chat Session",
                 sessions,
-                index=sessions.index(st.session_state["chat_session_id"]) if st.session_state["chat_session_id"] in sessions else 0
+                index=sessions.index(st.session_state["chat_session_id"]) if st.session_state["chat_session_id"] in sessions else 0,
+                format_func=format_session
             )
             st.session_state["chat_session_id"] = selected_session
             
@@ -499,11 +610,14 @@ def main() -> None:
         placeholder="Paste contract text here or upload a .txt or .pdf file using the uploader above.",
     )
 
-    if not contract_text:
+    if not contract_text and st.session_state.get("review_state") is None and st.session_state.get("single_model_output") is None:
         st.warning("Enter contract text or upload a file before running the selected model.")
         return
 
     if st.button("Run Model"):
+        if not contract_text:
+            st.error("Please enter contract text or upload a file before running the model.")
+            return
         # Clear previous states
         st.session_state["review_state"] = None
         st.session_state["single_model_output"] = None
@@ -512,7 +626,8 @@ def main() -> None:
         with st.spinner("Running contract review..."):
             if selected_model == "Full Contract Review Pipeline":
                 controller = ContractReviewController()
-                state = controller.review_contract(contract_text, perspective=perspective)
+                source_file = uploaded_file.name if uploaded_file else None
+                state = controller.review_contract(contract_text, perspective=perspective, source_file=source_file)
                 st.session_state["review_state"] = state
                 
                 # Render clause crops if PDF bytes exist in session state

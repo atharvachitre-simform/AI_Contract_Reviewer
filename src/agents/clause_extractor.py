@@ -35,6 +35,28 @@ from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt
 from ..helpers.coverage_validator import calculate_coverage
 
 
+def _log_clause_finish_reason(llm_client: Any, chunk_label: str = "") -> None:
+    """Log the finish_reason from the last LLM response to detect truncation or content filter events."""
+    last_resp = getattr(llm_client, "_last_response", None)
+    if not last_resp:
+        return
+    choices = getattr(last_resp, "choices", None)
+    if not choices:
+        return
+    finish = getattr(choices[0], "finish_reason", None)
+    if finish == "length":
+        logger.warning(
+            f"[CLAUSE_EXTRACTOR_TRUNCATED] {chunk_label} hit max_tokens limit — "
+            f"extraction JSON is truncated. Some clauses may be missing. "
+            f"Raise CLAUSE_EXTRACTOR_MAX_TOKENS (current: {config.CLAUSE_EXTRACTOR_MAX_TOKENS})."
+        )
+    elif finish == "content_filter":
+        logger.error(
+            f"[CLAUSE_EXTRACTOR_CONTENT_FILTER] {chunk_label} was filtered "
+            f"by Azure content policy — response is empty/None."
+        )
+
+
 class ClauseExtractorState(TypedDict):
     """State for the clause extraction workflow."""
     contract_text: str
@@ -130,7 +152,15 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                 reference_clauses=state["reference_clauses"],
             )
             llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
-            
+
+            # --- Diagnostic: log finish_reason to detect token truncation ---
+            logger.debug(
+                f"[CLAUSE_EXTRACTOR_RAW] single-chunk response "
+                f"(first 500 chars): {llm_response[:500]!r}"
+            )
+            _log_clause_finish_reason(llm_client, chunk_label="single-chunk")
+            # --- End diagnostic ---
+
             parsed = _parse_llm_response(llm_response)
             if not parsed:
                 state["error_messages"].append("LLM response parsing failed")
@@ -202,6 +232,15 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                     reference_clauses=state["reference_clauses"],
                 )
                 llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
+
+                # --- Diagnostic: log finish_reason to detect token truncation ---
+                logger.debug(
+                    f"[CLAUSE_EXTRACTOR_RAW] chunk {idx} response "
+                    f"(first 500 chars): {llm_response[:500]!r}"
+                )
+                _log_clause_finish_reason(llm_client, chunk_label=f"chunk {idx}/{len(chunks)}")
+                # --- End diagnostic ---
+
                 parsed = _parse_llm_response(llm_response)
                 if parsed:
                     chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
@@ -209,15 +248,24 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                     if parsed.get("metadata") and isinstance(parsed["metadata"], dict):
                         metadata.update({k: v for k, v in parsed["metadata"].items() if v})
             
-            # Deduplicate clauses based on normalized raw text
-            unique_clauses = []
-            seen_texts = set()
-            for c in clauses:
-                normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
-                if normalized_raw not in seen_texts:
-                    seen_texts.add(normalized_raw)
-                    unique_clauses.append(c)
-            clauses = unique_clauses
+        # Deduplicate and merge clauses based on normalized raw text
+        unique_clauses = []
+        seen_texts = set()
+        
+        # Carry over existing clauses (if any) from previous runs (e.g. self-correction)
+        existing_clauses = state.get("clauses") or []
+        for c in existing_clauses:
+            normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
+            if normalized_raw not in seen_texts:
+                seen_texts.add(normalized_raw)
+                unique_clauses.append(c)
+                
+        for c in clauses:
+            normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
+            if normalized_raw not in seen_texts:
+                seen_texts.add(normalized_raw)
+                unique_clauses.append(c)
+        clauses = unique_clauses
         
         if not clauses:
             state["error_messages"].append("LLM extraction returned no clauses")
@@ -397,8 +445,12 @@ class ClauseExtractorAgent:
             new_memory = memory_context.copy() if memory_context else {}
             new_memory.update(feedback_context)
             
+            retry_initial_state = initial_state.copy()
+            retry_initial_state["clauses"] = list(final_state.get("clauses", []))
+            retry_initial_state["llm_attempt_success"] = False
+
             retry_graph = create_clause_extraction_graph(client, new_memory, retriever)
-            final_state = retry_graph.invoke(initial_state)
+            final_state = retry_graph.invoke(retry_initial_state)
             output = build_output_node(final_state)
             
         return output

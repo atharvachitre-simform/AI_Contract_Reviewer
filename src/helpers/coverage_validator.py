@@ -77,6 +77,13 @@ def calculate_coverage(
     elif text_len > 15000 and top_level_count <= 1:
         is_complete = False
         notes = f"Warning: Document is large ({text_len} characters, ~{estimated_pages} pages) but only {top_level_count} top-level clause was extracted."
+    # 3. If contract has many top-level clauses (>10) but coverage is less than 50%
+    elif highest_num and highest_num > 10 and top_level_count < highest_num * 0.5:
+        is_complete = False
+        notes = (
+            f"Warning: Contract appears to have {highest_num} top-level clauses "
+            f"but only {top_level_count} were extracted (coverage < 50%)."
+        )
 
     return {
         "coverage_score": round(coverage_ratio, 2),

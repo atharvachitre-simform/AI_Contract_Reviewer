@@ -317,9 +317,12 @@ class ContractChatService:
 
             if image_bytes:
                 try:
-                    return await self.ask_with_image(question, image_bytes)
+                    res = await self.ask_with_image(question, image_bytes)
+                    if res and not res.get("answer", "").startswith("Error:"):
+                        return res
+                    logger.warning("Multimodal vision model query returned an error; falling back to text LLM.")
                 except Exception as e:
-                    logger.warning(f"Multimodal vision model query failed: {e}")
+                    logger.warning(f"Multimodal vision model query failed: {e}; falling back to text LLM.")
 
         summary, history = await self._load_history()
 

@@ -158,7 +158,11 @@ def extract_metadata(text: str, source_file: str | None = None, source_format: s
     """Build a basic metadata object from contract text."""
 
     cleaned = normalize_whitespace(text)
-    first_line = next((line.strip() for line in cleaned.split("\n") if line.strip()), None)
+    first_line = next(
+        (line.strip() for line in cleaned.split("\n")
+         if line.strip() and not re.match(r'^---\s*PAGE\s*\d+\s*---$', line.strip(), re.IGNORECASE)),
+        None
+    )
     document_name = first_line[:180] if first_line else None
     if document_name and document_name.startswith(("This Agreement", "The term", "WHEREAS")):
         document_name = source_file.rsplit("/", 1)[-1] if source_file else document_name
