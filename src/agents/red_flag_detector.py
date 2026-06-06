@@ -83,12 +83,13 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 	try:
 		all_clauses = state["clause_extraction"].clauses or []
 		chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
-		
+
 		# Divide into chunks
 		chunks = [all_clauses[i:i + chunk_size] for i in range(0, len(all_clauses), chunk_size)]
 		red_flags = []
 		summaries = []
 		global_idx = 0
+		chunks_failed = 0
 
 		for chunk_idx, chunk in enumerate(chunks):
 			logger.info(f"Processing red flag detector chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
@@ -97,7 +98,10 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 				clause_lines.append(
 					f"Clause {global_idx + 1}:\n"
 					f"Type: {clause.clause_type}\n"
-					f"Text: {clause.raw_text[:800]}\n"
+					# 3000 chars: gives full operative legal language to the model.
+					# The previous 800-char limit was cutting indemnification/liability/
+					# termination clauses in half, hiding the risk-triggering language.
+					f"Text: {clause.raw_text[:3000]}\n"
 				)
 				global_idx += 1
 			clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
@@ -117,9 +121,39 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 				system_prompt=system_prompt,
 			)
 
+			# --- Diagnostic: log raw response and finish_reason ---
+			logger.debug(
+				f"[RED_FLAG_RAW] chunk {chunk_idx + 1} response "
+				f"(first 500 chars): {response_text[:500]!r}"
+			)
+			last_resp = getattr(llm_client, "_last_response", None)
+			if last_resp:
+				finish = getattr(
+					getattr(last_resp, "choices", [None])[0], "finish_reason", None
+				) if getattr(last_resp, "choices", None) else None
+				if finish == "length":
+					logger.warning(
+						f"[RED_FLAG_TRUNCATED] chunk {chunk_idx + 1} hit max_tokens limit — "
+						f"JSON is truncated. Increase RED_FLAG_DETECTOR_MAX_TOKENS "
+						f"(current: {config.RED_FLAG_DETECTOR_MAX_TOKENS})."
+					)
+				elif finish == "content_filter":
+					logger.error(
+						f"[RED_FLAG_CONTENT_FILTER] chunk {chunk_idx + 1} was filtered "
+						f"by Azure content policy — response is empty/None."
+					)
+			# --- End diagnostic ---
+
 			parsed = _parse_red_flag_response(response_text)
 			if not parsed or not isinstance(parsed, dict):
-				logger.warning(f"Failed to parse LLM response for red flag chunk {chunk_idx + 1}.")
+				# Log the raw response so we can see what the model actually returned.
+				# Previously this silently continued, keeping llm_attempt_success=True
+				# even when every chunk failed — hiding the error entirely.
+				logger.error(
+					f"[RED_FLAG_PARSE_FAIL] chunk {chunk_idx + 1} — could not parse JSON. "
+					f"Raw response (first 500 chars): {response_text[:500]!r}"
+				)
+				chunks_failed += 1
 				continue
 
 			for item in parsed.get("red_flags", []):
@@ -143,16 +177,25 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 						matched_category=item.get("matched_category"),
 					)
 				)
-			
+
 			chunk_summary = parsed.get("summary")
 			if chunk_summary:
 				summaries.append(str(chunk_summary).strip())
 
-		state["red_flags"] = red_flags
-		high_severity_count = sum(1 for item in red_flags if item.severity in {RiskLevel.HIGH, RiskLevel.CRITICAL})
-		state["high_severity_count"] = high_severity_count
-		state["summary"] = "; ".join(summaries) if summaries else f"Detected {len(red_flags)} potential red flags."
-		state["llm_attempt_success"] = True
+		# If every single chunk failed to parse, mark the whole attempt as failed
+		# so validate_flags_node can apply sensible defaults.
+		if chunks and chunks_failed == len(chunks):
+			state["llm_attempt_success"] = False
+			state["error_messages"].append(
+				f"All {len(chunks)} red flag detection chunk(s) failed to parse. "
+				"Check [RED_FLAG_PARSE_FAIL] / [RED_FLAG_TRUNCATED] logs for details."
+			)
+		else:
+			state["red_flags"] = red_flags
+			high_severity_count = sum(1 for item in red_flags if item.severity in {RiskLevel.HIGH, RiskLevel.CRITICAL})
+			state["high_severity_count"] = high_severity_count
+			state["summary"] = "; ".join(summaries) if summaries else f"Detected {len(red_flags)} potential red flags."
+			state["llm_attempt_success"] = True
 
 	except Exception as e:
 		logger.error(f"Red Flag Detector LLM error: {e}", exc_info=True)

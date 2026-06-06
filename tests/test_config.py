@@ -9,12 +9,12 @@ def test_config_defaults():
     assert config.CLAUSE_TEXT_TRUNCATION == 700
     assert config.RISK_THRESHOLD_HIGH == 0.6
     assert config.RISK_THRESHOLD_MEDIUM == 0.3
-    assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 8000
-    assert config.OBLIGATION_FINDER_MAX_TOKENS == 4000
-    assert config.RED_FLAG_DETECTOR_MAX_TOKENS == 4000
-    assert config.RISK_SCORER_MAX_TOKENS == 4000
-    assert config.PLAIN_ENGLISH_WRITER_MAX_TOKENS == 4000
-    assert config.REPORT_ASSEMBLER_MAX_TOKENS == 4000
+    assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 12000
+    assert config.OBLIGATION_FINDER_MAX_TOKENS == 6000
+    assert config.RED_FLAG_DETECTOR_MAX_TOKENS == 8000
+    assert config.RISK_SCORER_MAX_TOKENS == 6000
+    assert config.PLAIN_ENGLISH_WRITER_MAX_TOKENS == 6000
+    assert config.REPORT_ASSEMBLER_MAX_TOKENS == 6000
     assert config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT == 5
     assert config.REPORT_ASSEMBLER_CLAUSES_LIMIT == 15
     assert config.RETRY_MULTIPLIER == 1.0

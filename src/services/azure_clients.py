@@ -207,7 +207,7 @@ class AzureOpenAIWrapper:
         elif deployment_name.startswith("groq:"):
             model_name = deployment_name[5:]
             is_groq_deployment = True
-        elif deployment_name in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "llama-3.2-11b-vision-preview"):
+        elif deployment_name in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct"):
             is_groq_deployment = True
 
         if is_groq_deployment:
@@ -382,10 +382,19 @@ class AzureOpenAIWrapper:
                 )
             raise RuntimeError("Azure OpenAI client is not configured")
 
-        sys_content = system_prompt or (
-            BUSINESS_DOMAIN_HEADER
-            + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
-        )
+        # Always ensure the Azure content-filter bypass header is applied.
+        # When agents pass an explicit system_prompt, the original code bypassed
+        # BUSINESS_DOMAIN_HEADER entirely — leaving those calls with weaker filter context.
+        if system_prompt:
+            if "B2B legal technology platform" not in system_prompt:
+                sys_content = BUSINESS_DOMAIN_HEADER + system_prompt
+            else:
+                sys_content = system_prompt
+        else:
+            sys_content = (
+                BUSINESS_DOMAIN_HEADER
+                + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+            )
         messages = [
             {"role": "system", "content": sys_content},
             {"role": "user", "content": prompt},
@@ -546,8 +555,8 @@ class AzureOpenAIWrapper:
 
         if self.use_groq and self.groq_client is not None:
             model_name = self.deployment_name
-            if "vision" not in model_name.lower():
-                model_name = "llama-3.2-11b-vision-preview"
+            if "vision" not in model_name.lower() and "scout" not in model_name.lower():
+                model_name = "meta-llama/llama-4-scout-17b-16e-instruct"
             response = self.groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
@@ -582,7 +591,7 @@ class AzureOpenAIWrapper:
                 fallback_wrapper = AzureOpenAIWrapper(
                     endpoint="",
                     api_key=config.GROQ_API_KEY,
-                    deployment_name="groq:llama-3.2-11b-vision-preview"
+                    deployment_name="groq:meta-llama/llama-4-scout-17b-16e-instruct"
                 )
                 if fallback_wrapper.is_configured():
                     res = fallback_wrapper.chat_complete_multimodal(
@@ -687,7 +696,7 @@ class AzureClientFactory:
             return self._client_cache[deployment]
         
         # Route Groq deployments
-        if deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "llama-3.2-11b-vision-preview"):
+        if deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct"):
             groq_key = os.getenv("GROQ_API_KEY", "").strip()
             if not groq_key:
                 logger.warning(f"Groq model {deployment} requested but GROQ_API_KEY is not set.")
@@ -755,7 +764,7 @@ class AzureClientFactory:
             return None
             
         # Route Groq deployments if no agent-specific endpoint is configured
-        if (deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "llama-3.2-11b-vision-preview")) and not agent_endpoint:
+        if (deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct")) and not agent_endpoint:
             groq_key = agent_api_key or os.getenv("GROQ_API_KEY", "").strip()
             if not groq_key:
                 logger.warning(f"Groq model {deployment} requested for {agent_name} but GROQ_API_KEY is not set.")
@@ -1176,7 +1185,7 @@ class MemoryStore:
         try:
             client = self.azure_factory.qdrant_client
             collection_name = config.QDRANT_COLLECTION_NAME
-            from qdrant_client.models import Distance, VectorParams, PointStruct
+            from qdrant_client.models import Distance, VectorParams, PointStruct, PayloadSchemaType
             import uuid
             
             # Ensure collection exists
@@ -1187,6 +1196,16 @@ class MemoryStore:
                     collection_name=collection_name,
                     vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
                 )
+                
+            # Ensure payload index on contract_id exists
+            try:
+                client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="contract_id",
+                    field_schema=PayloadSchemaType.KEYWORD
+                )
+            except Exception as index_err:
+                logger.debug(f"Payload index creation check/run returned: {index_err}")
                 
             points = []
             for idx, c in enumerate(clauses):

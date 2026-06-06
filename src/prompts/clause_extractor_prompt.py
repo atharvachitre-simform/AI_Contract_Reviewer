@@ -51,10 +51,14 @@ OUTPUT_SCHEMA = {
 
 PROMPT_GUIDELINES = (
     "- Do not treat subclauses as independent clauses.\n"
-    "- Only top-level numbered sections (e.g., 1, 2, 3, etc.) should be classified as primary clauses in the main 'clauses' array.\n"
-    "- Sections such as 1.1, 1.2, (a), (b), (i), (ii) must be preserved as children of their parent clause in the 'subclauses' list.\n"
+    "- Any primary section, substantive clause, or major heading (e.g., Section 1, Clause A, or unnumbered headings like 'Indemnification', 'Governing Law') should be classified as primary clauses in the main 'clauses' array.\n"
+    "- Sub-sections and list items (e.g., 1.1, 1.2, (a), (b), (i), (ii)) must be preserved as children of their parent clause in the 'subclauses' list.\n"
     "- Treat introductory contract language, party definitions, effective dates, recitals, and WHEREAS statements as PREAMBLE or RECITAL sections, not contractual clauses.\n"
     "- For each clause and subclause, include clause_type, raw_text, section_reference, confidence, normalized_text, and cuad_category.\n"
+    "- CRITICAL: The 'raw_text' field MUST contain the EXACT verbatim text from the contract document, "
+    "copied word-for-word exactly as it appears in the source text. "
+    "Do NOT paraphrase, summarize, condense, or rewrite the clause text in any way. "
+    "Copy it character-for-character, preserving all punctuation, capitalization, and legal terminology.\n"
     "- Use null for missing metadata values and empty arrays for missing lists.\n"
     "- Confidence must be a number between 0.0 and 1.0.\n"
     "- Return exactly one JSON object that matches the schema."
