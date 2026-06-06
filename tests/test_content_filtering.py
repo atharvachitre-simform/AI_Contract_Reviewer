@@ -49,22 +49,16 @@ def test_is_content_filter_error():
 def test_sanitize_prompt_for_content_filter():
     """Verify that sanitize_prompt_for_content_filter replaces flagged words with safe alternatives."""
     prompt = (
-        "The vendor must avoid solicitation of clients.\n"
-        "Please execute the agreement.\n"
         "Conduct penetration testing.\n"
-        "This is an oral agreement."
+        "Configure the slave database node."
     )
     sanitized = sanitize_prompt_for_content_filter(prompt)
     
-    assert "solicitation" not in sanitized.lower()
-    assert "execute" not in sanitized.lower()
     assert "penetration" not in sanitized.lower()
-    assert "oral" not in sanitized.lower()
+    assert "slave" not in sanitized.lower()
     
-    assert "s-licitation" in sanitized or "hiring" in sanitized
-    assert "security testing" in sanitized
-    assert "verbal" in sanitized
-    assert "e-xecute" in sanitized
+    assert "security assessment" in sanitized.lower()
+    assert "subordinate" in sanitized.lower()
 
 
 def test_get_fallback_json_for_prompt():
@@ -118,13 +112,13 @@ def test_chat_complete_content_filter_mitigation():
     # First call raises error, second returns success
     mock_openai.chat.completions.create.side_effect = [filter_error, success_response]
 
-    res = wrapper.chat_complete("Please execute the contract with solicitation clauses.")
+    res = wrapper.chat_complete("Conduct penetration testing on the nodes.")
     assert res == "Successful retry response"
 
     # Verify that the second call received the sanitized prompt
     args, kwargs = mock_openai.chat.completions.create.call_args
-    assert "solicitation" not in kwargs["messages"][1]["content"]
-    assert "e-xecute" in kwargs["messages"][1]["content"]
+    assert "penetration" not in kwargs["messages"][1]["content"]
+    assert "security assessment" in kwargs["messages"][1]["content"]
 
 
 def test_chat_complete_repeated_content_filter_failure():

@@ -173,8 +173,8 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models.clause_extraction import ClauseExtractionResult
-                state.clause_extraction = ClauseExtractionResult(**data) if isinstance(data, dict) else data
+                from ..models import ClauseExtractorOutput
+                state.clause_extraction = ClauseExtractorOutput(**data) if isinstance(data, dict) else data
                 state.metadata = state.clause_extraction.metadata
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
@@ -214,8 +214,8 @@ class AsyncContractReviewWorkflow:
         if obligation_skipped:
             data = await checkpointer.load(obligation_step)
             if data:
-                from ..models.obligation_finding import ObligationFindingResult
-                state.obligation_finding = ObligationFindingResult(**data) if isinstance(data, dict) else data
+                from ..models import ObligationFinderOutput
+                state.obligation_finding = ObligationFinderOutput(**data) if isinstance(data, dict) else data
                 yield {"step": obligation_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
                 obligation_skipped = False
@@ -223,8 +223,8 @@ class AsyncContractReviewWorkflow:
         if red_flag_skipped:
             data = await checkpointer.load(red_flag_step)
             if data:
-                from ..models.red_flag_detection import RedFlagDetectionResult
-                state.red_flag_detection = RedFlagDetectionResult(**data) if isinstance(data, dict) else data
+                from ..models import RedFlagDetectorOutput
+                state.red_flag_detection = RedFlagDetectorOutput(**data) if isinstance(data, dict) else data
                 yield {"step": red_flag_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
                 red_flag_skipped = False
@@ -264,8 +264,8 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models.risk_scoring import RiskScoringResult
-                state.risk_scoring = RiskScoringResult(**data) if isinstance(data, dict) else data
+                from ..models import RiskScorerOutput
+                state.risk_scoring = RiskScorerOutput(**data) if isinstance(data, dict) else data
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
                 completed.discard(step)
@@ -290,8 +290,8 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models.plain_english import PlainEnglishResult
-                state.plain_english = PlainEnglishResult(**data) if isinstance(data, dict) else data
+                from ..models import PlainEnglishWriterOutput
+                state.plain_english = PlainEnglishWriterOutput(**data) if isinstance(data, dict) else data
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
                 completed.discard(step)
@@ -329,8 +329,8 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models.final_report import FinalReportResult
-                state.final_report = FinalReportResult(**data) if isinstance(data, dict) else data
+                from ..models import ReportAssemblerOutput
+                state.final_report = ReportAssemblerOutput(**data) if isinstance(data, dict) else data
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
                 completed.discard(step)

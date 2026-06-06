@@ -34,28 +34,40 @@ MODEL_OPTIONS = [
 ]
 
 
-def load_text_from_upload(uploaded_file) -> str:
-    if uploaded_file is None:
-        return ""
-
-    name = uploaded_file.name.lower()
-    data = uploaded_file.read()
+@st.cache_data
+def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
+    import tempfile
+    from pathlib import Path
+    name = file_name.lower()
     if name.endswith(".pdf"):
-        st.session_state["uploaded_pdf_bytes"] = data
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(data)
+            tmp.write(file_bytes)
             tmp_path = Path(tmp.name)
         try:
             return ContractReviewService().extract_from_pdf(str(tmp_path))
         finally:
             tmp_path.unlink(missing_ok=True)
+    try:
+        return file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return file_bytes.decode("latin-1")
+
+
+def load_text_from_upload(uploaded_file) -> str:
+    if uploaded_file is None:
+        return ""
+
+    if f"file_bytes_{uploaded_file.name}" not in st.session_state:
+        st.session_state[f"file_bytes_{uploaded_file.name}"] = uploaded_file.read()
+
+    data = st.session_state[f"file_bytes_{uploaded_file.name}"]
+    name = uploaded_file.name.lower()
+    if name.endswith(".pdf"):
+        st.session_state["uploaded_pdf_bytes"] = data
     else:
         st.session_state["uploaded_pdf_bytes"] = None
 
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("latin-1")
+    return process_uploaded_file(data, uploaded_file.name)
 
 
 def _val(obj: object, default: str = "N/A") -> str:
@@ -142,6 +154,9 @@ def render_red_flag_detection(output: object) -> None:
             st.write("No red flags detected.")
             return
         st.markdown(f"**Method:** LLM")
+        if getattr(output, "summary", None) and "failed" in getattr(output, "summary", "").lower():
+            st.warning(output.summary)
+            return
         if not getattr(output, "red_flags", None):
             st.write("No red flags detected.")
             return
@@ -217,83 +232,24 @@ def render_chat_tab(contract_id: str) -> None:
         session_id = contract_id
 
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
-    import asyncio
-    summary, history = asyncio.run(chat_service._load_history())
+    history_key = f"history_{contract_id}_{session_id}"
+    if history_key not in st.session_state:
+        import asyncio
+        summary, loaded_history = asyncio.run(chat_service._load_history())
+        st.session_state[history_key] = loaded_history
+    history = st.session_state[history_key]
 
     # 1. Document Page Viewer and Multi-modal input setup
     pages_dir = Path("logs/pages") / contract_id
-    available_pages = []
-    selected_page_bytes = None
-    selected_page = None
 
     if contract_id != "general":
         st.markdown(
-            "Ask questions about the contract. Use the document viewer below to select "
-            "and visually analyze specific pages using multimodal vision."
+            "Ask questions about the contract. The chatbot has access to retrieved context from the review."
         )
-        if pages_dir.exists():
-            for file in pages_dir.glob("page_*.png"):
-                m = re.match(r"page_(\d+)\.png", file.name)
-                if m:
-                    available_pages.append(int(m.group(1)))
-        available_pages.sort()
-
-        # Premium side-by-side or layout columns for document viewer
-        if available_pages:
-            st.write("---")
-            st.markdown("### 📄 Contract Document Viewer")
-            col_img, col_info = st.columns([2, 1])
-            with col_info:
-                selected_page = st.selectbox(
-                    "Go to page number:",
-                    available_pages,
-                    help="Select a page to view or reference."
-                )
-                page_path = pages_dir / f"page_{selected_page}.png"
-                
-                # Allow using this page in vision QA
-                use_vision = st.checkbox("🔍 Query this page with Multimodal Vision", value=False)
-                if use_vision:
-                    selected_page_bytes = page_path.read_bytes()
-                    st.info(f"Vision query active: Assistant will examine Page {selected_page} screenshot.")
-                    
-                uploaded_screenshot = st.file_uploader(
-                    "Or upload another page screenshot (PNG/JPG):",
-                    type=["png", "jpg", "jpeg"],
-                    key="chat_screenshot"
-                )
-                if uploaded_screenshot:
-                    selected_page_bytes = uploaded_screenshot.getvalue()
-                    st.info("Vision query active: Assistant will examine uploaded screenshot.")
-
-            with col_img:
-                with st.expander(f"Image: Rendered Page {selected_page}", expanded=False):
-                    st.image(str(page_path), caption=f"Rendered Page {selected_page}", width="stretch")
-        else:
-            st.info("No rendered document pages available. To enable visual document viewer, upload a PDF contract.")
-            uploaded_screenshot = st.file_uploader(
-                "Upload page screenshot to query with Vision (PNG/JPG):",
-                type=["png", "jpg", "jpeg"],
-                key="chat_screenshot_upload"
-            )
-            if uploaded_screenshot:
-                selected_page_bytes = uploaded_screenshot.getvalue()
-                with st.expander("Image: Uploaded Screenshot", expanded=False):
-                    st.image(uploaded_screenshot, caption="Uploaded Screenshot", width=400)
     else:
         st.markdown(
-            "General Chat Mode active. Ask general legal questions or terminology questions. "
-            "You can also upload a screenshot to query with Multimodal Vision."
+            "General Chat Mode active. Ask general legal questions or terminology questions."
         )
-        uploaded_screenshot = st.file_uploader(
-            "Upload page screenshot to query with Vision (PNG/JPG):",
-            type=["png", "jpg", "jpeg"],
-            key="chat_screenshot_general"
-        )
-        if uploaded_screenshot:
-            selected_page_bytes = uploaded_screenshot.getvalue()
-            with st.expander("Image: Uploaded Screenshot", expanded=False):
-                st.image(uploaded_screenshot, caption="Uploaded Screenshot", width=400)
 
     st.write("---")
     st.markdown(f"### 💬 Conversation (Session: `{st.session_state['chat_session_id']}`)")
@@ -318,46 +274,34 @@ def render_chat_tab(contract_id: str) -> None:
                     with st.expander(title):
                         st.write(snippet)
                         if page and contract_id != "general" and pages_dir.exists():
-                            page_img_path = pages_dir / f"page_{page}.png"
-                            if page_img_path.exists():
-                                with st.expander("Image: Page preview", expanded=False):
-                                    st.image(str(page_img_path), caption=f"Page {page} preview", width=400)
+                            import hashlib
+                            clause_hash = hashlib.md5(snippet.strip().encode("utf-8")).hexdigest()
+                            crop_path = pages_dir / f"clause_{clause_hash}.png"
+                            if crop_path.exists():
+                                with st.expander("Image: Clause crop", expanded=False):
+                                    st.image(str(crop_path), caption=f"Page {page} - Clause Crop", use_container_width=True)
 
     # Chat Input
-    if prompt := st.chat_input("Ask a question..."):
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    if prompt := st.chat_input("Ask a question...", key="chat_input"):
+        # Append user message immediately and rerun to display it instantly
+        history.append({"role": "user", "content": prompt})
+        st.rerun()
 
+    # Generate answer if the last message in history is from the user
+    if history and history[-1]["role"] == "user":
+        user_prompt = history[-1]["content"]
         with st.chat_message("assistant"):
             with st.spinner("Generating answer..."):
                 import asyncio
-                if selected_page_bytes:
-                    res = asyncio.run(chat_service.ask_with_image(prompt, selected_page_bytes))
-                else:
-                    res = asyncio.run(chat_service.ask(prompt))
-
-                st.markdown(res["answer"])
-
-                # Draw grounding sources
-                sources = res.get("sources", [])
-                if sources:
-                    st.write("")
-                    st.markdown("**Grounding references:**")
-                    for idx, src in enumerate(sources, 1):
-                        clause_type = src.get("clause_type", "General")
-                        page = src.get("source_page")
-                        page_str = f"Page {page}" if page else ""
-                        snippet = src.get("text", "")
-                        
-                        title = f"Reference {idx}: {clause_type} {page_str}".strip()
-                        with st.expander(title):
-                            st.write(snippet)
-                            if page and contract_id != "general" and pages_dir.exists():
-                                page_img_path = pages_dir / f"page_{page}.png"
-                                if page_img_path.exists():
-                                    with st.expander(f"Image: Page {page} preview", expanded=False):
-                                        st.image(str(page_img_path), caption=f"Page {page} preview", width=400)
-        st.rerun()
+                res = asyncio.run(chat_service.ask(user_prompt))
+                
+                # Append assistant response + sources to history
+                history.append({
+                    "role": "assistant",
+                    "content": res["answer"],
+                    "sources": res.get("sources", [])
+                })
+                st.rerun()
 
 
 def render_full_review(state: object) -> None:
@@ -519,6 +463,10 @@ def main() -> None:
                     service.local_history_path.unlink()
                 if service.local_summary_path.exists():
                     service.local_summary_path.unlink()
+                # Clear session state cache
+                hk = f"history_{contract_id_for_sidebar}_{st.session_state['chat_session_id']}"
+                if hk in st.session_state:
+                    del st.session_state[hk]
                 st.rerun()
         else:
             selected_model = "Full Contract Review Pipeline"
@@ -529,6 +477,8 @@ def main() -> None:
                 ["Neutral", "Customer", "Vendor"],
                 help="Review the contract from the perspective of a specific party to tailor risk scoring and red flags."
             )
+
+
 
 
 
@@ -565,10 +515,12 @@ def main() -> None:
                 state = controller.review_contract(contract_text, perspective=perspective)
                 st.session_state["review_state"] = state
                 
-                # Render PDF page images if PDF bytes exist in session state
+                # Render clause crops if PDF bytes exist in session state
                 if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
-                    from src.helpers.page_renderer import render_pdf_pages_as_images
-                    render_pdf_pages_as_images(st.session_state["uploaded_pdf_bytes"], state.contract_id)
+                    from src.helpers.page_renderer import render_clause_crops
+                    pdf_bytes = st.session_state["uploaded_pdf_bytes"]
+                    if getattr(state, "clause_extraction", None) and getattr(state.clause_extraction, "clauses", None):
+                        render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
             else:
                 clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
                 clause_output = extract_clauses(contract_text, llm_client=clause_client)

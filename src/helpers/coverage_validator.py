@@ -33,7 +33,8 @@ def calculate_coverage(
 
     # Extract clause numbers from clause section references or types
     clause_numbers = []
-    number_pattern = re.compile(r'(?:clause|section|article|para|part)?\s*(\d+)', re.IGNORECASE)
+    # Match numbers either preceded by a clause/section keyword or at the very start of the string
+    number_pattern = re.compile(r'\b(?:clause|section|article|para|part|§)\s*(\d+)\b|^\s*(\d+)\b', re.IGNORECASE)
     
     # We only inspect top-level clauses
     top_level_count = len(clauses)
@@ -43,7 +44,14 @@ def calculate_coverage(
                 match = number_pattern.search(text_source)
                 if match:
                     try:
-                        clause_numbers.append(int(match.group(1)))
+                        val = match.group(1) or match.group(2)
+                        if val:
+                            num = int(val)
+                            # Exclude likely years, large numbers, or common durations unless explicitly labeled
+                            if match.group(2):  # matched start of string without section/clause prefix keyword
+                                if num > 100 or num in {30, 60, 90, 180, 365}:
+                                    continue
+                            clause_numbers.append(num)
                     except ValueError:
                         pass
 

@@ -1,7 +1,7 @@
 import os
 from unittest.mock import patch, MagicMock
 import pytest
-from src.services.azure_clients import AzureClientFactory, AzureOpenAIWrapper
+from src.services.azure_clients import AzureClientFactory, AzureOpenAIWrapper, BUSINESS_DOMAIN_HEADER
 
 def test_get_openai_client_for_agent_defaults():
     """Verify that if no agent-specific variables are defined, it falls back to defaults."""
@@ -92,7 +92,7 @@ def test_response_format_json_mode_pass_through():
     mock_openai.chat.completions.create.assert_called_once_with(
         model="test-deployment",
         messages=[
-            {"role": "system", "content": "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."},
+            {"role": "system", "content": BUSINESS_DOMAIN_HEADER + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."},
             {"role": "user", "content": "Hello"}
         ],
         temperature=0.0,

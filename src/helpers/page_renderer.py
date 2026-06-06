@@ -107,50 +107,49 @@ def render_clause_crops(pdf_bytes: bytes, contract_id: str, clauses: list[Any], 
             rect = None
             found_page_idx = None
             
-            # Search for the clause text
-            search_query = raw_text.strip()
-            # Normalize whitespace/newline for clean searching
-            search_query = re.sub(r"\s+", " ", search_query)
-            
-            # Use first 80 characters of clause for stable search
-            if len(search_query) > 80:
-                search_query = search_query[:80]
+            # Search for the clause text using chunk-based matching for robust line-wrapping and paragraph coverage
+            full_query = re.sub(r"\s+", " ", raw_text.strip())
+            if not full_query:
+                continue
+                
+            # Split into phrase chunks to bypass newline matching limitations in page.search_for()
+            words = full_query.split()
+            chunks = []
+            chunk_size = 6
+            for i in range(0, len(words), chunk_size):
+                chunk = " ".join(words[i:i+chunk_size])
+                if len(chunk) >= 10:
+                    chunks.append(chunk)
+            if not chunks and words:
+                chunks.append(" ".join(words))
                 
             for p_idx in pages_to_search:
                 if p_idx < 0 or p_idx >= len(doc):
                     continue
                 page = doc[p_idx]
-                rects = page.search_for(search_query)
-                if rects:
-                    rect = rects[0]
-                    for r in rects[1:]:
-                        rect = rect | r
-                    found_page_idx = p_idx
-                    break
-                    
-            # Fallback search if first search failed (try first 40 chars)
-            if rect is None:
-                short_query = raw_text.strip()[:40] if len(raw_text.strip()) > 40 else raw_text.strip()
-                for p_idx in pages_to_search:
-                    if p_idx < 0 or p_idx >= len(doc):
-                        continue
-                    page = doc[p_idx]
-                    rects = page.search_for(short_query)
+                
+                matched_rects = []
+                for chunk in chunks:
+                    rects = page.search_for(chunk)
                     if rects:
-                        rect = rects[0]
-                        for r in rects[1:]:
-                            rect = rect | r
-                        found_page_idx = p_idx
-                        break
+                        matched_rects.extend(rects)
+                        
+                if matched_rects:
+                    found_page_idx = p_idx
+                    min_y0 = min(r.y0 for r in matched_rects)
+                    max_y1 = max(r.y1 for r in matched_rects)
+                    # We crop the full width of the page to prevent any text being cut off horizontally
+                    rect = fitz.Rect(0, min_y0, page.rect.x1, max_y1)
+                    break
             
             if rect is not None and found_page_idx is not None:
                 page = doc[found_page_idx]
-                # Bounding box with padding margin
+                # Bounding box with padding margin (vertical only, full width horizontally)
                 margin = 15
                 rect_with_margin = fitz.Rect(
-                    max(0, rect.x0 - margin),
+                    0,
                     max(0, rect.y0 - margin),
-                    min(page.rect.x1, rect.x1 + margin),
+                    page.rect.x1,
                     min(page.rect.y1, rect.y1 + margin)
                 )
                 
