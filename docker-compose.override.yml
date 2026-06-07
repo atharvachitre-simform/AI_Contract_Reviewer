@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  backend:
+    volumes:
+      # Mount codebase for hot-reloading
+      - .:/app
+      # Preserve the container's internal Linux virtual environment
+      - /app/.venv
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      - DEBUG=True
+      - PYTHONDEVMODE=1
+
+  frontend:
+    volumes:
+      # Mount codebase for hot-reloading
+      - .:/app
+      # Preserve the container's internal Linux virtual environment
+      - /app/.venv
+    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.fileWatcherType=poll"]
+    environment:
+      - DEBUG=True
