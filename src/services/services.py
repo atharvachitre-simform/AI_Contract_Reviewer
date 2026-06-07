@@ -266,6 +266,13 @@ class ContractReviewService:
         latency on every upload. Rejects only clear non-contracts
         (invoices, resumes, news articles, etc.)
         """
+        import re
+        if text is not None and "--- PAGE" in text and re.match(r"^(\s*---\s*PAGE\s*\d+\s*---\s*)*$", text):
+            raise ValueError(
+                "This PDF appears to be a scanned image document with no extractable "
+                "text. Please upload a text-based PDF or use OCR software first."
+            )
+
         if not text or not text.strip():
             return False
 
@@ -439,22 +446,66 @@ class ContractReviewService:
 
         from ..helpers.pdf_cleaner import clean_extracted_pages
 
-        if pdf_path.startswith("http") or pdf_path.startswith("contracts/"):
-            try:
-                raw_bytes = self.azure.download_blob_bytes(pdf_path)
-                document = fitz.open(stream=raw_bytes, filetype="pdf")
-                pages = [page.get_text("text") for page in document]
-                document.close()
-                return clean_extracted_pages(pages)
-            except Exception:
-                pass
-
-        doc = fitz.open(pdf_path)
         try:
-            pages = [page.get_text("text") for page in doc]
-            return clean_extracted_pages(pages)
-        finally:
-            doc.close()
+            if pdf_path.startswith("http") or pdf_path.startswith("contracts/"):
+                raw_bytes = self.azure.download_blob_bytes(pdf_path)
+                if not raw_bytes.startswith(b"%PDF"):
+                    raise ValueError("The uploaded file does not appear to be a valid PDF.")
+                try:
+                    document = fitz.open(stream=raw_bytes, filetype="pdf")
+                except fitz.EmptyFileError:
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                except (fitz.FileDataError, Exception) as e:
+                    err_msg = str(e).lower()
+                    if "encrypted" in err_msg or "password" in err_msg:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                try:
+                    if len(document) == 0:
+                        raise ValueError("The uploaded PDF has no pages.")
+                    if document.is_encrypted or document.needs_pass:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    pages = [page.get_text("text") for page in document]
+                    return clean_extracted_pages(pages)
+                finally:
+                    document.close()
+            else:
+                path_obj = Path(pdf_path)
+                if not path_obj.exists() or path_obj.stat().st_size == 0:
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                with open(pdf_path, "rb") as f:
+                    header = f.read(4)
+                if header != b"%PDF":
+                    raise ValueError("The uploaded file does not appear to be a valid PDF.")
+                
+                try:
+                    doc = fitz.open(pdf_path)
+                except fitz.EmptyFileError:
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                except (fitz.FileDataError, Exception) as e:
+                    err_msg = str(e).lower()
+                    if "encrypted" in err_msg or "password" in err_msg:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                try:
+                    if len(doc) == 0:
+                        raise ValueError("The uploaded PDF has no pages.")
+                    if doc.is_encrypted or doc.needs_pass:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    pages = [page.get_text("text") for page in doc]
+                    return clean_extracted_pages(pages)
+                finally:
+                    doc.close()
+        except ValueError as ve:
+            raise ve
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "encrypted" in err_msg or "password" in err_msg:
+                raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+            raise ValueError("This PDF appears to be corrupted or invalid.")
 
     def save_checkpoint(self, state_id: str, state: ContractReviewState) -> None:
         """Save workflow state to Redis for checkpoint persistence.

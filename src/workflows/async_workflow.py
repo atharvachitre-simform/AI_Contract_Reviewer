@@ -142,7 +142,12 @@ class AsyncContractReviewWorkflow:
         checkpointer = RedisCheckpointer(contract_id=contract_id)
 
         # Determine already-completed steps when resuming
-        completed = set(await checkpointer.completed_steps()) if resume else set()
+        if resume:
+            hash_matched = await checkpointer.verify_or_update_hash(contract_text)
+            completed = set(await checkpointer.completed_steps()) if hash_matched else set()
+        else:
+            await checkpointer.verify_or_update_hash(contract_text)
+            completed = set()
 
         # ------------------------------------------------------------------
         # Import agents lazily to avoid heavy top-level import cost

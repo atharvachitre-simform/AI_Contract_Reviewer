@@ -62,7 +62,6 @@ AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "40")
 
 # --- Groq Configuration ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()
-
-
+GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()# --- File Upload Limits ---
+MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "50"))
 

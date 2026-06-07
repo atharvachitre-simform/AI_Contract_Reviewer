@@ -169,3 +169,85 @@ class RedisCheckpointer:
             if data is not None:
                 found.append(s)
         return found
+
+    async def verify_or_update_hash(self, contract_text: str) -> bool:
+        """Compute SHA-256 hash of contract_text and compare to stored hash.
+
+        If no stored hash exists, save it and return True.
+        If stored hash exists and matches, return True.
+        If stored hash exists and differs, delete all checkpoints and return False.
+        """
+        import hashlib
+        if not contract_text:
+            return True
+
+        new_hash = hashlib.sha256(contract_text.encode("utf-8")).hexdigest()
+
+        # Load metadata
+        meta_key = f"checkpoint:{self.contract_id}:metadata"
+        stored_hash = None
+
+        if await self._is_redis_up():
+            try:
+                blob = await self._redis.get(meta_key)
+                if blob:
+                    stored_hash = json.loads(blob).get("contract_text_hash")
+            except Exception:
+                pass
+
+        # If not in Redis, try local fallback
+        meta_path = self._local_dir / "metadata.json"
+        if not stored_hash and meta_path.exists():
+            try:
+                stored_hash = json.loads(meta_path.read_text(encoding="utf-8")).get("contract_text_hash")
+            except Exception:
+                pass
+
+        if not stored_hash:
+            # Save the initial checkpoint hash
+            payload = {"contract_text_hash": new_hash}
+            blob = json.dumps(payload)
+            if await self._is_redis_up():
+                try:
+                    await self._redis.setex(meta_key, self.ttl, blob)
+                except Exception:
+                    pass
+            try:
+                meta_path.write_text(blob, encoding="utf-8")
+            except Exception:
+                pass
+            return True
+
+        if stored_hash == new_hash:
+            return True
+
+        # Hashes differ! Delete everything for this contract_id
+        logger.warning(f"Checkpointer: contract text hash changed for contract '{self.contract_id}'. Starting fresh.")
+        await self.delete()
+
+        # Delete metadata too
+        if await self._is_redis_up():
+            try:
+                await self._redis.delete(meta_key)
+            except Exception:
+                pass
+        if meta_path.exists():
+            try:
+                meta_path.unlink()
+            except Exception:
+                pass
+
+        # Save new hash
+        payload = {"contract_text_hash": new_hash}
+        blob = json.dumps(payload)
+        if await self._is_redis_up():
+            try:
+                await self._redis.setex(meta_key, self.ttl, blob)
+            except Exception:
+                pass
+        try:
+            meta_path.write_text(blob, encoding="utf-8")
+        except Exception:
+            pass
+
+        return False

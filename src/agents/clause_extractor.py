@@ -149,9 +149,11 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
             llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
 
             # --- Diagnostic: log finish_reason to detect token truncation ---
+            import hashlib
+            cleaned_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
             logger.debug(
                 f"[CLAUSE_EXTRACTOR_RAW] single-chunk response "
-                f"(first 500 chars): {llm_response[:500]!r}"
+                f"[CONTRACT TEXT: {len(cleaned_text)} chars, hash: {cleaned_hash[:8]}]"
             )
             _log_clause_finish_reason(llm_client, chunk_label="single-chunk")
             # --- End diagnostic ---
@@ -229,9 +231,11 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                 llm_response = llm_client.chat_complete(prompt, temperature=0.0, max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS)
 
                 # --- Diagnostic: log finish_reason to detect token truncation ---
+                import hashlib
+                chunk_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
                 logger.debug(
                     f"[CLAUSE_EXTRACTOR_RAW] chunk {idx} response "
-                    f"(first 500 chars): {llm_response[:500]!r}"
+                    f"[CONTRACT TEXT: {len(chunk)} chars, hash: {chunk_hash[:8]}]"
                 )
                 _log_clause_finish_reason(llm_client, chunk_label=f"chunk {idx}/{len(chunks)}")
                 # --- End diagnostic ---
@@ -243,23 +247,27 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
                     if parsed.get("metadata") and isinstance(parsed["metadata"], dict):
                         metadata.update({k: v for k, v in parsed["metadata"].items() if v})
             
-        # Deduplicate and merge clauses based on normalized raw text
+        # Deduplicate and merge clauses based on fuzzy matching
+        import difflib
+        all_clauses = (state.get("clauses") or []) + clauses
         unique_clauses = []
-        seen_texts = set()
-        
-        # Carry over existing clauses (if any) from previous runs (e.g. self-correction)
-        existing_clauses = state.get("clauses") or []
-        for c in existing_clauses:
-            normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
-            if normalized_raw not in seen_texts:
-                seen_texts.add(normalized_raw)
+        for c in all_clauses:
+            duplicate_idx = -1
+            for idx, uc in enumerate(unique_clauses):
+                c_norm = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
+                uc_norm = re.sub(r'\s+', ' ', uc.raw_text.strip().lower())
+                ratio = difflib.SequenceMatcher(None, c_norm, uc_norm).ratio()
+                if ratio > 0.85:
+                    duplicate_idx = idx
+                    break
+            if duplicate_idx == -1:
                 unique_clauses.append(c)
-                
-        for c in clauses:
-            normalized_raw = re.sub(r'\s+', ' ', c.raw_text.strip().lower())
-            if normalized_raw not in seen_texts:
-                seen_texts.add(normalized_raw)
-                unique_clauses.append(c)
+            else:
+                existing_c = unique_clauses[duplicate_idx]
+                c_conf = c.confidence if c.confidence is not None else 0.0
+                ext_conf = existing_c.confidence if existing_c.confidence is not None else 0.0
+                if c_conf > ext_conf:
+                    unique_clauses[duplicate_idx] = c
         clauses = unique_clauses
         
         if not clauses:
@@ -378,7 +386,8 @@ def create_clause_extraction_graph(llm_client: Any | None = None, memory_context
     
     # Add edges
     workflow.set_entry_point("normalize")
-    workflow.add_edge("normalize", "llm_extract")
+    workflow.add_edge("normalize", "retrieve_references")
+    workflow.add_edge("retrieve_references", "llm_extract")
     workflow.add_edge("llm_extract", "validate_confidence")
     workflow.add_edge("validate_confidence", END)
     
@@ -541,7 +550,14 @@ def _build_clauses_from_llm(clauses_data: list[dict[str, Any]]) -> list[ClauseSp
         raw_text = clause_obj.get("raw_text") or ""
         if not raw_text:
             continue
-        confidence = float(clause_obj.get("confidence", 0.4))
+        raw_confidence = clause_obj.get("confidence", 0.4)
+        CONFIDENCE_MAP = {"high": 0.85, "medium": 0.5, "low": 0.2,
+                          "very high": 0.95, "very low": 0.1}
+        try:
+            confidence = float(raw_confidence)
+        except (ValueError, TypeError):
+            confidence = CONFIDENCE_MAP.get(
+                str(raw_confidence).lower().strip(), 0.5)
         
         # Recursively build subclauses
         subclauses_data = clause_obj.get("subclauses") or []

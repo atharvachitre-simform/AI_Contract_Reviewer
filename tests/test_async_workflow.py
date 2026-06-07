@@ -42,6 +42,7 @@ def test_async_workflow_run_streaming_imports_and_flow():
         mock_checkpointer.completed_steps = AsyncMock(return_value=[])
         mock_checkpointer.save = AsyncMock()
         mock_checkpointer.load = AsyncMock(return_value=None)
+        mock_checkpointer.verify_or_update_hash = AsyncMock(return_value=True)
 
         # Apply patches
         patches = [
@@ -115,6 +116,7 @@ def test_async_workflow_resume_from_checkpoint():
             "final_report",
         ])
         mock_checkpointer.save = AsyncMock()
+        mock_checkpointer.verify_or_update_hash = AsyncMock(return_value=True)
 
         # Define side_effect for checkpointer load
         async def mock_load(step):

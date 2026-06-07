@@ -7,7 +7,14 @@ from fastapi import FastAPI, HTTPException, Response, Form, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import re
 from .controllers.controller import review_contract
+
+def sanitize_contract_id(contract_id: str) -> str:
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', contract_id):
+        raise HTTPException(status_code=400,
+            detail="Invalid contract ID format")
+    return contract_id
 
 app = FastAPI(title="Contract Reviewer")
 
@@ -55,6 +62,8 @@ def health():
 @app.post("/review")
 def review(request: ReviewRequest):
     """Run the contract review workflow (synchronous)."""
+    if request.contract_id is not None:
+        sanitize_contract_id(request.contract_id)
     state = review_contract(
         request.contract_text,
         contract_id=request.contract_id,
@@ -70,6 +79,7 @@ def review(request: ReviewRequest):
 @app.get("/api/v1/review/{contract_id}/export")
 def export_review(contract_id: str, format: str = "pdf"):
     """Export review results as MD, PDF, or DOCX."""
+    contract_id = sanitize_contract_id(contract_id)
     from .services.services import ContractReviewService
     from .helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
 
@@ -111,6 +121,9 @@ def export_review(contract_id: str, format: str = "pdf"):
 @app.post("/api/v1/chat")
 async def chat(request: ChatRequest):
     """Answer a text question using RAG grounding (async)."""
+    sanitize_contract_id(request.contract_id)
+    if request.session_id:
+        sanitize_contract_id(request.session_id)
     from .services.chat_service import ContractChatService
 
     chat_service = ContractChatService(
@@ -131,10 +144,20 @@ async def chat_image(
     session_id: str | None = Form(None),
     file: UploadFile = File(...),
 ):
-    """Answer a question about a contract using a page screenshot image."""
+    sanitize_contract_id(contract_id)
+    if session_id:
+        sanitize_contract_id(session_id)
     from .services.chat_service import ContractChatService
 
-    image_bytes = await file.read()
+    from src import config
+    file_size = getattr(file, "size", None)
+    if file_size is None:
+        image_bytes = await file.read()
+        file_size = len(image_bytes)
+    else:
+        image_bytes = await file.read()
+    if file_size > config.MAX_PDF_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File size exceeds the limit of {config.MAX_PDF_SIZE_MB}MB.")
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
     return await chat_service.ask_with_image(question, image_bytes)
 
@@ -146,6 +169,7 @@ async def chat_image(
 @app.get("/api/v1/review/{contract_id}/page/{page_num}")
 def get_page_image(contract_id: str, page_num: int):
     """Retrieve rendered PDF page PNG."""
+    contract_id = sanitize_contract_id(contract_id)
     import os
     from fastapi.responses import FileResponse
 
@@ -200,6 +224,8 @@ async def review_stream(request: StreamReviewRequest):
 
     The final event has ``"done": true``.
     """
+    if request.contract_id is not None:
+        sanitize_contract_id(request.contract_id)
     return StreamingResponse(
         _sse_event_stream(
             contract_text=request.contract_text,
@@ -222,6 +248,7 @@ async def review_stream(request: StreamReviewRequest):
 @app.get("/api/v1/review/{contract_id}/checkpoint")
 async def get_checkpoint_status(contract_id: str):
     """Return which pipeline steps have been checkpointed for a contract."""
+    contract_id = sanitize_contract_id(contract_id)
     from .checkpointing.redis_checkpointer import RedisCheckpointer
 
     checkpointer = RedisCheckpointer(contract_id=contract_id)
@@ -232,6 +259,7 @@ async def get_checkpoint_status(contract_id: str):
 @app.delete("/api/v1/review/{contract_id}/checkpoint")
 async def delete_checkpoint(contract_id: str, step: str | None = None):
     """Delete checkpoint(s) for a contract (all steps if step is omitted)."""
+    contract_id = sanitize_contract_id(contract_id)
     from .checkpointing.redis_checkpointer import RedisCheckpointer
 
     checkpointer = RedisCheckpointer(contract_id=contract_id)

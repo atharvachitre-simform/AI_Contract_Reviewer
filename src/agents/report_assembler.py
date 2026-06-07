@@ -287,6 +287,23 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
 		"Intellectual Property": "IP Ownership Assignment",
 	}
 	
+	CLAUSE_SYNONYMS = {
+		"Governing Law": ["governing law", "choice of law", "applicable law",
+                      "jurisdiction", "governing jurisdiction"],
+		"Termination": ["termination", "term and termination", "expiration",
+                    "cancellation", "right to terminate"],
+		"Confidentiality": ["confidentiality", "non-disclosure", "nda",
+                        "proprietary information", "trade secret"],
+		"Indemnification": ["indemnification", "indemnity", "hold harmless",
+                        "defend and indemnify"],
+		"Limitation of Liability": ["limitation of liability", "liability cap",
+                                 "liability limit", "cap on liability",
+                                 "maximum liability"],
+		"Intellectual Property": ["intellectual property", "ip rights",
+                               "ownership of ip", "proprietary rights",
+                               "license grant", "ip ownership"]
+	}
+	
 	# Extract recursively all clause types and cuad categories detected
 	def get_all_detected(cl_list: list[Any]) -> set[str]:
 		detected = set()
@@ -304,9 +321,10 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
 	
 	validated_missing = []
 	for display_name, cuad_name in required_categories.items():
+		synonyms = CLAUSE_SYNONYMS.get(display_name, [display_name.lower(), cuad_name.lower()])
 		found = False
 		for term in detected_terms:
-			if display_name.lower() in term or cuad_name.lower() in term:
+			if any(syn in term for syn in synonyms):
 				found = True
 				break
 				
