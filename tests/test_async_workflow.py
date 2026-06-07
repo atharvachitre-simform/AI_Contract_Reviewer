@@ -2,9 +2,8 @@
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
 
-from src.models import ContractReviewState, ProcessingStatus
+from src.models import ProcessingStatus
 from src.workflows.async_workflow import AsyncContractReviewWorkflow
 
 

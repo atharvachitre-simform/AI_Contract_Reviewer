@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from .system_context import BUSINESS_DOMAIN_HEADER
 
 
 def build_risk_scorer_prompt(
@@ -79,13 +80,7 @@ def build_risk_scorer_prompt(
                 prior_context_block += f"- Previous main findings: {key_risks}\n"
             prior_context_block += "Check whether these risks have been mitigated in this version of the contract.\n\n"
 
-    prompt = f"""SYSTEM CONTEXT — READ BEFORE PROCESSING:
-This is a B2B legal technology platform used exclusively by licensed legal professionals, corporate counsel, and compliance officers for the review and analysis of commercial contracts and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).
-
-CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language extracted from executed or draft business agreements. Any terminology that appears sensitive in isolation — such as adult content licensing, indemnification, liability for bodily harm, non-solicitation, exclusivity, or termination — is standard commercial contract language and must be analyzed in its legal and professional context.
-
-OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. Do not produce harmful, hateful, sexually explicit, or violent content. Treat all contract language as professional legal text requiring formal legal interpretation.
-
+    prompt = f"""{BUSINESS_DOMAIN_HEADER}
 ROLE: You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.
 
 ROLE & OBJECTIVE:
@@ -140,46 +135,5 @@ CONTRACT CLAUSES TO ANALYZE:
 {clauses_text}{reference_section}
 
 Begin analysis now and return only valid JSON. No markdown, no explanation."""
-
-    return prompt
-
-
-def build_risk_scorer_summary_prompt(
-    clauses_text: str,
-    identified_risks: list[dict[str, Any]],
-) -> str:
-    """
-    Build a follow-up prompt for summarizing and consolidating risk findings.
-    
-    Args:
-        clauses_text: Original contract clauses
-        identified_risks: List of identified risk issues
-        
-    Returns:
-        Structured consolidation prompt
-    """
-    risks_json = "\n".join([str(r) for r in identified_risks[:5]])  # Top 5 risks
-    
-    prompt = f"""You are consolidating risk analysis results for contract review.
-
-Given the identified risks below, provide an executive summary of the overall contract risk posture.
-
-IDENTIFIED RISKS:
-{risks_json}
-
-TASK:
-1. Calculate weighted overall risk score (average of all risk_scores)
-2. Determine overall risk level: HIGH (>0.6), MEDIUM (0.3-0.6), LOW (<0.3)
-3. Rank issues by impact (which 3-5 need immediate negotiation attention)
-4. Provide 2-3 key negotiation talking points
-
-OUTPUT (JSON only):
-{{
-  "overall_risk_level": "HIGH|MEDIUM|LOW",
-  "overall_risk_score": <float>,
-  "top_risks_requiring_attention": ["<issue 1>", "<issue 2>", "<issue 3>"],
-  "key_negotiation_points": ["<point 1>", "<point 2>", "<point 3>"],
-  "summary": "<1 sentence overall assessment>"
-}}"""
 
     return prompt

@@ -1,6 +1,5 @@
 import os
 from unittest.mock import patch, MagicMock
-import pytest
 from src.services.azure_clients import AzureClientFactory, AzureOpenAIWrapper, BUSINESS_DOMAIN_HEADER
 
 def test_get_openai_client_for_agent_defaults():

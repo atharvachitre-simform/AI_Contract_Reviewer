@@ -1,6 +1,4 @@
-import os
 import importlib
-import pytest
 from src import config
 
 def test_config_defaults():

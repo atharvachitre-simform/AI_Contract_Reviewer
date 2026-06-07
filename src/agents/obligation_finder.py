@@ -10,7 +10,7 @@ from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from ..helpers.contract_analysis import extract_dates, extract_numbers_and_periods
+
 from ..models import ClauseExtractorOutput, ObligationFinderOutput, ObligationItem
 from ..prompts.obligation_finder_prompt import build_obligation_finder_prompt, SYSTEM_INSTRUCTION, OUTPUT_SCHEMA
 

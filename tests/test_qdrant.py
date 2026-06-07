@@ -1,5 +1,5 @@
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Mock qdrant_client module and submodules before any tests or imports run
 mock_qdrant = MagicMock()
@@ -11,7 +11,6 @@ sys.modules["qdrant_client.models"] = mock_models
 
 # Import under test
 from src.services.azure_clients import MemoryStore, AzureClientFactory
-import pytest
 
 def test_index_clauses_in_qdrant_success():
     mock_factory = MagicMock(spec=AzureClientFactory)

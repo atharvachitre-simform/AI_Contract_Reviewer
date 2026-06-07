@@ -1,6 +1,5 @@
 """Unit tests for FastAPI Chat and Page retrieval endpoints."""
 
-import os
 import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock

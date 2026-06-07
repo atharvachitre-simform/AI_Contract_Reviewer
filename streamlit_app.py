@@ -3,8 +3,6 @@
 This app exposes the available review models and a simple pipeline selection UI.
 """
 
-from __future__ import annotations
-
 import tempfile
 from pathlib import Path
 
@@ -19,7 +17,6 @@ from src.agents import (
     score_risks,
 )
 from src.controllers.controller import ContractReviewController
-from src.models import ClauseExtractorOutput
 from src.services.azure_clients import AzureClientFactory
 from src.services.services import ContractReviewService
 
@@ -773,9 +770,8 @@ def main() -> None:
                 history_file = chat_dir / f"{s_id}_history.json"
                 if history_file.exists():
                     try:
-                        import time
                         from datetime import datetime
-                        mtime = os.path.getmtime(str(history_file))
+                        mtime = history_file.stat().st_mtime
                         date_str = datetime.fromtimestamp(mtime).strftime("%b %d, %H:%M")
                         return f"Session ({date_str})"
                     except Exception:
