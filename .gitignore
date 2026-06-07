@@ -66,3 +66,13 @@ logs/
 
 # Docker
 .dockerignore
+
+# Markdowns
+!README.md
+*.md
+
+
+
+
+# Local data folder for initial development
+data
