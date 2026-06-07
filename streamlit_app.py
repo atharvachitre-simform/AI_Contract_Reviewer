@@ -54,6 +54,30 @@ def load_text_from_upload(uploaded_file) -> str:
     if uploaded_file is None:
         return ""
 
+    current_name = uploaded_file.name
+    if st.session_state.get("last_uploaded_filename") != current_name:
+        keys_to_clear = [
+            "review_report", "chat_history", "contract_text", "contract_id",
+            "clause_extraction", "red_flags", "obligations", "risk_score",
+            "plain_english", "negotiation_priorities", "missing_clauses",
+            "review_state", "single_model_output", "single_model_type",
+            "uploaded_pdf_bytes"
+        ]
+        cleared_any = False
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+                cleared_any = True
+
+        for key in list(st.session_state.keys()):
+            if key.startswith("history_") or key == "chat_session_id" or key == "last_contract_id":
+                del st.session_state[key]
+                cleared_any = True
+
+        if cleared_any:
+            st.info("Previous analysis cleared.")
+        st.session_state["last_uploaded_filename"] = current_name
+
     if f"file_bytes_{uploaded_file.name}" not in st.session_state:
         st.session_state[f"file_bytes_{uploaded_file.name}"] = uploaded_file.read()
 
@@ -416,13 +440,7 @@ def render_chat_tab(contract_id: str) -> None:
 
     st.subheader("💬 Interactive Contract Chat Q&A")
     
-    # Session ID resolution
-    if "chat_session_id" not in st.session_state:
-        st.session_state["chat_session_id"] = contract_id
-        
-    session_id = st.session_state["chat_session_id"]
-    if session_id == "Default Session":
-        session_id = contract_id
+    session_id = contract_id
 
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
     history_key = f"history_{contract_id}_{session_id}"
@@ -449,7 +467,7 @@ def render_chat_tab(contract_id: str) -> None:
     col_chat, col_grounding = st.columns([2, 1])
 
     with col_chat:
-        st.markdown(f"### 💬 Conversation (Session: `{st.session_state['chat_session_id']}`)")
+        st.markdown("### 💬 Conversation")
         
         # Render history dynamically (clean flow, without inline grounding references)
         for turn in history:
@@ -460,16 +478,6 @@ def render_chat_tab(contract_id: str) -> None:
         if prompt := st.chat_input("Ask a question...", key="chat_input"):
             # Append user message immediately and rerun to display it instantly
             history.append({"role": "user", "content": prompt})
-            
-            # Auto-name chat session if it's a custom session and has no summary file yet
-            chat_dir = Path("logs/chat") / contract_id
-            if session_id != contract_id and session_id != "Default Session":
-                summary_file = chat_dir / f"{session_id}_summary.txt"
-                if not summary_file.exists():
-                    clean_q = re.sub(r'[^\w\s\-\?]', '', prompt).strip()
-                    short_q = clean_q[:35] + "..." if len(clean_q) > 35 else clean_q
-                    summary_file.parent.mkdir(parents=True, exist_ok=True)
-                    summary_file.write_text(short_q, encoding="utf-8")
             st.rerun()
 
         # Generate answer if the last message in history is from the user
@@ -711,119 +719,11 @@ def main() -> None:
                     if loaded_state:
                         st.session_state["review_state"] = loaded_state
                         st.session_state["active_view"] = "📄 Review Report"
-                        st.session_state["chat_session_id"] = c_id
                         st.rerun()
                     else:
                         st.error("Failed to load selected checkpoint.")
         else:
             st.info("No past reviews found on disk.")
-            
-        st.divider()
-
-        # --- 2. Chat Sessions Section ---
-        if chatbot_active and contract_id_for_sidebar:
-            st.header("Chat Sessions")
-            chat_dir = Path("logs/chat") / contract_id_for_sidebar
-            session_files = []
-            if chat_dir.exists():
-                session_files = list(chat_dir.glob("*_history.json"))
-            
-            sessions = ["Default Session"]
-            for f in session_files:
-                s_id = f.name.replace("_history.json", "")
-                if s_id != contract_id_for_sidebar and s_id not in sessions:
-                    sessions.append(s_id)
-            
-            # Reset chat_session_id if we switched contracts
-            if st.session_state.get("last_contract_id") != contract_id_for_sidebar:
-                st.session_state["chat_session_id"] = contract_id_for_sidebar
-                st.session_state["last_contract_id"] = contract_id_for_sidebar
-
-            if "chat_session_id" not in st.session_state:
-                st.session_state["chat_session_id"] = contract_id_for_sidebar
-
-            # Always ensure the active session is present in the list of selectbox options
-            active_sid = st.session_state["chat_session_id"]
-            if active_sid and active_sid not in sessions:
-                if active_sid != contract_id_for_sidebar and active_sid != "Default Session":
-                    sessions.append(active_sid)
-
-            # Formatter for friendly chat session labels
-            def format_session(s_id: str) -> str:
-                if s_id == "Default Session" or s_id == contract_id_for_sidebar:
-                    return "Default Session"
-                
-                # Check summary text
-                summary_file = chat_dir / f"{s_id}_summary.txt"
-                if summary_file.exists():
-                    try:
-                        summary_text = summary_file.read_text(encoding="utf-8").strip()
-                        if summary_text:
-                            clean_text = summary_text.replace("\n", " ")
-                            if len(clean_text) > 35:
-                                return f"Session: {clean_text[:35]}..."
-                            return f"Session: {clean_text}"
-                    except Exception:
-                        pass
-                
-                # Check history file modification time
-                history_file = chat_dir / f"{s_id}_history.json"
-                if history_file.exists():
-                    try:
-                        from datetime import datetime
-                        mtime = history_file.stat().st_mtime
-                        date_str = datetime.fromtimestamp(mtime).strftime("%b %d, %H:%M")
-                        return f"Session ({date_str})"
-                    except Exception:
-                        pass
-                
-                return f"Session ({s_id[:8]})"
-
-            def switch_chat_session():
-                st.session_state["chat_session_id"] = st.session_state["chat_session_selector"]
-
-            selected_session = st.selectbox(
-                "Select Chat Session",
-                sessions,
-                index=sessions.index(st.session_state["chat_session_id"]) if st.session_state["chat_session_id"] in sessions else 0,
-                format_func=format_session,
-                key="chat_session_selector",
-                on_change=switch_chat_session
-            )
-            st.session_state["chat_session_id"] = selected_session
-            
-            col_cbtn1, col_cbtn2 = st.columns(2)
-            with col_cbtn1:
-                if st.button("➕ New Chat", use_container_width=True):
-                    import uuid
-                    new_id = str(uuid.uuid4())
-                    st.session_state["chat_session_id"] = new_id
-                    st.session_state["chat_session_selector"] = new_id
-                    st.rerun()
-            with col_cbtn2:
-                if st.button("🗑️ Clear", use_container_width=True):
-                    import asyncio
-                    from src.services.chat_service import ContractChatService
-                    service = ContractChatService(
-                        contract_id=contract_id_for_sidebar,
-                        session_id=st.session_state["chat_session_id"]
-                    )
-                    # Delete from async Redis
-                    async def _clear():
-                        if await service._is_redis_available():
-                            await service.async_redis.delete(service.history_key)
-                            await service.async_redis.delete(service.summary_key)
-                    asyncio.run(_clear())
-                    # Delete local files
-                    if service.local_history_path.exists():
-                        service.local_history_path.unlink()
-                    if service.local_summary_path.exists():
-                        service.local_summary_path.unlink()
-                    # Clear session state cache
-                    hk = f"history_{contract_id_for_sidebar}_{st.session_state['chat_session_id']}"
-                    if hk in st.session_state:
-                        del st.session_state[hk]
-                    st.rerun()
 
 
 
@@ -847,6 +747,10 @@ def main() -> None:
 
         default_text = ""
         if uploaded_file is not None:
+            from src import config
+            if uploaded_file.size > config.MAX_PDF_SIZE_MB * 1024 * 1024:
+                st.error(f"File size exceeds the limit of {config.MAX_PDF_SIZE_MB}MB.")
+                st.stop()
             default_text = load_text_from_upload(uploaded_file)
 
         contract_text = st.text_area(

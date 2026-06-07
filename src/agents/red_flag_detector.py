@@ -122,9 +122,11 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 			)
 
 			# --- Diagnostic: log raw response and finish_reason ---
+			import hashlib
+			clauses_hash = hashlib.sha256(clauses_text.encode("utf-8")).hexdigest()
 			logger.debug(
 				f"[RED_FLAG_RAW] chunk {chunk_idx + 1} response "
-				f"(first 500 chars): {response_text[:500]!r}"
+				f"[CONTRACT TEXT: {len(clauses_text)} chars, hash: {clauses_hash[:8]}]"
 			)
 			last_resp = getattr(llm_client, "_last_response", None)
 			if last_resp:

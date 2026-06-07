@@ -208,6 +208,17 @@ class ContractChatService:
         if not q_clean:
             return False
 
+        # Pre-check for prompt injection
+        injection_keywords = [
+            "ignore", "forget", "disregard", "override", "bypass",
+            "pretend", "act as", "you are now", "new instructions",
+            "system prompt", "reveal", "ignore previous"
+        ]
+        if len(question) < 100:
+            match_count = sum(1 for kw in injection_keywords if kw in q_clean)
+            if match_count >= 2:
+                return False
+
         # Relevance gating system prompt
         system_instruction = (
             "You are a legal document and contract analysis gatekeeper. "

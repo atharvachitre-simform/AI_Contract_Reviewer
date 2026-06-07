@@ -195,6 +195,7 @@ class ObligationItem(BaseModel):
     condition: str | None = None
     obligation_type: str | None = None
     source_clause: str | None = None
+    note: str | None = None
 
 
 class RedFlagItem(BaseModel):

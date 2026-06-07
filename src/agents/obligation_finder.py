@@ -142,7 +142,13 @@ class ObligationFinderAgent:
                     response_format={"type": "json_object"},
                     system_prompt=system_prompt,
                 )
-                logger.debug(f"Obligation LLM response chunk {chunk_idx + 1} (first 300 chars): {response_text[:300]}")
+                import hashlib
+                chunk_text = "\n".join([str(c) for c in chunk])
+                chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+                logger.debug(
+                    f"Obligation LLM response chunk {chunk_idx + 1}: "
+                    f"[CONTRACT TEXT: {len(chunk_text)} chars, hash: {chunk_hash[:8]}]"
+                )
                 
                 parsed = self._parse_llm_response(response_text)
                 if not parsed:
@@ -197,6 +203,12 @@ class ObligationFinderAgent:
             # If party is missing/null/empty, try to infer it
             if not party:
                 party = self._infer_party(obligation_text)
+            
+            note = getattr(item, "note", None)
+            if not party or str(party).strip().lower() in ("", "n/a", "none", "unknown", "null"):
+                party = "Unspecified Party"
+                note = "Party could not be determined from context"
+
             # If frequency is missing/null/empty, try to infer it
             if not freq:
                 freq = self._frequency(obligation_text)
@@ -213,6 +225,7 @@ class ObligationFinderAgent:
                     condition=cond,
                     obligation_type=otype,
                     source_clause=source,
+                    note=note,
                 )
             )
 
@@ -316,7 +329,13 @@ class ObligationFinderAgent:
                 max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS,
                 response_format={"type": "json_object"},
             )
-            logger.debug(f"Obligation Finder Correction LLM response: {response_text[:300]}")
+            import hashlib
+            missed_text = "\n".join([str(c) for c in missed])
+            missed_hash = hashlib.sha256(missed_text.encode("utf-8")).hexdigest()
+            logger.debug(
+                f"Obligation Finder Correction LLM response: "
+                f"[CONTRACT TEXT: {len(missed_text)} chars, hash: {missed_hash[:8]}]"
+            )
             
             parsed = self._parse_llm_response(response_text)
             if parsed:

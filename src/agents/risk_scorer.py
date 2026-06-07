@@ -225,7 +225,11 @@ class RiskScorerAgent:
                     system_prompt=system_prompt,
                 ).strip()
 
-                logger.debug(f"LLM response chunk {chunk_idx + 1} (first 300 chars): {response_text[:300]}")
+                import hashlib
+                clauses_hash = hashlib.sha256(clauses_text.encode("utf-8")).hexdigest()
+                logger.debug(
+                    f"LLM response chunk {chunk_idx + 1}: [CONTRACT TEXT: {len(clauses_text)} chars, hash: {clauses_hash[:8]}]"
+                )
                 if not response_text:
                     logger.warning(f"LLM returned an empty response for risk analysis chunk {chunk_idx + 1}")
                     continue
@@ -233,8 +237,8 @@ class RiskScorerAgent:
                 result = self._parse_risk_response(response_text)
                 if result is None:
                     logger.error(
-                        f"Unable to parse JSON from LLM risk response for chunk {chunk_idx + 1}."
-                        f" Response (first 1000 chars): {response_text[:1000]}"
+                        f"Unable to parse JSON from LLM risk response for chunk {chunk_idx + 1}. "
+                        f"[CONTRACT TEXT: {len(clauses_text)} chars, hash: {clauses_hash[:8]}]"
                     )
                     continue
 
