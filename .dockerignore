@@ -1,0 +1,48 @@
+# Local environments
+.venv/
+venv/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Git metadata
+.git/
+.gitattributes
+.gitignore
+
+# Testing and coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+tests/
+.deepeval/
+
+
+# Documentation and Markdown artifacts
+docs/
+*.md
+Architecture.png
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and temporary files
+logs/
+*.log
+.DS_Store
+
+# Built tarballs / images
+contract-reviewer.tar
+*.tar
+
+
+

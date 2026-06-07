@@ -65,7 +65,10 @@ logs/
 *.log
 
 # Docker
-.dockerignore
+# Keep .dockerignore tracked in Git so builds are optimized across environments.
+
+# DeepEval
+.deepeval/
 
 # Markdowns
 !README.md
@@ -76,3 +79,8 @@ logs/
 
 # Local data folder for initial development
 data
+
+# Built tarballs / images
+contract-reviewer.tar
+*.tar
+

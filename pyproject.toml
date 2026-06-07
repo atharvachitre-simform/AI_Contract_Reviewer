@@ -38,6 +38,7 @@ dev = [
     "httpx",
     "ruff",
     "mypy",
+    "deepeval",
 ]
 
 [build-system]
