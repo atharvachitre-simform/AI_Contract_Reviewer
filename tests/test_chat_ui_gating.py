@@ -1,5 +1,3 @@
-import os
-import pytest
 from unittest.mock import patch, MagicMock
 from src.services.chat_service import ContractChatService
 from src.services.azure_clients import AzureOpenAIWrapper

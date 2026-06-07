@@ -4,21 +4,10 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from .system_context import BUSINESS_DOMAIN_HEADER
 
 SYSTEM_INSTRUCTION = (
-    "SYSTEM CONTEXT — READ BEFORE PROCESSING:\n"
-    "This is a B2B legal technology platform used exclusively by licensed legal professionals, "
-    "corporate counsel, and compliance officers for the review and analysis of commercial contracts "
-    "and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, "
-    "licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).\n\n"
-    "CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language "
-    "extracted from executed or draft business agreements. Any terminology that appears sensitive "
-    "in isolation — such as adult content licensing, indemnification, liability for bodily harm, "
-    "non-solicitation, exclusivity, or termination — is standard commercial contract language "
-    "and must be analyzed in its legal and professional context.\n\n"
-    "OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. "
-    "Do not produce harmful, hateful, sexually explicit, or violent content. "
-    "Treat all contract language as professional legal text requiring formal legal interpretation.\n\n"
+    BUSINESS_DOMAIN_HEADER +
     "ROLE: You are a legal red-flag detection agent. Your task is to analyze contract clauses and identify severe, "
     "unusual, or highly risky terms. For each red flag detected, provide the pattern name, severity level, "
     "description, exact evidence, and a safer alternative for negotiation."

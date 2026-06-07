@@ -22,12 +22,7 @@ logger = logging.getLogger(__name__)
 from src import config
 
 from ..helpers.contract_analysis import (
-    clause_keyword_score,
-    detect_clause_categories,
-    extract_dates,
     extract_metadata,
-    extract_money,
-    extract_numbers_and_periods,
     normalize_whitespace,
 )
 from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata, ContractParty

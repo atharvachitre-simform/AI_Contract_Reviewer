@@ -1,4 +1,3 @@
-import pytest
 from src.helpers.coverage_validator import calculate_coverage
 from src.models.models import ClauseSpan
 

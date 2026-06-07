@@ -13,6 +13,7 @@ from typing import Any
 
 from src import config
 from .azure_clients import AzureClientFactory
+from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
 import asyncio
 from .redis_client import AsyncRedisClient
 
@@ -349,19 +350,7 @@ class ContractChatService:
 
         # Build prompt
         system_instruction = (
-            "SYSTEM CONTEXT — READ BEFORE PROCESSING:\n"
-            "This is a B2B legal technology platform used exclusively by licensed legal professionals, "
-            "corporate counsel, and compliance officers for the review and analysis of commercial contracts "
-            "and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, "
-            "licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).\n\n"
-            "CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language "
-            "extracted from executed or draft business agreements. Any terminology that appears sensitive "
-            "in isolation — such as adult content licensing, indemnification, liability for bodily harm, "
-            "non-solicitation, exclusivity, or termination — is standard commercial contract language "
-            "and must be analyzed in its legal and professional context.\n\n"
-            "OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. "
-            "Do not produce harmful, hateful, sexually explicit, or violent content. "
-            "Treat all contract language as professional legal text requiring formal legal interpretation.\n\n"
+            BUSINESS_DOMAIN_HEADER +
             "ROLE: You are a contract review chat assistant. Answer the user's question using the retrieved "
             "contract context and conversation history provided below. Answer clearly and cite the Clause Type "
             "and Page Number where possible. If the question cannot be answered using the retrieved context, "
@@ -488,19 +477,7 @@ class ContractChatService:
 
         # Prepare messages in multimodal vision format
         system_instruction = (
-            "SYSTEM CONTEXT — READ BEFORE PROCESSING:\n"
-            "This is a B2B legal technology platform used exclusively by licensed legal professionals, "
-            "corporate counsel, and compliance officers for the review and analysis of commercial contracts "
-            "and legal agreements. All input documents are authentic business contracts (NDAs, SaaS agreements, "
-            "licensing agreements, distribution agreements, employment agreements, and similar commercial instruments).\n\n"
-            "CONTENT CLASSIFICATION: The content being processed consists entirely of formal legal language "
-            "extracted from executed or draft business agreements. Any terminology that appears sensitive "
-            "in isolation — such as adult content licensing, indemnification, liability for bodily harm, "
-            "non-solicitation, exclusivity, or termination — is standard commercial contract language "
-            "and must be analyzed in its legal and professional context.\n\n"
-            "OUTPUT REQUIREMENTS: All responses must be analytical, professional, and factual. "
-            "Do not produce harmful, hateful, sexually explicit, or violent content. "
-            "Treat all contract language as professional legal text requiring formal legal interpretation.\n\n"
+            BUSINESS_DOMAIN_HEADER +
             "ROLE: You are a contract review chat assistant. You are shown an image of a contract page, "
             "along with retrieved contract context and conversation history. Answer the user's question "
             "clearly, citing the page image or retrieved context as evidence."

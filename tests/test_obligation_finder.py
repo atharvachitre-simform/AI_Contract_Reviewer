@@ -1,4 +1,3 @@
-import json
 from unittest.mock import MagicMock
 from src.agents.obligation_finder import ObligationFinderAgent
 from src.models import ClauseExtractorOutput, ClauseSpan, ContractMetadata

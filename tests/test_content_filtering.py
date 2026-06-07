@@ -1,8 +1,6 @@
 """Unit tests for content filtering mitigation and resilience mechanisms."""
 
-import re
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 from openai import BadRequestError
 
 from src.services.azure_clients import (

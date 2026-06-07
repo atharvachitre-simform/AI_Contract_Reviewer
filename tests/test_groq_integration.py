@@ -1,8 +1,6 @@
 import os
-import pytest
 from unittest.mock import patch, MagicMock
 from src.services.azure_clients import AzureOpenAIWrapper, AzureClientFactory
-from src import config
 
 def test_groq_wrapper_initialization():
     """Verify that AzureOpenAIWrapper correctly identifies Groq deployments and initializes Groq client."""

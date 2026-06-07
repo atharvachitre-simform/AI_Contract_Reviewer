@@ -28,7 +28,12 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.indexes import SearchIndexClient
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
-from supabase import create_client
+try:
+    from supabase import create_client
+    HAS_SUPABASE = True
+except ImportError:
+    create_client = None
+    HAS_SUPABASE = False
 
 
 @dataclass
@@ -226,6 +231,8 @@ def check_redis() -> CheckResult:
 
 
 def check_supabase() -> CheckResult:
+    if not HAS_SUPABASE:
+        return CheckResult(name="Supabase", ok=True, message="Skipped (supabase client package not installed).")
     url = get_env("SUPABASE_URL")
     key = get_env("SUPABASE_KEY")
     try:
