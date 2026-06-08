@@ -31,6 +31,9 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+# Remove vulnerable system python packages that are unnecessary at runtime
+RUN python -m pip uninstall -y pip setuptools wheel jaraco.context || true
+
 # Create a non-root group and user
 RUN groupadd -g 10001 appgroup && \
     useradd -u 10001 -g appgroup -d /app -s /bin/bash appuser

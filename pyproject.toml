@@ -32,6 +32,9 @@ dependencies = [
     "qdrant-client>=1.9",
     "az>=0.1.0.dev1",
     "login>=0.0.6",
+    "jaraco-context>=6.1.0",
+    "wheel>=0.46.2",
+    "azure-keyvault-secrets>=4.11.0",
 ]
 
 [dependency-groups]
