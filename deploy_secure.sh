@@ -153,7 +153,7 @@ az containerapp update \
     --resource-group $RESOURCE_GROUP \
     --image $ACR_NAME.azurecr.io/contract-reviewer-backend:$IMAGE_TAG \
     --command "streamlit" \
-    --args "run streamlit_app.py --server.port=8501 --server.address=0.0.0.0" \
+    --args run streamlit_app.py \
     --set-env-vars \
         "BACKEND_URL=https://$BACKEND_FQDN"
 
