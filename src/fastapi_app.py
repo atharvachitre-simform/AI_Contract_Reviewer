@@ -18,6 +18,27 @@ def sanitize_contract_id(contract_id: str) -> str:
 
 app = FastAPI(title="Contract Reviewer")
 
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, restrict this to frontend domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------------------------
 # Models
@@ -75,6 +96,17 @@ def review(request: ReviewRequest):
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
+
+@app.get("/api/v1/review/{contract_id}")
+def get_review_state(contract_id: str):
+    """Get the full state of a past review."""
+    contract_id = sanitize_contract_id(contract_id)
+    from .services.services import ContractReviewService
+    service = ContractReviewService()
+    state = service.load_checkpoint(contract_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Contract review not found.")
+    return state.model_dump(mode="json")
 
 @app.get("/api/v1/review/{contract_id}/export")
 def export_review(contract_id: str, format: str = "pdf"):
@@ -158,6 +190,12 @@ async def chat_image(
         image_bytes = await file.read()
     if file_size > config.MAX_PDF_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"File size exceeds the limit of {config.MAX_PDF_SIZE_MB}MB.")
+        
+    # Validate MIME type for security
+    allowed_mimes = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
+    if file.content_type not in allowed_mimes:
+        raise HTTPException(status_code=415, detail="Unsupported media type. Allowed types: jpeg, png, webp, pdf")
+        
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
     return await chat_service.ask_with_image(question, image_bytes)
 
