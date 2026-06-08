@@ -19,7 +19,7 @@ BACKEND_APP="backend"
 FRONTEND_APP="frontend"
 
 # Default to the latest built image tag that passed the Trivy scan
-IMAGE_TAG="a96e1e87a260f8c58244c36fa86c762c4322b218"
+IMAGE_TAG=$(git rev-parse HEAD)
 
 echo "=== Loading environment variables from .env ==="
 if [ -f .env ]; then
