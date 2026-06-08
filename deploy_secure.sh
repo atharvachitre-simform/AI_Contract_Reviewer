@@ -12,7 +12,7 @@ LOCATION="eastus"
 ENV_NAME="cae-contract-reviewer"
 VNET_NAME="vnet-contract-reviewer"
 KEYVAULT_NAME="kv-contract-prod-001"
-ACR_NAME="acrcontractreviewer"
+ACR_NAME="contractreviewregistry22451"
 IDENTITY_NAME="id-contract-reviewer"
 
 echo "Creating Resource Group..."
