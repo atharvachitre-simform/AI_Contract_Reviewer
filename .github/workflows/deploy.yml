@@ -2,12 +2,12 @@ name: DevSecOps CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "develop" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "develop" ]
 
 env:
-  REGISTRY_NAME: myacrregistry
+  REGISTRY_NAME: contractreviewregistry22451
   FRONTEND_IMAGE: contract-reviewer-frontend
   BACKEND_IMAGE: contract-reviewer-backend
 
@@ -56,21 +56,21 @@ jobs:
         vuln-type: 'os,library'
         severity: 'CRITICAL,HIGH'
 
-    # In a real environment, uncomment to login to ACR and push
-    # - name: Azure Container Registry Login
-    #   uses: azure/docker-login@v1
-    #   with:
-    #     login-server: ${{ env.REGISTRY_NAME }}.azurecr.io
-    #     username: ${{ secrets.ACR_USERNAME }}
-    #     password: ${{ secrets.ACR_PASSWORD }}
-    #     
-    # - name: Push images to ACR
-    #   run: docker push ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+    # Login to ACR and push
+    - name: Azure Container Registry Login
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ env.REGISTRY_NAME }}.azurecr.io
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+        
+    - name: Push images to ACR
+      run: docker push ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
 
   deploy:
     needs: build_and_push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/develop'
     steps:
     - name: Deploy to Azure Container Apps
       run: echo "Executing deployment script (simulated in CI)"
