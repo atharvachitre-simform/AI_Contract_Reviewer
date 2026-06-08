@@ -27,6 +27,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
+# Install curl for healthchecks and CA certs, then clean up
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # Create a non-root group and user
 RUN groupadd -g 10001 appgroup && \
     useradd -u 10001 -g appgroup -d /app -s /bin/bash appuser
@@ -50,9 +54,9 @@ USER appuser
 EXPOSE 8000
 EXPOSE 8501
 
-# Healthcheck targeting FastAPI's health endpoint
+# Secure healthcheck targeting FastAPI's health endpoint using curl
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Default runtime command (FastAPI Backend)
 # This can be overridden in docker-compose for the Streamlit Frontend service

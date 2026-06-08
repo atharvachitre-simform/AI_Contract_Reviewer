@@ -30,6 +30,8 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=8.2",
     "qdrant-client>=1.9",
+    "az>=0.1.0.dev1",
+    "login>=0.0.6",
 ]
 
 [dependency-groups]

@@ -12,7 +12,9 @@ from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from dotenv import load_dotenv
+from azure.identity import DefaultAzureCredential
 from azure.core.credentials import AzureKeyCredential
+from src.services.keyvault import get_secret
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 try:
     from azure.ai.openai import OpenAIClient
@@ -206,12 +208,21 @@ class AzureOpenAIWrapper:
                 self.use_openai_fallback = True
         elif endpoint and api_key and deployment_name and OpenAIClient is not None:
             self.azure_client = OpenAIClient(endpoint, AzureKeyCredential(api_key))
-        elif endpoint and api_key and deployment_name and AzureOpenAI is not None:
-            self.openai_client = AzureOpenAI(
-                azure_endpoint=self.endpoint,
-                api_key=api_key,
-                api_version=self.api_version,
-            )
+        elif endpoint and deployment_name and AzureOpenAI is not None:
+            if api_key:
+                self.openai_client = AzureOpenAI(
+                    azure_endpoint=self.endpoint,
+                    api_key=api_key,
+                    api_version=self.api_version,
+                )
+            else:
+                from azure.identity import get_bearer_token_provider, DefaultAzureCredential
+                token_provider = get_bearer_token_provider(DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default")
+                self.openai_client = AzureOpenAI(
+                    azure_endpoint=self.endpoint,
+                    azure_ad_token_provider=token_provider,
+                    api_version=self.api_version,
+                )
             self.use_openai_fallback = True
         elif endpoint and api_key and deployment_name and OpenAIPackageClient is not None:
             self.openai_client = OpenAIPackageClient(
@@ -273,7 +284,7 @@ class AzureOpenAIWrapper:
                 except Exception as retry_err:
                     if is_content_filter_error(retry_err):
                         logger.error("Sanitized prompt still triggered Azure content policy. Attempting Groq fallback...")
-                        groq_key = os.getenv("GROQ_API_KEY", "").strip()
+                        groq_key = get_secret("GROQ_API_KEY")
                         if groq_key and "test" not in self.api_key and "test" not in self.endpoint:
                             try:
                                 fallback_wrapper = AzureOpenAIWrapper(
@@ -606,17 +617,17 @@ class AzureClientFactory:
             return
         self._initialized = True
         self._client_cache = {}
-        self.storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
-        self.storage_account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME", "").strip()
-        self.storage_account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY", "").strip()
-        self.container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "").strip()
-        self.doc_intelligence_endpoint = os.getenv("AZURE_DOC_INTELLIGENCE_ENDPOINT", "").strip()
-        self.doc_intelligence_key = os.getenv("AZURE_DOC_INTELLIGENCE_KEY", "").strip()
-        self.search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT", "").strip()
-        self.search_api_key = os.getenv("AZURE_SEARCH_API_KEY", "").strip()
-        self.openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
-        self.openai_api_key = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
-        self.openai_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "").strip()
+        self.storage_connection_string = get_secret("AZURE_STORAGE_CONNECTION_STRING")
+        self.storage_account_name = get_secret("AZURE_STORAGE_ACCOUNT_NAME")
+        self.storage_account_key = get_secret("AZURE_STORAGE_ACCOUNT_KEY")
+        self.container_name = get_secret("AZURE_STORAGE_CONTAINER_NAME")
+        self.doc_intelligence_endpoint = get_secret("AZURE_DOC_INTELLIGENCE_ENDPOINT")
+        self.doc_intelligence_key = get_secret("AZURE_DOC_INTELLIGENCE_KEY")
+        self.search_endpoint = get_secret("AZURE_SEARCH_ENDPOINT")
+        self.search_api_key = get_secret("AZURE_SEARCH_API_KEY")
+        self.openai_endpoint = get_secret("AZURE_OPENAI_ENDPOINT")
+        self.openai_api_key = get_secret("AZURE_OPENAI_API_KEY")
+        self.openai_deployment_name = get_secret("AZURE_OPENAI_DEPLOYMENT_NAME")
         self.openai_agent_deployments = {
             "clause_extractor": os.getenv("AZURE_OPENAI_DEPLOYMENT_CLAUSE_EXTRACTOR", "").strip(),
             "obligation_finder": os.getenv("AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER", "").strip(),
@@ -625,7 +636,7 @@ class AzureClientFactory:
             "plain_english_writer": os.getenv("AZURE_OPENAI_DEPLOYMENT_PLAIN_ENGLISH_WRITER", "").strip(),
             "report_assembler": os.getenv("AZURE_OPENAI_DEPLOYMENT_REPORT_ASSEMBLER", "").strip(),
         }
-        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379").strip()
+        self.redis_url = get_secret("REDIS_URL", "redis://localhost:6379")
         self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small").strip()
 
         # Eagerly initialise lightweight clients (no network calls)
@@ -652,17 +663,30 @@ class AzureClientFactory:
         return None
 
     def _init_blob_service(self) -> Any | None:
-        connection_string = self._build_storage_connection_string()
-        if not connection_string or BlobServiceClient is None:
+        if BlobServiceClient is None:
             return None
-        return BlobServiceClient.from_connection_string(connection_string)
+        connection_string = self._build_storage_connection_string()
+        if connection_string:
+            return BlobServiceClient.from_connection_string(connection_string)
+        
+        # Fallback to RBAC if account name is provided without keys
+        if self.storage_account_name:
+            account_url = f"https://{self.storage_account_name}.blob.core.windows.net"
+            return BlobServiceClient(account_url, credential=DefaultAzureCredential())
+            
+        return None
 
     def _init_document_intelligence_client(self) -> DocumentIntelligenceClient | None:
-        if not self.doc_intelligence_endpoint or not self.doc_intelligence_key:
+        if not self.doc_intelligence_endpoint:
             return None
+        if self.doc_intelligence_key:
+            return DocumentIntelligenceClient(
+                endpoint=self.doc_intelligence_endpoint,
+                credential=AzureKeyCredential(self.doc_intelligence_key),
+            )
         return DocumentIntelligenceClient(
             endpoint=self.doc_intelligence_endpoint,
-            credential=AzureKeyCredential(self.doc_intelligence_key),
+            credential=DefaultAzureCredential(),
         )
 
     def _init_openai_client(self) -> AzureOpenAIWrapper | None:
@@ -678,7 +702,7 @@ class AzureClientFactory:
         
         # Route Groq deployments
         if deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct"):
-            groq_key = os.getenv("GROQ_API_KEY", "").strip()
+            groq_key = get_secret("GROQ_API_KEY")
             if not groq_key:
                 logger.warning(f"Groq model {deployment} requested but GROQ_API_KEY is not set.")
                 return None
@@ -693,7 +717,7 @@ class AzureClientFactory:
 
         # Route Gemini and Gemma deployments
         if deployment.startswith("gemini-") or deployment.startswith("gemma-"):
-            gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+            gemini_api_key = get_secret("GEMINI_API_KEY")
             if not gemini_api_key:
                 logger.warning(f"Gemini/Gemma model {deployment} requested but GEMINI_API_KEY is not set.")
                 return None
@@ -730,12 +754,12 @@ class AzureClientFactory:
         agent_env_suffix = agent_name.upper()
         
         # Read agent-specific deployment, endpoint, and key
-        deployment_name = os.getenv(f"AZURE_OPENAI_DEPLOYMENT_{agent_env_suffix}", "").strip()
+        deployment_name = get_secret(f"AZURE_OPENAI_DEPLOYMENT_{agent_env_suffix}")
         if not deployment_name:
             deployment_name = self.openai_agent_deployments.get(agent_name) or self.openai_deployment_name
             
-        agent_endpoint = os.getenv(f"AZURE_OPENAI_ENDPOINT_{agent_env_suffix}", "").strip()
-        agent_api_key = os.getenv(f"AZURE_OPENAI_API_KEY_{agent_env_suffix}", "").strip()
+        agent_endpoint = get_secret(f"AZURE_OPENAI_ENDPOINT_{agent_env_suffix}")
+        agent_api_key = get_secret(f"AZURE_OPENAI_API_KEY_{agent_env_suffix}")
         
         endpoint = agent_endpoint or self.openai_endpoint
         api_key = agent_api_key or self.openai_api_key
@@ -746,7 +770,7 @@ class AzureClientFactory:
             
         # Route Groq deployments if no agent-specific endpoint is configured
         if (deployment.startswith("groq/") or deployment.startswith("groq:") or deployment in ("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192", "llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct")) and not agent_endpoint:
-            groq_key = agent_api_key or os.getenv("GROQ_API_KEY", "").strip()
+            groq_key = agent_api_key or get_secret("GROQ_API_KEY")
             if not groq_key:
                 logger.warning(f"Groq model {deployment} requested for {agent_name} but GROQ_API_KEY is not set.")
                 return None
@@ -762,7 +786,7 @@ class AzureClientFactory:
 
         # Route Gemini/Gemma deployments to Google API base URL if no agent-specific endpoint is configured
         if (deployment.startswith("gemini-") or deployment.startswith("gemma-")) and not agent_endpoint:
-            gemini_key = agent_api_key or os.getenv("GEMINI_API_KEY", "").strip()
+            gemini_key = agent_api_key or get_secret("GEMINI_API_KEY")
             if not gemini_key:
                 logger.warning(f"Gemini/Gemma model {deployment} requested for {agent_name} but GEMINI_API_KEY is not set.")
                 return None
@@ -808,7 +832,7 @@ class AzureClientFactory:
 
     def _init_qdrant_client(self) -> Any | None:
         qdrant_url = os.getenv("QDRANT_URL", "").strip()
-        qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
+        qdrant_api_key = get_secret("QDRANT_API_KEY")
         if not qdrant_url:
             return None
         try:
@@ -923,12 +947,18 @@ class AzureClientFactory:
         return self.download_blob_text(blob_name)
 
     def get_search_client(self, index_name: str) -> Any | None:
-        if not self.search_endpoint or not self.search_api_key or SearchClient is None:
+        if not self.search_endpoint or SearchClient is None:
             return None
+        if self.search_api_key:
+            return SearchClient(
+                endpoint=self.search_endpoint,
+                index_name=index_name,
+                credential=AzureKeyCredential(self.search_api_key),
+            )
         return SearchClient(
             endpoint=self.search_endpoint,
             index_name=index_name,
-            credential=AzureKeyCredential(self.search_api_key),
+            credential=DefaultAzureCredential(),
         )
 
     def search_documents(self, query: str, index_name: str, top_k: int = config.SEARCH_TOP_K) -> list[dict[str, Any]]:
