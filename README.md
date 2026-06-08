@@ -169,3 +169,28 @@ AI_Contract_Reviewer/
 ├── Dockerfile             # Multi-stage optimized Dockerfile
 └── README.md              # This guide
 ```
+
+## 📊 Agents vs Tools Classification
+
+**Agents** (LLM‑driven orchestration nodes):
+- ClauseExtractorAgent
+- ObligationFinderAgent
+- RedFlagDetectorAgent
+- RiskScorerAgent
+- PlainEnglishWriterAgent
+- ReportAssemblerAgent
+- RelevanceGater (gatekeeper)
+
+**Tools** (external services & libraries used by agents):
+- Azure Document Intelligence (OCR / Layout)
+- Azure OpenAI (LLM completions & embeddings)
+- Azure Key Vault (secrets management)
+- Azure Search (enterprise vector‑search)
+- Qdrant (vector store for clause vectors)
+- Redis (state checkpointing & caching)
+- Langfuse (observability)
+- Streamlit (frontend UI)
+- FastAPI (API orchestration)
+- PyMuPDF (fallback PDF parsing)
+- Docker / Kubernetes (deployment)
+
