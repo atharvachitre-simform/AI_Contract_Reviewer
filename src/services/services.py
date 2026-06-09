@@ -314,7 +314,7 @@ class ContractReviewService:
         return True
 
 
-    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None, perspective: str | None = None) -> ContractReviewState:
+    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None, perspective: str | None = None, user_id: str | None = None) -> ContractReviewState:
         """End-to-end contract review process.
         
         Args:
@@ -341,8 +341,14 @@ class ContractReviewService:
         memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
 
         logger.info("Starting contract review process")
-        self.current_trace_id = self.tracer.create_trace_id(seed=contract_id or session_id)
-        self.tracer.set_current_trace_id(self.current_trace_id)
+        # Open a user-scoped pipeline trace — stores user_id, contract_id,
+        # and session_id in thread-local so all nested agent calls are attributed.
+        self.current_trace_id = self.tracer.start_pipeline_trace(
+            contract_id=contract_id or session_id,
+            user_id=user_id,
+            source_file=source_blob_path,
+            perspective=perspective,
+        )
         self._trace(
             "process_contract",
             "Begin end-to-end contract review.",
@@ -357,6 +363,7 @@ class ContractReviewService:
                 trace_id=self.current_trace_id,
                 contract_id=contract_id,
                 source_file=source_blob_path,
+                user_id=user_id,
                 llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
                 risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),

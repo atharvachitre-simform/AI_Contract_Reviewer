@@ -13,6 +13,7 @@ from typing import Any
 
 from src import config
 from .azure_clients import AzureClientFactory
+from .langfuse_tracer import LangFuseTracer
 from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
 import asyncio
 from .redis_client import AsyncRedisClient
@@ -23,17 +24,19 @@ logger = logging.getLogger(__name__)
 class ContractChatService:
     """Service to handle conversational RAG QA about a contract with summary buffer memory."""
 
-    def __init__(self, contract_id: str, session_id: str | None = None):
+    def __init__(self, contract_id: str, session_id: str | None = None, user_id: str | None = None):
         self.contract_id = contract_id
         self.session_id = session_id or contract_id or str(uuid.uuid4())
+        self.user_id = user_id or "anonymous"
         self.azure = AzureClientFactory()
-        
-        # Redis Keys
-        self.history_key = f"chat_history:{self.contract_id}:{self.session_id}"
-        self.summary_key = f"chat_summary:{self.contract_id}:{self.session_id}"
-        
-        # Local paths fallback
-        self.local_dir = Path("logs/chat") / self.contract_id
+
+        # Redis Keys — scoped by user_id to prevent cross-user history leakage
+        self.history_key = f"chat_history:{self.user_id}:{self.contract_id}:{self.session_id}"
+        self.summary_key = f"chat_summary:{self.user_id}:{self.contract_id}:{self.session_id}"
+
+        # Local paths fallback — scoped by user_id so two users with the same
+        # contract_id cannot read/write each other's chat history on disk
+        self.local_dir = Path("logs/chat") / self.user_id / self.contract_id
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.local_history_path = self.local_dir / f"{self.session_id}_history.json"
         self.local_summary_path = self.local_dir / f"{self.session_id}_summary.txt"
@@ -60,9 +63,12 @@ class ContractChatService:
                 saved_summary = await self.async_redis.get(self.summary_key)
                 if saved_summary:
                     summary = saved_summary
-                saved_history = await self.async_redis.get(self.history_key)
-                if saved_history:
-                    history = json.loads(saved_history)
+                
+                # Fetch history from Redis List
+                client = await self.async_redis._get_client()
+                saved_turns = await client.lrange(self.history_key, 0, -1)
+                if saved_turns:
+                    history = [json.loads(turn) for turn in saved_turns]
                 return summary, history
             except Exception as e:
                 logger.warning(f"Failed to read chat history from Redis: {e}. Checking local files.")
@@ -83,7 +89,14 @@ class ContractChatService:
         if await self._is_redis_available():
             try:
                 await self.async_redis.setex(self.summary_key, config.REDIS_TTL_SECONDS, summary)
-                await self.async_redis.setex(self.history_key, config.REDIS_TTL_SECONDS, json.dumps(history))
+                
+                # Rebuild history list in Redis
+                client = await self.async_redis._get_client()
+                await client.delete(self.history_key)
+                if history:
+                    serialized_turns = [json.dumps(turn) for turn in history]
+                    await client.rpush(self.history_key, *serialized_turns)
+                    await client.expire(self.history_key, config.REDIS_TTL_SECONDS)
             except Exception as e:
                 logger.warning(f"Failed to write chat history to Redis: {e}")
 
@@ -123,16 +136,43 @@ class ContractChatService:
             logger.error(f"Failed to compile running chat summary: {e}")
             return summary
 
-    def _retrieve_clauses(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    async def _retrieve_clauses(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Retrieve relevant clauses from Qdrant vector store with fallback to memory store checkpoints."""
         if self.contract_id == "general":
             return []
         sources = []
+        
+        # 1. Attempt vector search via Qdrant
         if self.azure.qdrant_client:
             embedding_client = self.azure.get_openai_client(self.azure.embedding_deployment)
             if embedding_client:
                 try:
-                    query_vector = embedding_client.get_embedding(query)
+                    import hashlib
+                    # Check embedding cache in Redis
+                    query_hash = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
+                    cache_key = f"embedding_cache:{query_hash}"
+                    
+                    query_vector = None
+                    if await self._is_redis_available():
+                        cached = await self.async_redis.get(cache_key)
+                        if cached:
+                            try:
+                                query_vector = json.loads(cached)
+                                logger.info("Using cached query embedding from Redis.")
+                            except Exception:
+                                pass
+                    
+                    if query_vector is None:
+                        # embedding_client.get_embedding is sync — run in executor to prevent event loop blocking
+                        loop = asyncio.get_running_loop()
+                        query_vector = await loop.run_in_executor(
+                            None,
+                            lambda: embedding_client.get_embedding(query)
+                        )
+                        # Cache the query embedding in Redis for 7 days (604800 seconds)
+                        if await self._is_redis_available():
+                            await self.async_redis.setex(cache_key, 7 * 24 * 3600, json.dumps(query_vector))
+
                     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
                     query_filter = Filter(
@@ -176,7 +216,13 @@ class ContractChatService:
                             clauses = state["clause_extraction"].get("clauses", [])
 
                     if clauses:
-                        query_words = set(re.findall(r"\w+", query.lower()))
+                        STOP_WORDS = {
+                            "the", "a", "an", "and", "or", "but", "if", "then", "of", "at", 
+                            "by", "for", "with", "about", "to", "in", "on", "is", "are", 
+                            "was", "were", "be", "been", "have", "has", "had", "do", "does", 
+                            "did", "this", "that", "these", "those", "what", "which", "who", "how"
+                        }
+                        query_words = set(re.findall(r"\w+", query.lower())) - STOP_WORDS
                         ranked_clauses = []
                         for c in clauses:
                             # Handle model object or dict
@@ -184,10 +230,12 @@ class ContractChatService:
                             c_type = getattr(c, "clause_type", "") or (c.get("clause_type", "") if isinstance(c, dict) else "")
                             c_page = getattr(c, "source_page", None) or (c.get("source_page") if isinstance(c, dict) else None)
 
-                            word_overlap = len(query_words.intersection(set(re.findall(r"\w+", c_text.lower() + " " + c_type.lower()))))
-                            # Only include clauses with at least 2 matching query words
-                            # to avoid injecting completely irrelevant context
-                            if word_overlap >= 2:
+                            clause_words = set(re.findall(r"\w+", (c_text + " " + c_type).lower())) - STOP_WORDS
+                            word_overlap = len(query_words.intersection(clause_words))
+                            
+                            # Stricter matching: require at least 3 matching non-stop words OR > 25% overlap
+                            has_strong_match = word_overlap >= 3 or (len(query_words) > 0 and (word_overlap / len(query_words)) >= 0.25)
+                            if has_strong_match:
                                 ranked_clauses.append((word_overlap, {
                                     "clause_type": c_type,
                                     "text": c_text,
@@ -256,7 +304,7 @@ class ContractChatService:
         """Transient relevance check using Groq fallback if Azure fails or is rate‑limited (async)."""
         try:
             # Primary check using existing sync method (run in thread pool to avoid blocking event loop)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             is_relevant = await loop.run_in_executor(None, lambda: self.is_question_relevant(question))
             return is_relevant
         except Exception as e:
@@ -270,7 +318,7 @@ class ContractChatService:
             system_instruction = "You are a legal document gatekeeper. Reply YES if question is contract‑related, else NO."
             prompt = f"User Question:\n{question}"
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: groq_client.chat_complete(
@@ -286,15 +334,42 @@ class ContractChatService:
                 return False
 
     async def ask(self, question: str) -> dict[str, Any]:
-        """Ask a text question and get RAG grounded answer (async)."""
+        """Ask a text question and get RAG grounded answer (async).
+
+        Opens a Langfuse trace for this chat turn tagged with the authenticated
+        user's identity so every LLM generation span is correctly attributed.
+        """
+        # Open a per-turn Langfuse trace scoped to this user + session
+        tracer = LangFuseTracer()
+        tracer.start_chat_trace(
+            contract_id=self.contract_id,
+            session_id=self.session_id,
+            user_id=self.user_id,
+            question=question,
+            call_type="text",
+        )
+
         if not await self.transient_relevancy_check(question):
+            tracer.trace(
+                "chat_relevancy_rejected",
+                "Question rejected as off-topic by relevancy gate.",
+                {"question": question[:200]},
+                "rejected",
+            )
             return {
                 "answer": "I'm sorry, but I am a specialized contract review assistant. Please ask a question related to contracts, legal terminology, or document review.",
                 "sources": []
             }
 
+        tracer.trace(
+            "chat_relevancy_accepted",
+            "Question passed relevancy gate.",
+            {"question": question[:200]},
+            "accepted",
+        )
+
         # Auto-delegate to ask_with_image if we have a matched page image or crop
-        sources = self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
+        sources = await self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
         if sources:
             import hashlib
             top_source_page = None
@@ -348,7 +423,7 @@ class ContractChatService:
             await self._save_history(summary, history)
 
         # Retrieve grounding references
-        sources = self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
+        sources = await self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
         
         context_lines = []
         for s in sources:
@@ -405,7 +480,7 @@ class ContractChatService:
             final_user_prompt = f"{history_str}\n\nUSER: {prompt}" if history_str else prompt
 
             # chat_complete is sync — always run inside a thread pool to avoid blocking event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             answer = await loop.run_in_executor(
                 None,
                 lambda: chat_client.chat_complete(
@@ -429,6 +504,7 @@ class ContractChatService:
             from .azure_clients import is_content_filter_error
             if is_content_filter_error(e):
                 logger.warning(f"Content filter triggered in chat: {e}")
+                tracer.trace("chat_content_filter", "LLM response blocked by content filter.", {"error": str(e)}, "filtered")
                 return {
                     "answer": (
                         "This section of the document could not be summarized due to content policy restrictions. "
@@ -437,14 +513,36 @@ class ContractChatService:
                     "sources": sources
                 }
             logger.error(f"Chat completion failed: {e}", exc_info=True)
+            tracer.trace("chat_error", "Chat completion failed.", {"error": str(e)}, "error")
             return {
                 "answer": f"Error: Failed to generate chat response. Please try again.",
                 "sources": []
             }
 
     async def ask_with_image(self, question: str, image_bytes: bytes) -> dict[str, Any]:
-        """Ask a question containing a page screenshot/image using multimodal vision model (async)."""
+        """Ask a question containing a page screenshot/image using multimodal vision model (async).
+
+        Opens a Langfuse trace for this vision chat turn tagged with the authenticated
+        user's identity so the vision LLM generation span is correctly attributed.
+        """
+        # Open a per-turn Langfuse vision trace scoped to this user + session
+        tracer = LangFuseTracer()
+        tracer.start_chat_trace(
+            contract_id=self.contract_id,
+            session_id=self.session_id,
+            user_id=self.user_id,
+            question=question,
+            call_type="vision",
+        )
+        tracer.trace(
+            "chat_vision_start",
+            "Vision chat request received.",
+            {"image_size_bytes": len(image_bytes), "question": question[:200] if question else None},
+            "started",
+        )
+
         if question and not await self.transient_relevancy_check(question):
+            tracer.trace("chat_relevancy_rejected", "Vision question off-topic.", {"question": question[:200]}, "rejected")
             return {
                 "answer": "I'm sorry, but I am a specialized contract review assistant. Please ask a question related to contracts, legal terminology, or document review.",
                 "sources": []
@@ -461,7 +559,7 @@ class ContractChatService:
             await self._save_history(summary, history)
 
         # Retrieve grounding references using the question text
-        sources = self._retrieve_clauses(question or "key contract terms", top_k=config.CHAT_TOP_K_CLAUSES)
+        sources = await self._retrieve_clauses(question or "key contract terms", top_k=config.CHAT_TOP_K_CLAUSES)
         
         context_lines = []
         for s in sources:
@@ -536,7 +634,7 @@ class ContractChatService:
 
         try:
             # chat_complete_multimodal is sync — always run inside a thread pool
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             answer = await loop.run_in_executor(
                 None,
                 lambda: vision_client.chat_complete_multimodal(messages=messages, max_tokens=1000, temperature=0.1)

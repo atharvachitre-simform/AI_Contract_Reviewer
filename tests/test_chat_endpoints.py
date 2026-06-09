@@ -123,7 +123,8 @@ def test_chat_service_fallback_to_memorystore():
 
     try:
         # Query for "Delaware"
-        sources = service._retrieve_clauses("Delaware governing law", top_k=2)
+        import asyncio
+        sources = asyncio.run(service._retrieve_clauses("Delaware governing law", top_k=2))
         assert len(sources) > 0
         # Check that it ranks Governing Law first due to word overlap
         assert sources[0]["clause_type"] == "Governing Law"

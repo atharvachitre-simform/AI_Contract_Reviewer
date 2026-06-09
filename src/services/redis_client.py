@@ -50,6 +50,20 @@ class AsyncRedisClient:
             logger.warning(f"Async Redis SETEX failed for {key}: {e}")
             return False
 
+    async def set_nx(self, key: str, value: Any, ex: int | None = None) -> bool:
+        """Atomically set key to value ONLY if it does not already exist (Redis SET NX).
+
+        Returns True if the key was newly set, False if the key already existed.
+        Use this for race-free resource ownership claims instead of get + setex.
+        """
+        client = await self._get_client()
+        try:
+            result = await client.set(key, value, nx=True, ex=ex)
+            return bool(result)
+        except Exception as e:
+            logger.warning(f"Async Redis SET NX failed for {key}: {e}")
+            return False
+
     async def delete(self, key: str) -> bool:
         client = await self._get_client()
         try:

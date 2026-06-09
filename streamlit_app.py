@@ -4,6 +4,7 @@ This app exposes the available review models and a simple pipeline selection UI.
 """
 
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -29,6 +30,95 @@ MODEL_OPTIONS = [
     "Plain English Writer",
     "Report Assembler",
 ]
+
+def check_supabase_auth(email, password) -> dict | None:
+    import httpx
+    import os
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+
+    if not supabase_url or not supabase_key:
+        # Dev/mock mode: no Supabase configured
+        # WARNING: This bypass is intentional for local development only.
+        # Set SUPABASE_URL and SUPABASE_KEY in .env before deploying to any shared environment.
+        import logging
+        logging.getLogger(__name__).warning(
+            "SUPABASE_URL/SUPABASE_KEY not set — running in unauthenticated dev mode. "
+            "All users share the mock_user_id identity. DO NOT use this in production."
+        )
+        return {"user": {"id": "mock_user_id", "email": email}, "access_token": "mock-token"}
+
+    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
+    headers = {
+        "apikey": supabase_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "email": email,
+        "password": password
+    }
+    try:
+        response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "user": data.get("user"),
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token")
+            }
+    except Exception as e:
+        st.error(f"Auth request failed: {e}")
+    return None
+
+def refresh_supabase_token(refresh_token: str) -> dict | None:
+    import httpx
+    import os
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        return None
+        
+    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=refresh_token"
+    headers = {
+        "apikey": supabase_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "refresh_token": refresh_token
+    }
+    try:
+        response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "user": data.get("user"),
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token")
+            }
+    except Exception:
+        pass
+    return None
+
+def get_user_from_token(token: str) -> dict | None:
+    import httpx
+    import os
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        return {"id": "mock_user_id", "email": "atharvachitre123@gmail.com"}
+        
+    url = f"{supabase_url.rstrip('/')}/auth/v1/user"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {token}"
+    }
+    try:
+        response = httpx.get(url, headers=headers, timeout=5.0)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
 
 
 @st.cache_data
@@ -442,10 +532,22 @@ def render_chat_tab(contract_id: str) -> None:
     
     session_id = contract_id
 
-    chat_service = ContractChatService(contract_id=contract_id, session_id=session_id)
+    # Register/verify contract ownership in Redis for the logged-in user
+    from src.helpers.auth import check_contract_ownership
+    import asyncio
+    try:
+        asyncio.run(check_contract_ownership(contract_id, st.session_state["auth_user"]))
+    except Exception as e:
+        st.error(f"Access Denied: {e}")
+        st.stop()
+
+    chat_service = ContractChatService(
+        contract_id=contract_id,
+        session_id=session_id,
+        user_id=st.session_state["auth_user"].get("id"),
+    )
     history_key = f"history_{contract_id}_{session_id}"
     if history_key not in st.session_state:
-        import asyncio
         summary, loaded_history = asyncio.run(chat_service._load_history())
         st.session_state[history_key] = loaded_history
     history = st.session_state[history_key]
@@ -629,6 +731,108 @@ def main() -> None:
         .stSidebar { background-color: #1e1e2e; }
     </style>
     """, unsafe_allow_html=True)
+
+    # Initialize auth state
+    if "auth_user" not in st.session_state:
+        st.session_state["auth_user"] = None
+        st.session_state["auth_token"] = None
+        st.session_state["auth_refresh_token"] = None
+        st.session_state["session_start_time"] = None
+
+    # Load session token from query parameters on refresh
+    # NOTE: We no longer write access tokens into the URL (browser history leak — Issue 3).
+    # Sessions are preserved via st.session_state within the same browser tab.
+
+    # Perform active session TTL (30 minutes) and auto-refresh logic
+    if st.session_state["auth_user"] is not None and st.session_state["session_start_time"] is not None:
+        elapsed_seconds = time.time() - st.session_state["session_start_time"]
+
+        # Enforce 30-minute session TTL
+        if elapsed_seconds > 30 * 60:
+            st.session_state["auth_user"] = None
+            st.session_state["auth_token"] = None
+            st.session_state["auth_refresh_token"] = None
+            st.session_state["session_start_time"] = None
+            st.warning("Session expired. Please sign in again.")
+            st.rerun()
+
+        # Trigger token refresh 10 minutes before 30-minute expiration
+        elif elapsed_seconds > 20 * 60 and st.session_state["auth_refresh_token"] is not None:
+            with st.spinner("Refreshing authentication session..."):
+                refresh_data = refresh_supabase_token(st.session_state["auth_refresh_token"])
+                if refresh_data:
+                    st.session_state["auth_user"] = refresh_data["user"]
+                    st.session_state["auth_token"] = refresh_data["access_token"]
+                    st.session_state["auth_refresh_token"] = refresh_data["refresh_token"]
+                    st.session_state["session_start_time"] = time.time()
+                    st.info("Authentication session refreshed.")
+                else:
+                    # If refresh fails, log out to be safe
+                    st.session_state["auth_user"] = None
+                    st.session_state["auth_token"] = None
+                    st.session_state["auth_refresh_token"] = None
+                    st.session_state["session_start_time"] = None
+                    st.warning("Authentication refresh failed. Please log in again.")
+                    st.rerun()
+
+        # Re-validate token against Supabase every 5 minutes to catch admin-revoked sessions.
+        # This ensures that if a Supabase admin revokes a token (e.g., security incident),
+        # the Streamlit session is invalidated within 5 minutes instead of up to 30 minutes.
+        current_token = st.session_state.get("auth_token")
+        if current_token and current_token != "mock-token":
+            last_validated = st.session_state.get("last_token_validation", 0)
+            if time.time() - last_validated > 5 * 60:
+                re_validated_user = get_user_from_token(current_token)
+                if not re_validated_user:
+                    for k in ["auth_user", "auth_token", "auth_refresh_token", "session_start_time", "last_token_validation"]:
+                        st.session_state[k] = None
+                    st.warning("🔒 Your session was invalidated remotely. Please sign in again.")
+                    st.rerun()
+                else:
+                    st.session_state["last_token_validation"] = time.time()
+
+    if st.session_state["auth_user"] is None:
+        col_l, col_r = st.columns([1, 1])
+        with col_l:
+            st.subheader("Welcome to AI Contract Reviewer")
+            st.markdown(
+                "Please sign in to access your contract pipeline, reviews, "
+                "risk scoring, and interactive Q&A workspace."
+            )
+            
+            with st.form("login_form", clear_on_submit=False):
+                email = st.text_input("Email Address", placeholder="user@example.com")
+                password = st.text_input("Password", type="password", placeholder="••••••••")
+                submit = st.form_submit_button("Sign In")
+                
+                if submit:
+                    if not email or not password:
+                        st.error("Please enter email and password.")
+                    else:
+                        with st.spinner("Verifying credentials..."):
+                            auth_data = check_supabase_auth(email, password)
+                            if auth_data:
+                                st.session_state["auth_user"] = auth_data["user"]
+                                st.session_state["auth_token"] = auth_data["access_token"]
+                                st.session_state["auth_refresh_token"] = auth_data.get("refresh_token")
+                                st.session_state["session_start_time"] = time.time()
+                                st.session_state["last_token_validation"] = time.time()
+                                st.success("Logged in successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Authentication failed. Please check your credentials.")
+
+        # Show a prominent banner in dev (mock) mode
+        import os as _os
+        if not _os.getenv("SUPABASE_URL"):
+            st.warning(
+                "⚠️ **Dev Mode Active** — Supabase is not configured. "
+                "Authentication is bypassed and all users share the `mock_user_id` identity. "
+                "Set `SUPABASE_URL` and `SUPABASE_KEY` in your `.env` before deploying.",
+                icon="⚠️"
+            )
+        return
+
     st.markdown(
         "Use the sidebar to select an available model and review contract text."
     )
@@ -650,6 +854,13 @@ def main() -> None:
     perspective = "Neutral"
 
     with st.sidebar:
+        # Profile Info and Log Out Button
+        st.write(f"👤 **Logged in as:** `{st.session_state['auth_user']['email']}`")
+        if st.button("Log Out"):
+            st.session_state["auth_user"] = None
+            st.session_state["auth_token"] = None
+            st.rerun()
+        st.divider()
         
         # --- 1. Load Past Reviewed Contracts Section ---
         st.header("Past Reviewed Contracts")
@@ -664,9 +875,42 @@ def main() -> None:
             )
             
         if past_checkpoints:
+            # Query all owners in a single batch pipeline to ensure fast rendering
+            import asyncio
+            from src.services.redis_client import AsyncRedisClient
+            
+            async def get_contract_owners(c_ids):
+                redis = AsyncRedisClient()
+                if not await redis.ping():
+                    return {}
+                client = await redis._get_client()
+                async with client.pipeline(transaction=False) as pipe:
+                    for c_id in c_ids:
+                        pipe.get(f"contract_owner:{c_id}")
+                    owners = await pipe.execute()
+                    return {c_id: owner for c_id, owner in zip(c_ids, owners)}
+                    
+            c_ids = [p.name.replace(".json", "") for p in past_checkpoints]
+            try:
+                owners_map = asyncio.run(get_contract_owners(c_ids))
+            except Exception:
+                owners_map = {}
+
             options = [("", "Select a past contract...")]
+            user_id = st.session_state["auth_user"].get("id")
+            
             for p in past_checkpoints:
                 c_id = p.name.replace(".json", "")
+                
+                # Enforce ownership check: skip contracts owned by other users
+                owner_id = owners_map.get(c_id)
+                if user_id == "mock_user_id":
+                    if owner_id and owner_id != "mock_user_id":
+                        continue
+                else:
+                    if owner_id != user_id:
+                        continue
+                    
                 try:
                     checkpoint_data = json.loads(p.read_text(encoding="utf-8"))
                     metadata = checkpoint_data.get("metadata", {})
@@ -700,30 +944,33 @@ def main() -> None:
                 except Exception:
                     options.append((c_id, f"📁 {c_id[:8]}"))
             
-            selected_past = st.selectbox(
-                "Load Past Review",
-                options=options,
-                format_func=lambda opt: opt[1],
-                key="past_contract_selector"
-            )
-            
-            if selected_past and selected_past[0]:
-                c_id = selected_past[0]
-                current_review = st.session_state.get("review_state")
-                current_id = getattr(current_review, "contract_id", None) if current_review else None
+            if len(options) <= 1:
+                st.info("No past reviews found for your account.")
+            else:
+                selected_past = st.selectbox(
+                    "Load Past Review",
+                    options=options,
+                    format_func=lambda opt: opt[1],
+                    key="past_contract_selector"
+                )
                 
-                if current_id != c_id:
-                    from src.services.services import ContractReviewService
-                    service = ContractReviewService()
-                    loaded_state = service.load_checkpoint(c_id)
-                    if loaded_state:
-                        st.session_state["review_state"] = loaded_state
-                        st.session_state["active_view"] = "📄 Review Report"
-                        st.rerun()
-                    else:
-                        st.error("Failed to load selected checkpoint.")
+                if selected_past and selected_past[0]:
+                    c_id = selected_past[0]
+                    current_review = st.session_state.get("review_state")
+                    current_id = getattr(current_review, "contract_id", None) if current_review else None
+                    
+                    if current_id != c_id:
+                        from src.services.services import ContractReviewService
+                        service = ContractReviewService()
+                        loaded_state = service.load_checkpoint(c_id)
+                        if loaded_state:
+                            st.session_state["review_state"] = loaded_state
+                            st.session_state["active_view"] = "📄 Review Report"
+                            st.rerun()
+                        else:
+                            st.error("Failed to load selected checkpoint.")
         else:
-            st.info("No past reviews found on disk.")
+            st.info("No past reviews found for your account.")
 
 
 
@@ -787,6 +1034,14 @@ def main() -> None:
                 source_file = uploaded_file.name if uploaded_file else None
                 state = controller.review_contract(contract_text, perspective=perspective, source_file=source_file)
                 st.session_state["review_state"] = state
+                
+                # Register contract ownership in Redis for the logged-in user immediately
+                from src.helpers.auth import check_contract_ownership
+                import asyncio
+                try:
+                    asyncio.run(check_contract_ownership(state.contract_id, st.session_state["auth_user"]))
+                except Exception as e:
+                    pass
                 
                 # Render clause crops if PDF bytes exist in session state
                 if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:

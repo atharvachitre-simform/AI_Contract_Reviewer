@@ -44,6 +44,7 @@ class ContractReviewWorkflow:
 		contract_id: str | None = None,
 		source_file: str | None = None,
 		trace_id: str | None = None,
+		user_id: str | None = None,
 		llm_client: Any | None = None,
 		risk_llm_client: Any | None = None,
 		obligation_llm_client: Any | None = None,
@@ -54,10 +55,26 @@ class ContractReviewWorkflow:
 		retriever: Any | None = None,
 		perspective: str | None = None,
 	) -> ContractReviewState:
-		trace_id = trace_id or str(uuid.uuid4())
-		LangFuseTracer.set_current_trace_id(trace_id)
+		# Start a user-scoped pipeline trace in Langfuse.
+		# start_pipeline_trace() creates the root trace and stores user_id,
+		# session_id and contract_id in thread-local storage so every nested
+		# agent call can read them without being passed them explicitly.
+		resolved_contract_id = contract_id or str(uuid.uuid4())
+		if trace_id:
+			# Caller supplied an existing trace_id (e.g. resume from checkpoint)
+			LangFuseTracer.set_current_trace_id(trace_id)
+			LangFuseTracer.set_current_user_id(user_id or "anonymous")
+			LangFuseTracer.set_current_session_id(resolved_contract_id)
+			LangFuseTracer.set_current_contract_id(resolved_contract_id)
+		else:
+			trace_id = self.tracer.start_pipeline_trace(
+				contract_id=resolved_contract_id,
+				user_id=user_id,
+				source_file=source_file,
+				perspective=perspective,
+			)
 		state = ContractReviewState(
-			contract_id=contract_id,
+			contract_id=resolved_contract_id,
 			source_file=source_file,
 			source_format="text",
 			contract_text=contract_text or "",
@@ -214,6 +231,7 @@ def run_contract_review(
 	contract_id: str | None = None,
 	source_file: str | None = None,
 	trace_id: str | None = None,
+	user_id: str | None = None,
 	llm_client: Any | None = None,
 	risk_llm_client: Any | None = None,
 	obligation_llm_client: Any | None = None,
@@ -231,6 +249,7 @@ def run_contract_review(
 		contract_id=contract_id,
 		source_file=source_file,
 		trace_id=trace_id,
+		user_id=user_id,
 		llm_client=llm_client,
 		risk_llm_client=risk_llm_client,
 		obligation_llm_client=obligation_llm_client,
