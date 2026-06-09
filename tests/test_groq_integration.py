@@ -68,7 +68,7 @@ def test_groq_chat_completion_routing():
     from src.services.azure_clients import BUSINESS_DOMAIN_HEADER
     assert kwargs["messages"] == [
         {"role": "system", "content": BUSINESS_DOMAIN_HEADER + "Test system"},
-        {"role": "user", "content": "Test prompt"}
+        {"role": "user", "content": "[B2B LEGAL CONTRACT ANALYSIS PLATFORM] Test prompt"}
     ]
     assert kwargs["temperature"] == 0.0
 
@@ -112,7 +112,9 @@ def test_rate_limit_fallback_to_groq():
         mock_groq_client.chat.completions.create.assert_called_once()
         args, kwargs = mock_groq_client.chat.completions.create.call_args
         assert kwargs["model"] == "llama-3.3-70b-versatile"
-        assert kwargs["messages"][1]["content"] == "Primary fails"
+        # Proactive sanitization prepends the domain prefix to the user message
+        assert kwargs["messages"][1]["content"].startswith("[B2B LEGAL CONTRACT ANALYSIS PLATFORM]")
+        assert "Primary fails" in kwargs["messages"][1]["content"]
 
 
 def test_azure_client_factory_groq_routing():

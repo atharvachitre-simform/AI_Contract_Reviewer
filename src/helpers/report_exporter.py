@@ -19,6 +19,11 @@ from ..models.models import ContractReviewState, RiskLevel, ReviewVerdict
 
 def export_as_markdown(state: ContractReviewState) -> str:
     """Generate a clean markdown report of the contract review state."""
+    from src import config
+    from .mask import unmask_review_state
+    if config.ENABLE_SENSITIVE_MASKING:
+        state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
+
     report = state.final_report
     
     verdict_str = str(report.verdict.value).upper() if report else "N/A"
@@ -192,6 +197,11 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 def export_as_pdf(state: ContractReviewState) -> bytes:
     """Generate a high-quality, professional PDF report of the contract review."""
+    from src import config
+    from .mask import unmask_review_state
+    if config.ENABLE_SENSITIVE_MASKING:
+        state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
+
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -504,6 +514,11 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
 
 def export_as_docx(state: ContractReviewState) -> bytes:
     """Generate a clean Microsoft Word document (.docx) of the contract review."""
+    from src import config
+    from .mask import unmask_review_state
+    if config.ENABLE_SENSITIVE_MASKING:
+        state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
+
     doc = Document()
     
     report = state.final_report

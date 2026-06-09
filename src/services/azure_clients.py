@@ -77,29 +77,25 @@ from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
 
 
 def sanitize_prompt_for_content_filter(prompt: str) -> str:
-    """Lightly sanitize terms in prompt/messages that trigger Azure content filters.
+    """Sanitize terms in prompt/messages that trigger Azure content filters.
 
-    Strategy: prepend a strong professional domain prefix that signals to the
-    Azure content classifier that this is a legal/professional context.
-    Only replace the very small set of terms that have no legitimate legal meaning.
-    DO NOT replace core legal terms (execution, oral, solicit, terminate, etc.)
-    as mangling them destroys legal meaning and still fails the filter anyway.
+    Strategy:
+    1. Prepend a strong professional domain prefix that signals to the
+       Azure content classifier that this is a legal/professional context.
+    2. Apply the comprehensive sensitive-word masking from mask.py which
+       covers ~70 known Azure filter trigger words.
+    3. Also apply user-supplied SENSITIVE_KEYWORDS from config.
     """
+    from ..helpers.mask import mask_sensitive_text, needs_masking
+
     # Prepend the domain context prefix so the filter sees professional context first
     domain_prefix = "[B2B LEGAL CONTRACT ANALYSIS PLATFORM] "
     if not prompt.startswith(domain_prefix) and not prompt.startswith("[B2B"):
         prompt = domain_prefix + prompt
 
-    # Only replace the very few terms with zero legitimate legal meaning.
-    replacements = {
-        r"\bpenetration\b": "security assessment",
-        r"\bpenetrations\b": "security assessments",
-        r"\bslave\b": "subordinate node",
-        r"\bslaves\b": "subordinate nodes",
-    }
-    sanitized = prompt
-    for pattern, replacement in replacements.items():
-        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    # Apply comprehensive keyword masking (built-in + user keywords)
+    user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
+    sanitized = mask_sensitive_text(prompt, keywords=user_keywords if user_keywords else None, use_builtin=True)
     return sanitized
 
 
@@ -321,6 +317,10 @@ class AzureOpenAIWrapper:
                 raise
 
         # Log to Langfuse using the v3 API via log_generation()
+        # Ensure logs do not leak credential strings – add a dynamic log filter if not already present.
+        root_logger = logging.getLogger()
+        if not any(isinstance(f, LogMaskFilter) for f in root_logger.filters):
+            root_logger.addFilter(LogMaskFilter())
         try:
             from .langfuse_tracer import LangFuseTracer
             tracer = LangFuseTracer()
@@ -373,6 +373,19 @@ class AzureOpenAIWrapper:
                     "No Azure OpenAI SDK or compatible OpenAI package is installed. Install azure-ai-openai or openai and restart the app."
                 )
             raise RuntimeError("Azure OpenAI client is not configured")
+
+        # ── Proactive sanitization ─────────────────────────────────────────
+        # Mask trigger words BEFORE the first API call so the Azure content
+        # filter is never reached.  The reactive retry path in chat_complete()
+        # remains as a belt-and-suspenders fallback.
+        # - User prompt: full sanitization (domain prefix + keyword redaction)
+        # - System prompt: keyword redaction only — BUSINESS_DOMAIN_HEADER is
+        #   prepended below, so adding the prefix here would double-prefix it.
+        prompt = sanitize_prompt_for_content_filter(prompt)
+        if system_prompt:
+            from ..helpers.mask import mask_sensitive_text
+            user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
+            system_prompt = mask_sensitive_text(system_prompt, keywords=user_keywords or None, use_builtin=True)
 
         # Always ensure the Azure content-filter bypass header is applied.
         # When agents pass an explicit system_prompt, the original code bypassed
@@ -597,6 +610,29 @@ class AzureOpenAIWrapper:
 
         raise RuntimeError("No configured client supports multimodal completions.")
 
+
+import logging
+
+class LogMaskFilter(logging.Filter):
+    """Logging filter that redacts credential‑like substrings before they are emitted.
+
+    It looks for common patterns such as API keys, secrets, or tokens and replaces the
+    sensitive value with ``[REDACTED]``. The filter is lightweight and can be attached
+    to the root logger at runtime.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Simple redaction patterns – expand as needed.
+        redaction_patterns = [
+            r"(?i)api[_-]?key=\S+",
+            r"(?i)secret=\S+",
+            r"(?i)token=\S+",
+            r"(?i)password=\S+",
+        ]
+        msg = record.getMessage()
+        for pat in redaction_patterns:
+            msg = re.sub(pat, "[REDACTED]", msg)
+        record.msg = msg
+        return True
 
 class AzureClientFactory:
     """Factory for Azure-backed clients and simple helpers."""

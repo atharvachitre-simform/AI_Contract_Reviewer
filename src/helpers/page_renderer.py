@@ -33,11 +33,26 @@ def render_clause_crops(pdf_bytes: bytes, contract_id: str, clauses: list[Any], 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         local_pages_dir = Path("logs/pages") / contract_id
         local_pages_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Extract original text from PDF to assist in unmasking search query if needed
+        original_text = ""
+        try:
+            original_text = "\n".join(page.get_text("text") for page in doc)
+        except Exception:
+            pass
+
         for c in clauses:
             raw_text = getattr(c, "raw_text", "") or (c.get("raw_text", "") if isinstance(c, dict) else "")
             if not raw_text or not raw_text.strip():
                 continue
+                
+            # Apply sensitive masking to raw_text if enabled
+            from .mask import mask_sensitive_text, restore_masked_text
+            if getattr(config, "ENABLE_SENSITIVE_MASKING", False) and getattr(config, "SENSITIVE_KEYWORDS", []):
+                search_text = restore_masked_text(raw_text, original_text, config.SENSITIVE_KEYWORDS)
+                raw_text = mask_sensitive_text(raw_text, config.SENSITIVE_KEYWORDS)
+            else:
+                search_text = raw_text
                 
             clause_hash = hashlib.md5(raw_text.strip().encode("utf-8")).hexdigest()
             page_num = getattr(c, "source_page", None) or getattr(c, "page_number", None) or (c.get("source_page") if isinstance(c, dict) else None) or (c.get("page_number") if isinstance(c, dict) else None)
@@ -58,7 +73,7 @@ def render_clause_crops(pdf_bytes: bytes, contract_id: str, clauses: list[Any], 
             found_page_idx = None
             
             # Search for the clause text using chunk-based matching for robust line-wrapping and paragraph coverage
-            full_query = re.sub(r"\s+", " ", raw_text.strip())
+            full_query = re.sub(r"\s+", " ", search_text.strip())
             if not full_query:
                 continue
                 
