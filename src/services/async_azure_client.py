@@ -46,8 +46,24 @@ class AsyncAzureOpenAIWrapper:
         if not self.is_configured():
             raise RuntimeError("Azure OpenAI client is not configured for async completions")
 
+        # ── Proactive sanitization (mirrors sync _execute_chat_complete) ─────
+        from .azure_clients import sanitize_prompt_for_content_filter, BUSINESS_DOMAIN_HEADER
+        from ..helpers.mask import mask_sensitive_text
+        prompt = sanitize_prompt_for_content_filter(prompt)
+        if system_prompt:
+            # Keyword redaction only — BUSINESS_DOMAIN_HEADER is prepended below,
+            # so using full sanitize_prompt_for_content_filter here would double-prefix.
+            user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
+            system_prompt = mask_sensitive_text(system_prompt, keywords=user_keywords or None, use_builtin=True)
+
         # Build messages identical to sync version
-        sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+        if system_prompt:
+            if "B2B legal technology platform" not in system_prompt:
+                sys_content = BUSINESS_DOMAIN_HEADER + system_prompt
+            else:
+                sys_content = system_prompt
+        else:
+            sys_content = BUSINESS_DOMAIN_HEADER + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
         messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
 
         # Groq async via httpx

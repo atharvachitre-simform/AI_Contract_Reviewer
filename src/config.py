@@ -32,6 +32,11 @@ PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT = int(os.getenv("PLAIN_ENGLISH_WRITER_CLAUSES
 # Limit of clauses listed in report metadata section
 REPORT_ASSEMBLER_CLAUSES_LIMIT = int(os.getenv("REPORT_ASSEMBLER_CLAUSES_LIMIT", "15"))
 
+# Enable masking of sensitive words in PDF content (default: on — proactively prevents Azure content filter hits)
+ENABLE_SENSITIVE_MASKING = os.getenv("ENABLE_SENSITIVE_MASKING", "true").lower() in ("1", "true", "yes")
+# Comma‑separated list of keywords to redact (e.g., "playboy,adult,violence")
+SENSITIVE_KEYWORDS = [kw.strip() for kw in os.getenv("SENSITIVE_KEYWORDS", "").split(",") if kw.strip()]
+
 # --- Tenacity Retry Settings ---
 RETRY_MULTIPLIER = float(os.getenv("RETRY_MULTIPLIER", "1.0"))
 RETRY_MIN_WAIT = float(os.getenv("RETRY_MIN_WAIT", "2.0"))

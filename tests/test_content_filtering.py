@@ -45,18 +45,21 @@ def test_is_content_filter_error():
 
 
 def test_sanitize_prompt_for_content_filter():
-    """Verify that sanitize_prompt_for_content_filter replaces flagged words with safe alternatives."""
+    """Verify that sanitize_prompt_for_content_filter redacts flagged trigger words."""
     prompt = (
         "Conduct penetration testing.\n"
         "Configure the slave database node."
     )
     sanitized = sanitize_prompt_for_content_filter(prompt)
-    
+
+    # Trigger words must be removed
     assert "penetration" not in sanitized.lower()
     assert "slave" not in sanitized.lower()
-    
-    assert "security assessment" in sanitized.lower()
-    assert "subordinate" in sanitized.lower()
+
+    # They are now replaced with [REDACTED], not legacy word-substitutions
+    assert "[redacted]" in sanitized.lower()
+    # Domain prefix must be prepended
+    assert sanitized.startswith("[B2B LEGAL CONTRACT ANALYSIS PLATFORM]")
 
 
 def test_get_fallback_json_for_prompt():
@@ -113,10 +116,10 @@ def test_chat_complete_content_filter_mitigation():
     res = wrapper.chat_complete("Conduct penetration testing on the nodes.")
     assert res == "Successful retry response"
 
-    # Verify that the second call received the sanitized prompt
+    # Verify that the second call received the sanitized prompt (trigger word redacted)
     args, kwargs = mock_openai.chat.completions.create.call_args
     assert "penetration" not in kwargs["messages"][1]["content"]
-    assert "security assessment" in kwargs["messages"][1]["content"]
+    assert "[REDACTED]" in kwargs["messages"][1]["content"]
 
 
 def test_chat_complete_repeated_content_filter_failure():

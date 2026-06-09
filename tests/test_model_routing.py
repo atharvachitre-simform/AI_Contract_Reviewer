@@ -92,7 +92,7 @@ def test_response_format_json_mode_pass_through():
         model="test-deployment",
         messages=[
             {"role": "system", "content": BUSINESS_DOMAIN_HEADER + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."},
-            {"role": "user", "content": "Hello"}
+            {"role": "user", "content": "[B2B LEGAL CONTRACT ANALYSIS PLATFORM] Hello"}
         ],
         temperature=0.0,
         max_tokens=800,

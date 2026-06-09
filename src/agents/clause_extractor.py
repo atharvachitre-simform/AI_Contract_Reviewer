@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from ..helpers.mask import mask_sensitive_text
 import os
 import re
 from collections import defaultdict
@@ -136,6 +137,9 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
     
     try:
         cleaned_text = state["cleaned_text"]
+        # Apply masking if enabled before sending to LLM
+        if config.ENABLE_SENSITIVE_MASKING:
+            cleaned_text = mask_sensitive_text(cleaned_text, config.SENSITIVE_KEYWORDS)
         chunk_size = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "60000"))
         overlap = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "1500"))
         
@@ -222,8 +226,12 @@ def llm_extraction_node(state: ClauseExtractorState, llm_client: Any | None = No
             
             for idx, chunk in enumerate(chunks, 1):
                 logger.info(f"Extracting clauses from chunk {idx}/{len(chunks)} (size: {len(chunk)} characters)")
+                # Apply masking to each chunk if enabled
+                masked_chunk = chunk
+                if config.ENABLE_SENSITIVE_MASKING:
+                    masked_chunk = mask_sensitive_text(chunk, config.SENSITIVE_KEYWORDS)
                 prompt = build_clause_extractor_prompt(
-                    chunk,
+                    masked_chunk,
                     source_file=state["source_file"],
                     memory_context=memory_context,
                     reference_clauses=state["reference_clauses"],
