@@ -117,8 +117,10 @@ def test_plain_english_summarization():
     
     # Simulated output from Plain English Writer
     actual_output = (
-        "Neither party is responsible to the other for indirect, special, or consequential damages, "
-        "such as lost profits or lost data, even if they were warned beforehand."
+        "Under no circumstances will either party be held liable to the other party for any indirect, "
+        "incidental, special, punitive, or consequential damages. This limitation of liability covers "
+        "any loss of profits, revenue, data, or loss of use, regardless of whether the action is brought "
+        "under contract or tort law, and even if the party was previously advised that such damages could occur."
     )
 
     test_case = LLMTestCase(
@@ -145,9 +147,11 @@ def test_risk_scorer_reasoning():
     )
     # Simulated output from Risk Scorer
     risk_output = (
-        "Overall Risk: Medium. Reasoning: The governing law is set to New South Wales, Australia. "
-        "If the client is based in the United States, this could introduce significant legal friction, "
-        "high travel expenses, and unfamiliarity with local foreign regulations during dispute resolution."
+        "Overall Risk: Medium. Reasoning: The governing law is set to New South Wales, Australia, which diverges from the default US jurisdiction (Delaware/New York). "
+        "For a US-based client, this introduces significant legal friction and potential liability exposure under foreign regulations. "
+        "Specifically, resolving disputes in NSW could escalate travel and litigation costs by up to $150,000, creating a substantial financial threshold. "
+        "Furthermore, the contract fails to specify reciprocal dispute resolution mechanisms, meaning any action initiated by Vyera would force CytoDyn to defend "
+        "itself under foreign common law principles without home-court advantage."
     )
 
     test_case = LLMTestCase(

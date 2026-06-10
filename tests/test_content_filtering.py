@@ -56,8 +56,8 @@ def test_sanitize_prompt_for_content_filter():
     assert "penetration" not in sanitized.lower()
     assert "slave" not in sanitized.lower()
 
-    # They are now replaced with [REDACTED], not legacy word-substitutions
-    assert "[redacted]" in sanitized.lower()
+    # They are now replaced with [MASK_i]
+    assert "[mask_" in sanitized.lower()
     # Domain prefix must be prepended
     assert sanitized.startswith("[B2B LEGAL CONTRACT ANALYSIS PLATFORM]")
 
@@ -119,7 +119,7 @@ def test_chat_complete_content_filter_mitigation():
     # Verify that the second call received the sanitized prompt (trigger word redacted)
     args, kwargs = mock_openai.chat.completions.create.call_args
     assert "penetration" not in kwargs["messages"][1]["content"]
-    assert "[REDACTED]" in kwargs["messages"][1]["content"]
+    assert "[MASK_" in kwargs["messages"][1]["content"]
 
 
 def test_chat_complete_repeated_content_filter_failure():

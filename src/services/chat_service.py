@@ -51,6 +51,23 @@ class ContractChatService:
         except Exception:
             return False
 
+    async def _unmask_chat_text(self, text: str) -> str:
+        """Restores masked tokens in chat answers using the original contract text."""
+        from ..helpers.mask import restore_masked_text
+        from src import config
+
+        original_text = ""
+        try:
+            from .services import ContractReviewService
+            service = ContractReviewService()
+            state = service.load_checkpoint(self.contract_id)
+            if state:
+                original_text = getattr(state, "contract_text", "") or ""
+        except Exception:
+            pass
+
+        return restore_masked_text(text, original_text, config.SENSITIVE_KEYWORDS)
+
 
     async def _load_history(self) -> tuple[str, list[dict[str, Any]]]:
         """Load conversation summary and verbatim message history."""
@@ -493,13 +510,20 @@ class ContractChatService:
             
             # Save new turns
             history.append({"role": "user", "content": question})
-            history.append({"role": "assistant", "content": answer, "sources": sources})
+            unmasked_answer = await self._unmask_chat_text(answer)
+            unmasked_sources = []
+            for src in sources:
+                unmasked_src = dict(src)
+                if "text" in unmasked_src:
+                    unmasked_src["text"] = await self._unmask_chat_text(unmasked_src["text"])
+                unmasked_sources.append(unmasked_src)
+            history.append({"role": "assistant", "content": unmasked_answer, "sources": unmasked_sources})
             await self._save_history(summary, history)
             
             tracer.flush()
             return {
-                "answer": answer,
-                "sources": sources
+                "answer": unmasked_answer,
+                "sources": unmasked_sources
             }
         except Exception as e:
             from .azure_clients import is_content_filter_error
@@ -645,13 +669,20 @@ class ContractChatService:
             
             # Save new turns verbatim (ignoring the image bytes completely to prevent Redis storage explosion)
             history.append({"role": "user", "content": f"[Image Uploaded] {question or 'Analyze page screenshot.'}"})
-            history.append({"role": "assistant", "content": answer, "sources": sources})
+            unmasked_answer = await self._unmask_chat_text(answer)
+            unmasked_sources = []
+            for src in sources:
+                unmasked_src = dict(src)
+                if "text" in unmasked_src:
+                    unmasked_src["text"] = await self._unmask_chat_text(unmasked_src["text"])
+                unmasked_sources.append(unmasked_src)
+            history.append({"role": "assistant", "content": unmasked_answer, "sources": unmasked_sources})
             await self._save_history(summary, history)
             
             tracer.flush()
             return {
-                "answer": answer,
-                "sources": sources
+                "answer": unmasked_answer,
+                "sources": unmasked_sources
             }
         except Exception as e:
             from .azure_clients import is_content_filter_error

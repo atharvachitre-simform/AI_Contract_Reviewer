@@ -117,6 +117,9 @@ def review(request: ReviewRequest, user: dict = Depends(get_current_user)):
         perspective=request.perspective,
         user_id=user.get("id"),
     )
+    from .helpers.mask import unmask_review_state
+    from src import config
+    state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
     return state.model_dump(mode="json")
 
 
@@ -128,10 +131,14 @@ def review(request: ReviewRequest, user: dict = Depends(get_current_user)):
 def get_review_state(contract_id: str = Depends(verify_path_contract_access)):
     """Get the full state of a past review."""
     from .services.services import ContractReviewService
+    from .helpers.mask import unmask_review_state
+    from src import config
     service = ContractReviewService()
     state = service.load_checkpoint(contract_id)
     if not state:
         raise HTTPException(status_code=404, detail="Contract review not found.")
+    # Dynamically unmask on-the-fly to handle legacy checkpoints
+    state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
     return state.model_dump(mode="json")
 
 @app.get("/api/v1/review/{contract_id}/export")
