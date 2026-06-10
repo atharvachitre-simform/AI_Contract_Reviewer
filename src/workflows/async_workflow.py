@@ -44,7 +44,23 @@ class AsyncContractReviewWorkflow:
     @staticmethod
     async def _run_in_executor(fn, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+        
+        # Capture current thread-local tracing context
+        from ..services.langfuse_tracer import LangFuseTracer
+        tid = LangFuseTracer.get_current_trace_id()
+        uid = LangFuseTracer.get_current_user_id()
+        sid = LangFuseTracer.get_current_session_id()
+        cid = LangFuseTracer.get_current_contract_id()
+
+        def wrapper():
+            # Inject tracing context into the new worker thread
+            LangFuseTracer.set_current_trace_id(tid)
+            LangFuseTracer.set_current_user_id(uid)
+            LangFuseTracer.set_current_session_id(sid)
+            LangFuseTracer.set_current_contract_id(cid)
+            return fn(*args, **kwargs)
+
+        return await loop.run_in_executor(None, wrapper)
 
     # ------------------------------------------------------------------
     # Public: fire-and-forget full run
@@ -380,4 +396,5 @@ class AsyncContractReviewWorkflow:
                 yield {"step": step, "status": "error", "detail": {"error": str(e)}}
 
         state.status = ProcessingStatus.COMPLETED
+        self.tracer.flush()
         yield {"step": "done", "status": "completed", "state": state.model_dump(mode="json")}

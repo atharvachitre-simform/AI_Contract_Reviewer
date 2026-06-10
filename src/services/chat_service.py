@@ -496,6 +496,7 @@ class ContractChatService:
             history.append({"role": "assistant", "content": answer, "sources": sources})
             await self._save_history(summary, history)
             
+            tracer.flush()
             return {
                 "answer": answer,
                 "sources": sources
@@ -505,6 +506,7 @@ class ContractChatService:
             if is_content_filter_error(e):
                 logger.warning(f"Content filter triggered in chat: {e}")
                 tracer.trace("chat_content_filter", "LLM response blocked by content filter.", {"error": str(e)}, "filtered")
+                tracer.flush()
                 return {
                     "answer": (
                         "This section of the document could not be summarized due to content policy restrictions. "
@@ -514,6 +516,7 @@ class ContractChatService:
                 }
             logger.error(f"Chat completion failed: {e}", exc_info=True)
             tracer.trace("chat_error", "Chat completion failed.", {"error": str(e)}, "error")
+            tracer.flush()
             return {
                 "answer": f"Error: Failed to generate chat response. Please try again.",
                 "sources": []
@@ -645,6 +648,7 @@ class ContractChatService:
             history.append({"role": "assistant", "content": answer, "sources": sources})
             await self._save_history(summary, history)
             
+            tracer.flush()
             return {
                 "answer": answer,
                 "sources": sources
@@ -653,6 +657,7 @@ class ContractChatService:
             from .azure_clients import is_content_filter_error
             if is_content_filter_error(e):
                 logger.warning(f"Content filter triggered in multimodal chat: {e}")
+                tracer.flush()
                 return {
                     "answer": (
                         "This section of the document could not be summarized due to content policy restrictions. "
@@ -661,6 +666,7 @@ class ContractChatService:
                     "sources": sources
                 }
             logger.error(f"Multimodal chat completion failed: {e}", exc_info=True)
+            tracer.flush()
             return {
                 "answer": f"Error: Failed to analyze image with vision model. Please try again.",
                 "sources": []

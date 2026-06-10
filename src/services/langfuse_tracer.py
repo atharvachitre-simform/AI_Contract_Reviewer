@@ -49,6 +49,13 @@ class LangFuseTracer:
     """
 
     _thread_local = threading.local()
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(LangFuseTracer, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     # ------------------------------------------------------------------
     # Thread-local accessors
@@ -91,6 +98,10 @@ class LangFuseTracer:
     # ------------------------------------------------------------------
 
     def __init__(self) -> None:
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
+        
         repo_root = Path(__file__).resolve().parents[2]
         dotenv_path = repo_root / ".env"
         if dotenv_path.exists():
@@ -110,7 +121,7 @@ class LangFuseTracer:
                     public_key=self.public_key,
                     secret_key=self.secret_key,
                     host=self.host,
-                    tracing_enabled=True,
+                    debug=True,
                 )
             except Exception as exc:
                 print(f"Langfuse client init error: {exc}")
@@ -181,7 +192,6 @@ class LangFuseTracer:
                         "contract_id": contract_id,
                         "source": "pipeline",
                     },
-                    user_id=uid,
                 )
             except Exception as exc:
                 import logging
@@ -238,7 +248,6 @@ class LangFuseTracer:
                         "call_type": call_type,
                         "source": "chatbot",
                     },
-                    user_id=uid,
                 )
             except Exception as exc:
                 import logging
@@ -314,7 +323,6 @@ class LangFuseTracer:
                     "contract_id": contract_id or self.get_current_contract_id(),
                 },
                 status_message=status,
-                user_id=uid,
             )
         except Exception as exc:
             # Swallow silently — tracing must never break normal execution
@@ -371,9 +379,21 @@ class LangFuseTracer:
                     "session_id": sid,
                     "contract_id": cid,
                 },
-                user_id=uid,
             )
             obs.end()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).debug(f"Langfuse generation error: {exc}")
+
+    def flush(self) -> None:
+        """Force flush all pending events to Langfuse.
+        
+        Call this at the end of scripts or workflows to ensure all asynchronous
+        events are uploaded before the process exits.
+        """
+        if self.enabled and self.client:
+            try:
+                self.client.flush()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug(f"Langfuse flush error: {exc}")

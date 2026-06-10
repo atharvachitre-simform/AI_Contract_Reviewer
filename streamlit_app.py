@@ -1050,49 +1050,62 @@ def main() -> None:
                     if getattr(state, "clause_extraction", None) and getattr(state.clause_extraction, "clauses", None):
                         render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
             else:
-                clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
-                clause_output = extract_clauses(contract_text, llm_client=clause_client)
-                st.session_state["single_model_type"] = selected_model
-                
-                if selected_model == "Clause Extractor":
-                    st.session_state["single_model_output"] = clause_output
-                elif selected_model == "Risk Scorer":
-                    risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
-                    if not risk_client or not risk_client.is_configured():
-                        st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
-                    else:
-                        st.session_state["single_model_output"] = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
-                elif selected_model == "Obligation Finder":
-                    obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
-                    if not obligation_client or not obligation_client.is_configured():
-                        st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
-                    else:
-                        st.session_state["single_model_output"] = find_obligations(clause_output, llm_client=obligation_client)
-                elif selected_model == "Red Flag Detector":
-                    red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                    st.session_state["single_model_output"] = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
-                elif selected_model == "Plain English Writer":
-                    plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
-                    st.session_state["single_model_output"] = generate_plain_english(clause_output, llm_client=plain_client)
-                elif selected_model == "Report Assembler":
-                    risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
-                    if not risk_client or not risk_client.is_configured():
-                        st.error("Report assembly requires the Risk Scorer client to be configured.")
-                    else:
-                        risk_output = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                from src.services.langfuse_tracer import LangFuseTracer
+                import time
+                tracer = LangFuseTracer()
+                user_id = st.session_state.get("auth_user", {}).get("id")
+                trace_id = tracer.start_pipeline_trace(
+                    contract_id=f"single_model_{int(time.time())}",
+                    user_id=user_id,
+                    perspective=perspective,
+                    source_file=uploaded_file.name if uploaded_file else None
+                )
+                try:
+                    clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
+                    clause_output = extract_clauses(contract_text, llm_client=clause_client)
+                    st.session_state["single_model_type"] = selected_model
+                    
+                    if selected_model == "Clause Extractor":
+                        st.session_state["single_model_output"] = clause_output
+                    elif selected_model == "Risk Scorer":
+                        risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                        if not risk_client or not risk_client.is_configured():
+                            st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
+                        else:
+                            st.session_state["single_model_output"] = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                    elif selected_model == "Obligation Finder":
+                        obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
+                        if not obligation_client or not obligation_client.is_configured():
+                            st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+                        else:
+                            st.session_state["single_model_output"] = find_obligations(clause_output, llm_client=obligation_client)
+                    elif selected_model == "Red Flag Detector":
                         red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                        red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                        st.session_state["single_model_output"] = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                    elif selected_model == "Plain English Writer":
                         plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
-                        plain_output = generate_plain_english(clause_output, llm_client=plain_client)
-                        assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
-                        st.session_state["single_model_output"] = assemble_report(
-                            clause_extraction=clause_output,
-                            risk_scoring=risk_output,
-                            red_flags=red_flag_output,
-                            plain_english=plain_output,
-                            llm_client=assembler_client,
-                            perspective=perspective,
-                        )
+                        st.session_state["single_model_output"] = generate_plain_english(clause_output, llm_client=plain_client)
+                    elif selected_model == "Report Assembler":
+                        risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                        if not risk_client or not risk_client.is_configured():
+                            st.error("Report assembly requires the Risk Scorer client to be configured.")
+                        else:
+                            risk_output = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                            red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
+                            red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                            plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
+                            plain_output = generate_plain_english(clause_output, llm_client=plain_client)
+                            assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
+                            st.session_state["single_model_output"] = assemble_report(
+                                clause_extraction=clause_output,
+                                risk_scoring=risk_output,
+                                red_flags=red_flag_output,
+                                plain_english=plain_output,
+                                llm_client=assembler_client,
+                                perspective=perspective,
+                            )
+                finally:
+                    tracer.flush()
 
     # Render persisted state
     if st.session_state.get("review_state") is not None:

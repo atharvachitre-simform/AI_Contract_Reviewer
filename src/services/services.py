@@ -393,6 +393,7 @@ class ContractReviewService:
                         state.trace_url = trace_url
                     except Exception:
                         pass
+            self.tracer.flush()
             return state
         except Exception as e:
             logger.error(f"Contract review process failed: {e}")
@@ -403,6 +404,7 @@ class ContractReviewService:
                 "failed",
                 self.current_trace_id,
             )
+            self.tracer.flush()
             raise
 
     def retrieve_from_knowledge_base(self, query: str, index_name: str) -> list[dict]:
