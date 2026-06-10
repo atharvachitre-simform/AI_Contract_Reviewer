@@ -241,6 +241,14 @@ class AsyncContractReviewWorkflow:
                 yield {"step": "done", "status": "error", "state": state.model_dump(mode="json")}
                 return
 
+        # Enrich perspective with extracted party name
+        if perspective and state.clause_extraction and state.clause_extraction.metadata.parties:
+            for party in state.clause_extraction.metadata.parties:
+                if party.role and perspective.lower() in party.role.lower():
+                    perspective = f"{perspective} ({party.name})"
+                    state.perspective = perspective
+                    break
+
         # ------------------------------------------------------------------
         # Steps 2+3: Obligation Finder & Red Flag Detector (parallel)
         # ------------------------------------------------------------------

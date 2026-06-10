@@ -169,6 +169,19 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 				else:
 					evidence_list = [str(e) for e in evidence_list if e]
 
+				benefiting_party = item.get("benefiting_party")
+				if benefiting_party is not None:
+					benefiting_party = str(benefiting_party).strip()
+				burdened_party = item.get("burdened_party")
+				if burdened_party is not None:
+					burdened_party = str(burdened_party).strip()
+				liability_holder = item.get("liability_holder")
+				if liability_holder is not None:
+					liability_holder = str(liability_holder).strip()
+				decision_controller = item.get("decision_controller")
+				if decision_controller is not None:
+					decision_controller = str(decision_controller).strip()
+
 				red_flags.append(
 					RedFlagItem(
 						pattern_name=str(item.get("pattern_name") or "Red Flag"),
@@ -177,6 +190,10 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 						evidence=evidence_list,
 						safer_alternative=str(item.get("safer_alternative") or "") or None,
 						matched_category=item.get("matched_category"),
+						benefiting_party=benefiting_party,
+						burdened_party=burdened_party,
+						liability_holder=liability_holder,
+						decision_controller=decision_controller,
 					)
 				)
 

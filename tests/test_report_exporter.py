@@ -11,7 +11,9 @@ from src.models.models import (
     PlainEnglishClause,
     PlainEnglishWriterOutput,
     NegotiationPriority,
-    MissingClause
+    MissingClause,
+    RiskScorerOutput,
+    RiskIssue
 )
 from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
 
@@ -56,7 +58,29 @@ def test_report_exporters():
                     severity=RiskLevel.CRITICAL,
                     description="The agreement has uncapped vendor liability.",
                     evidence=["Section 10.1: Liability of the vendor shall be unlimited."],
-                    safer_alternative="Limit liability to 12 months fees."
+                    safer_alternative="Limit liability to 12 months fees.",
+                    benefiting_party="Vendor",
+                    burdened_party="Customer"
+                )
+            ]
+        ),
+        risk_scoring=RiskScorerOutput(
+            overall_risk_level=RiskLevel.HIGH,
+            overall_risk_score=0.8,
+            issues=[
+                RiskIssue(
+                    clause_type="Limitation of Liability",
+                    risk_level=RiskLevel.CRITICAL,
+                    risk_score=0.9,
+                    issue="Uncapped vendor liability with strict customer cap.",
+                    rationale="Creates immense liability exposure for the customer.",
+                    negotiation_suggestion="Negotiate mutual 12-month fee cap.",
+                    evidence=["Section 10.1: Liability of the vendor shall be unlimited."],
+                    benefiting_party="Vendor",
+                    burdened_party="Customer",
+                    liability_holder="Customer",
+                    customer_risk_score=0.9,
+                    vendor_risk_score=0.1
                 )
             ]
         ),
@@ -94,6 +118,11 @@ def test_report_exporters():
     assert "Uncapped Liability" in md_report
     assert "Pay invoices within 30 days" in md_report
     assert "Delaware" in md_report
+    # Verify party-centric fields in markdown
+    assert "Detailed Risk Analysis" in md_report
+    assert "Limitation of Liability" in md_report
+    assert "Customer Risk Score: 0.90" in md_report
+    assert "**Benefiting Party:** Vendor" in md_report
 
     # 2. Test PDF Export
     pdf_bytes = export_as_pdf(state)
@@ -103,5 +132,4 @@ def test_report_exporters():
     # 3. Test DOCX Export
     docx_bytes = export_as_docx(state)
     assert len(docx_bytes) > 0
-    # docx is a zip file starting with PK zip header
     assert docx_bytes.startswith(b"PK")

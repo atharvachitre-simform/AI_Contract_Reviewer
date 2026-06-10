@@ -246,7 +246,10 @@ def get_page_image(page_num: int, contract_id: str = Depends(verify_path_contrac
     import os
     from fastapi.responses import FileResponse
 
-    path = os.path.join("logs", "pages", contract_id, f"page_{page_num}.png")
+    safe_contract_id = os.path.basename(contract_id)
+    safe_page_num = os.path.basename(str(page_num))
+    path = os.path.join("logs", "pages", safe_contract_id, f"page_{safe_page_num}.png")
+    
     if not os.path.exists(path):
         raise HTTPException(
             status_code=404,

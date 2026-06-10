@@ -604,13 +604,13 @@ def _merge_metadata(existing: ContractMetadata, new_metadata: dict[str, Any]) ->
             setattr(existing, field, str(value))
     
     if existing.parties == [] and isinstance(new_metadata.get("parties"), list):
-        existing.parties = [
-            ContractParty(name=str(item), role=None)
-            if isinstance(item, str)
-            else None
-            for item in new_metadata.get("parties", [])
-        ]
-        existing.parties = [party for party in existing.parties if party is not None]
+        new_parties = []
+        for item in new_metadata.get("parties", []):
+            if isinstance(item, str):
+                new_parties.append(ContractParty(name=item, role=None))
+            elif isinstance(item, dict) and "name" in item:
+                new_parties.append(ContractParty(name=str(item["name"]), role=str(item.get("role")) if item.get("role") else None))
+        existing.parties = new_parties
     
     return existing
 

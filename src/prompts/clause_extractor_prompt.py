@@ -31,7 +31,12 @@ OUTPUT_SCHEMA = {
     "metadata": {
         "document_name": "string or null",
         "contract_type": "string or null",
-        "parties": ["string"],
+        "parties": [
+            {
+                "name": "string",
+                "role": "string or null (e.g. Vendor, Customer, Licensor, Licensee)"
+            }
+        ],
         "agreement_date": "string or null",
         "effective_date": "string or null",
         "expiration_date": "string or null",
