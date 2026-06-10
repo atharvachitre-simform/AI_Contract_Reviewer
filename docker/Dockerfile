@@ -28,7 +28,8 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
 # Install curl for healthchecks and CA certs, then clean up
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Remove vulnerable system python packages that are unnecessary at runtime
