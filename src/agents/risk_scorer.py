@@ -256,6 +256,35 @@ class RiskScorerAgent:
                     risk_score = max(0.0, min(1.0, risk_score))
                     risk_level = self._normalize_risk_level(issue_dict.get("risk_level"))
 
+                    benefiting_party = issue_dict.get("benefiting_party")
+                    if benefiting_party is not None:
+                        benefiting_party = str(benefiting_party).strip()
+                    burdened_party = issue_dict.get("burdened_party")
+                    if burdened_party is not None:
+                        burdened_party = str(burdened_party).strip()
+                    liability_holder = issue_dict.get("liability_holder")
+                    if liability_holder is not None:
+                        liability_holder = str(liability_holder).strip()
+                    decision_controller = issue_dict.get("decision_controller")
+                    if decision_controller is not None:
+                        decision_controller = str(decision_controller).strip()
+
+                    vendor_risk_score = None
+                    try:
+                        v_score = issue_dict.get("vendor_risk_score")
+                        if v_score is not None:
+                            vendor_risk_score = float(v_score)
+                    except (TypeError, ValueError):
+                        pass
+
+                    customer_risk_score = None
+                    try:
+                        c_score = issue_dict.get("customer_risk_score")
+                        if c_score is not None:
+                            customer_risk_score = float(c_score)
+                    except (TypeError, ValueError):
+                        pass
+
                     llm_risks.append(
                         RiskIssue(
                             clause_type=str(issue_dict.get("clause_type", "Unknown")) or "Unknown",
@@ -266,6 +295,12 @@ class RiskScorerAgent:
                             negotiation_suggestion=str(issue_dict.get("negotiation_suggestion", "")).strip(),
                             evidence=issue_dict.get("evidence", []) if isinstance(issue_dict.get("evidence", []), list) else [str(issue_dict.get("evidence", ""))],
                             related_categories=issue_dict.get("related_categories", []) if isinstance(issue_dict.get("related_categories", []), list) else [],
+                            benefiting_party=benefiting_party,
+                            burdened_party=burdened_party,
+                            liability_holder=liability_holder,
+                            decision_controller=decision_controller,
+                            vendor_risk_score=vendor_risk_score,
+                            customer_risk_score=customer_risk_score,
                         )
                     )
 

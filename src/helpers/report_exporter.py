@@ -53,7 +53,7 @@ def export_as_markdown(state: ContractReviewState) -> str:
     ])
 
     # Key Risks
-    lines.append("## Key Risks")
+    lines.append("## Key Risks Summary")
     if report and report.key_risks:
         for risk in report.key_risks:
             lines.append(f"- {risk}")
@@ -61,11 +61,65 @@ def export_as_markdown(state: ContractReviewState) -> str:
         lines.append("*No specific key risks identified.*")
     lines.append("")
 
+    # Detailed Risk Analysis
+    if state.risk_scoring and state.risk_scoring.issues:
+        lines.append("## Detailed Risk Analysis")
+        for issue in state.risk_scoring.issues:
+            sev = str(issue.risk_level.value).upper()
+            score_str = f"{issue.risk_score:.2f}"
+            
+            dual_scores = []
+            if issue.customer_risk_score is not None:
+                dual_scores.append(f"Customer Risk Score: {issue.customer_risk_score:.2f}")
+            if issue.vendor_risk_score is not None:
+                dual_scores.append(f"Vendor Risk Score: {issue.vendor_risk_score:.2f}")
+            
+            score_info = f"Score: {score_str}"
+            if dual_scores:
+                score_info += f" | {', '.join(dual_scores)}"
+                
+            lines.append(f"### {issue.clause_type} ({sev} - {score_info})")
+            
+            roles = []
+            if issue.benefiting_party:
+                roles.append(f"**Benefiting Party:** {issue.benefiting_party}")
+            if issue.burdened_party:
+                roles.append(f"**Burdened Party:** {issue.burdened_party}")
+            if issue.liability_holder:
+                roles.append(f"**Liability Holder:** {issue.liability_holder}")
+            if issue.decision_controller:
+                roles.append(f"**Decision Controller:** {issue.decision_controller}")
+            if roles:
+                lines.append(f"*Role Mapping:* {', '.join(roles)}  ")
+                
+            lines.append(f"**Issue:** {issue.issue}  ")
+            if issue.rationale:
+                lines.append(f"**Rationale:** {issue.rationale}  ")
+            if issue.evidence:
+                lines.append(f"**Evidence:** *\"{', '.join(issue.evidence)}\"*  ")
+            if issue.negotiation_suggestion:
+                lines.append(f"**Negotiation Suggestion:** {issue.negotiation_suggestion}  ")
+            lines.append("")
+        lines.append("")
+
     # Red Flags
     lines.append("## Red Flags")
     if state.red_flag_detection and state.red_flag_detection.red_flags:
         for flag in state.red_flag_detection.red_flags:
             lines.append(f"- **{flag.pattern_name}** ({str(flag.severity.value).upper()}): {flag.description}")
+            
+            roles = []
+            if flag.benefiting_party:
+                roles.append(f"**Benefiting Party:** {flag.benefiting_party}")
+            if flag.burdened_party:
+                roles.append(f"**Burdened Party:** {flag.burdened_party}")
+            if flag.liability_holder:
+                roles.append(f"**Liability Holder:** {flag.liability_holder}")
+            if flag.decision_controller:
+                roles.append(f"**Decision Controller:** {flag.decision_controller}")
+            if roles:
+                lines.append(f"  *Role Mapping:* {', '.join(roles)}")
+                
             if flag.evidence:
                 lines.append(f"  *Evidence:* *\"{', '.join(flag.evidence)}\"*")
             if flag.safer_alternative:
@@ -155,7 +209,74 @@ def make_callout(text: str, title: str, bg_color: str, border_color: str, title_
         ('TOPPADDING', (0,0), (-1,-1), 10),
         ('BOTTOMPADDING', (0,0), (-1,-1), 10),
         ('LINELEFT', (0,0), (-1,-1), 4, colors.HexColor(border_color)),
-        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor(bg_color)),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+    ]))
+    return tbl
+
+
+def make_risk_issue_card(issue: Any, bg_color: str, border_color: str, text_color: str, title_style: ParagraphStyle, body_style: ParagraphStyle) -> Table:
+    content = []
+    
+    # Severity & Scores
+    sev = str(issue.risk_level.value).upper()
+    score_str = f"{issue.risk_score:.2f}"
+    scores_detail = []
+    if issue.customer_risk_score is not None:
+        scores_detail.append(f"Customer Risk: {issue.customer_risk_score:.2f}")
+    if issue.vendor_risk_score is not None:
+        scores_detail.append(f"Vendor Risk: {issue.vendor_risk_score:.2f}")
+        
+    scores_str = f" (Score: {score_str}"
+    if scores_detail:
+        scores_str += f" | {', '.join(scores_detail)}"
+    scores_str += ")"
+    
+    title_text = f"<font color='{text_color}'><b>{issue.clause_type}</b> — {sev}{scores_str}</font>"
+    content.append(Paragraph(title_text, title_style))
+    content.append(Spacer(1, 4))
+    
+    # Role mappings
+    roles = []
+    if issue.benefiting_party:
+        roles.append(f"<b>Benefiting:</b> {issue.benefiting_party}")
+    if issue.burdened_party:
+        roles.append(f"<b>Burdened:</b> {issue.burdened_party}")
+    if issue.liability_holder:
+        roles.append(f"<b>Liability:</b> {issue.liability_holder}")
+    if issue.decision_controller:
+        roles.append(f"<b>Controller:</b> {issue.decision_controller}")
+        
+    if roles:
+        roles_text = f"<font size='8' color='#475569'>{' &nbsp;|&nbsp; '.join(roles)}</font>"
+        content.append(Paragraph(roles_text, body_style))
+        content.append(Spacer(1, 4))
+        
+    # Issue & Rationale
+    content.append(Paragraph(f"<b>Issue:</b> {issue.issue}", body_style))
+    if issue.rationale:
+        content.append(Spacer(1, 2))
+        content.append(Paragraph(f"<b>Rationale:</b> {issue.rationale}", body_style))
+        
+    # Evidence
+    if issue.evidence:
+        content.append(Spacer(1, 2))
+        evidence_text = ", ".join(f'"{ev}"' for ev in issue.evidence)
+        content.append(Paragraph(f"<i>Evidence: {evidence_text}</i>", body_style))
+        
+    # Suggestion
+    if issue.negotiation_suggestion:
+        content.append(Spacer(1, 2))
+        content.append(Paragraph(f"<b>Negotiation Suggestion:</b> {issue.negotiation_suggestion}", body_style))
+        
+    tbl = Table([[content]], colWidths=[500])
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor(bg_color)),
+        ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ('RIGHTPADDING', (0,0), (-1,-1), 12),
+        ('TOPPADDING', (0,0), (-1,-1), 10),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ('LINELEFT', (0,0), (-1,-1), 4, colors.HexColor(border_color)),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
     ]))
     return tbl
 
@@ -276,27 +397,47 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
     if "/" in doc_name or "\\" in doc_name:
         doc_name = doc_name.replace("\\", "/").rsplit("/", 1)[-1]
         
-    story.append(Spacer(1, 40))
-    story.append(Paragraph("AI CONTRACT AUDIT REPORT", ParagraphStyle('CoverPre', fontName='Helvetica-Bold', fontSize=11, leading=13, textColor=colors.HexColor("#3B82F6"), spaceAfter=8)))
-    story.append(Paragraph(doc_name, ParagraphStyle('CoverTitle', fontName='Helvetica-Bold', fontSize=28, leading=34, textColor=colors.HexColor("#0F172A"), spaceAfter=15)))
+    story.append(Spacer(1, 10))
+    # A colored header bar using Table
+    bar = Table([[""]], colWidths=[504], rowHeights=[6])
+    bar.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#2563EB")),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+    ]))
+    story.append(bar)
+    story.append(Spacer(1, 30))
+    
+    story.append(Paragraph("AI CONTRACT AUDIT REPORT", ParagraphStyle('CoverPre', fontName='Helvetica-Bold', fontSize=10, leading=12, textColor=colors.HexColor("#2563EB"), spaceAfter=10)))
+    story.append(Paragraph(doc_name, ParagraphStyle('CoverTitle', fontName='Helvetica-Bold', fontSize=26, leading=32, textColor=colors.HexColor("#0F172A"), spaceAfter=20)))
     
     perspective_str = state.perspective or "Neutral"
     contract_id_str = state.contract_id or "N/A"
     contract_type_str = state.metadata.contract_type if (state.metadata and state.metadata.contract_type) else "General Contract"
     date_str = datetime.now().strftime("%B %d, %Y")
     
-    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#3B82F6"), spaceAfter=25, spaceBefore=5))
+    meta_data = [
+        [Paragraph("<b>Contract ID:</b>", normal_bold_style), Paragraph(contract_id_str, normal_style)],
+        [Paragraph("<b>Contract Type:</b>", normal_bold_style), Paragraph(contract_type_str, normal_style)],
+        [Paragraph("<b>Audit Perspective:</b>", normal_bold_style), Paragraph(perspective_str, normal_style)],
+        [Paragraph("<b>Governing Law:</b>", normal_bold_style), Paragraph(state.metadata.governing_law if (state.metadata and state.metadata.governing_law) else "N/A", normal_style)],
+        [Paragraph("<b>Date of Audit:</b>", normal_bold_style), Paragraph(date_str, normal_style)],
+    ]
+    meta_table = Table(meta_data, colWidths=[130, 374])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F8FAFC")),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor("#F1F5F9")),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ('RIGHTPADDING', (0,0), (-1,-1), 12),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    ]))
+    story.append(meta_table)
     
-    cover_meta = f"""
-    <b>Contract ID:</b> {contract_id_str}<br/>
-    <b>Contract Type:</b> {contract_type_str}<br/>
-    <b>Audit Perspective:</b> {perspective_str}<br/>
-    <b>Governing Law:</b> {state.metadata.governing_law if (state.metadata and state.metadata.governing_law) else "N/A"}<br/>
-    <b>Date of Audit:</b> {date_str}<br/>
-    """
-    story.append(Paragraph(cover_meta, ParagraphStyle('CoverMeta', fontName='Helvetica', fontSize=10, leading=16, textColor=colors.HexColor("#475569"))))
-    story.append(Spacer(1, 180))
-    story.append(Paragraph("Confidential report generated by <b>AI Contract Reviewer</b>. All rights reserved.", ParagraphStyle('CoverFoot', fontName='Helvetica-Oblique', fontSize=8.5, leading=11, textColor=colors.HexColor("#94A3B8"))))
+    story.append(Spacer(1, 160))
+    story.append(Paragraph("Confidential report generated by <b>AI Contract Reviewer</b>. All rights reserved.", ParagraphStyle('CoverFoot', fontName='Helvetica-Oblique', fontSize=8, leading=10, textColor=colors.HexColor("#94A3B8"))))
     
     from reportlab.platypus import PageBreak
     story.append(PageBreak())
@@ -307,18 +448,20 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
     risk_str = str(report.overall_risk_level.value).upper() if report else "N/A"
     
     # Verdict color
-    v_color = "#2ecc71"  # green
-    if "review" in verdict_str.lower() or "negotiate" in verdict_str.lower():
-        v_color = "#e67e22"  # orange
-    elif "redraft" in verdict_str.lower() or "reject" in verdict_str.lower() or "fail" in verdict_str.lower():
-        v_color = "#e74c3c"  # red
+    v_color = "#2563EB" # default blue
+    if "approve" in verdict_str.lower():
+        v_color = "#059669" # green
+    elif "review" in verdict_str.lower() or "negotiate" in verdict_str.lower():
+        v_color = "#D97706" # orange
+    elif "reject" in verdict_str.lower() or "fail" in verdict_str.lower():
+        v_color = "#DC2626" # red
         
     # Risk color
-    r_color = "#2ecc71"  # green
+    r_color = "#059669" # green
     if "medium" in risk_str.lower():
-        r_color = "#f1c40f"  # yellow
-    elif "high" in risk_str.lower() or "critical" in risk_str.lower() or "red" in risk_str.lower():
-        r_color = "#e74c3c"  # red
+        r_color = "#D97706" # orange/amber
+    elif "high" in risk_str.lower() or "critical" in risk_str.lower():
+        r_color = "#DC2626" # red
 
     # Verdict & Risk KPI Card Blocks (Side-by-Side)
     v_cell_content = [
@@ -332,19 +475,19 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
         Paragraph(f"<b>{risk_str}</b>", ParagraphStyle('RTitle', fontName='Helvetica-Bold', fontSize=16, leading=18, textColor=colors.HexColor(r_color)))
     ]
     
-    kpi_table = Table([[v_cell_content, r_cell_content]], colWidths=[248, 248])
+    kpi_table = Table([[v_cell_content, r_cell_content]], colWidths=[252, 252])
     kpi_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F8FAFC")),
         ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 14),
         ('RIGHTPADDING', (0,0), (-1,-1), 14),
-        ('TOPPADDING', (0,0), (-1,-1), 10),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ('TOPPADDING', (0,0), (-1,-1), 12),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
         ('LINELEFT', (0,0), (0,0), 4, colors.HexColor(v_color)),
         ('LINELEFT', (1,0), (1,0), 4, colors.HexColor(r_color)),
-        ('BOX', (0,0), (0,0), 0.5, colors.HexColor("#CBD5E0")),
-        ('BOX', (1,0), (1,0), 0.5, colors.HexColor("#CBD5E0")),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
     ]))
     story.append(kpi_table)
     story.append(Spacer(1, 12))
@@ -378,7 +521,7 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
                 Paragraph(str(getattr(clause, "cuad_category", "") or "—"), normal_style),
                 Paragraph(conf_str, normal_style),
             ])
-        clause_table = Table(table_data, colWidths=[28, 190, 190, 60])
+        clause_table = Table(table_data, colWidths=[28, 190, 190, 96])
         clause_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -391,7 +534,7 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
             ("RIGHTPADDING", (0, 0), (-1, -1), 8),
             ("TOPPADDING", (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E0")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
             ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#E2E8F0")),
         ]))
         story.append(clause_table)
@@ -404,7 +547,7 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
         story.append(Paragraph("No clauses were extracted.", normal_style))
     story.append(Spacer(1, 10))
 
-    # Key Risks
+    # Key Risks Summary
     add_section("Key Risks Summary")
     if report and report.key_risks:
         for risk in report.key_risks:
@@ -413,23 +556,59 @@ def export_as_pdf(state: ContractReviewState) -> bytes:
         story.append(Paragraph("No specific key risks identified.", normal_style))
     story.append(Spacer(1, 10))
 
+    # Detailed Risk Analysis (New Party-centric section)
+    if state.risk_scoring and state.risk_scoring.issues:
+        add_section("Detailed Risk Analysis")
+        for issue in state.risk_scoring.issues:
+            # Color severity
+            sev = str(issue.risk_level.value).upper()
+            if sev in ("CRITICAL", "HIGH"):
+                bg = "#FEF2F2"
+                border = "#EF4444"
+                text_color = "#991B1B"
+            elif sev == "MEDIUM":
+                bg = "#FFFBEB"
+                border = "#F59E0B"
+                text_color = "#92400E"
+            else:
+                bg = "#F0FDF4"
+                border = "#10B981"
+                text_color = "#065F46"
+                
+            story.append(make_risk_issue_card(issue, bg, border, text_color, normal_bold_style, normal_style))
+            story.append(Spacer(1, 6))
+        story.append(Spacer(1, 10))
+
     # Red Flags (Callouts)
     add_section("Detected Red Flags")
     if state.red_flag_detection and state.red_flag_detection.red_flags:
         for flag in state.red_flag_detection.red_flags:
             sev = str(flag.severity.value).upper()
-            if sev == "HIGH":
+            if sev in ("CRITICAL", "HIGH"):
                 bg = "#FEF2F2"
                 border = "#EF4444"
             elif sev == "MEDIUM":
                 bg = "#FFFBEB"
                 border = "#F59E0B"
             else:
-                bg = "#F8FAFC"
-                border = "#64748B"
+                bg = "#F0FDF4"
+                border = "#10B981"
             
             flag_title = f"<b>{flag.pattern_name}</b> ({sev})"
             flag_body = f"{flag.description}"
+            
+            roles = []
+            if flag.benefiting_party:
+                roles.append(f"<b>Benefiting:</b> {flag.benefiting_party}")
+            if flag.burdened_party:
+                roles.append(f"<b>Burdened:</b> {flag.burdened_party}")
+            if flag.liability_holder:
+                roles.append(f"<b>Liability:</b> {flag.liability_holder}")
+            if flag.decision_controller:
+                roles.append(f"<b>Controller:</b> {flag.decision_controller}")
+            if roles:
+                flag_body += f"<br/><font size='8' color='#475569'>{' &nbsp;|&nbsp; '.join(roles)}</font>"
+                
             if flag.evidence:
                 flag_body += f"<br/><i>Evidence: \"{', '.join(flag.evidence)}\"</i>"
             if flag.safer_alternative:
@@ -554,12 +733,63 @@ def export_as_docx(state: ContractReviewState) -> bytes:
     doc.add_paragraph(report.report_summary if (report and report.report_summary) else "No summary available.")
 
     # Key Risks
-    doc.add_heading("Key Risks", level=1)
+    doc.add_heading("Key Risks Summary", level=1)
     if report and report.key_risks:
         for risk in report.key_risks:
             doc.add_paragraph(risk, style="List Bullet")
     else:
         doc.add_paragraph("No specific key risks identified.")
+
+    # Detailed Risk Analysis
+    if state.risk_scoring and state.risk_scoring.issues:
+        doc.add_heading("Detailed Risk Analysis", level=1)
+        for issue in state.risk_scoring.issues:
+            sev = str(issue.risk_level.value).upper()
+            score_str = f"{issue.risk_score:.2f}"
+            
+            dual_scores = []
+            if issue.customer_risk_score is not None:
+                dual_scores.append(f"Customer Risk: {issue.customer_risk_score:.2f}")
+            if issue.vendor_risk_score is not None:
+                dual_scores.append(f"Vendor Risk: {issue.vendor_risk_score:.2f}")
+            score_info = f"Score: {score_str}"
+            if dual_scores:
+                score_info += f" | {', '.join(dual_scores)}"
+                
+            doc.add_heading(f"{issue.clause_type} ({sev} - {score_info})", level=2)
+            
+            roles = []
+            if issue.benefiting_party:
+                roles.append(f"Benefiting Party: {issue.benefiting_party}")
+            if issue.burdened_party:
+                roles.append(f"Burdened Party: {issue.burdened_party}")
+            if issue.liability_holder:
+                roles.append(f"Liability Holder: {issue.liability_holder}")
+            if issue.decision_controller:
+                roles.append(f"Decision Controller: {issue.decision_controller}")
+            if roles:
+                p_roles = doc.add_paragraph()
+                p_roles.add_run("Role Mapping: ").bold = True
+                p_roles.add_run(", ".join(roles))
+                
+            p_issue = doc.add_paragraph()
+            p_issue.add_run("Issue: ").bold = True
+            p_issue.add_run(issue.issue)
+            
+            if issue.rationale:
+                p_rat = doc.add_paragraph()
+                p_rat.add_run("Rationale: ").bold = True
+                p_rat.add_run(issue.rationale)
+                
+            if issue.evidence:
+                p_ev = doc.add_paragraph()
+                p_ev.add_run("Evidence: ").italic = True
+                p_ev.add_run(f"\"{', '.join(issue.evidence)}\"").italic = True
+                
+            if issue.negotiation_suggestion:
+                p_sug = doc.add_paragraph()
+                p_sug.add_run("Negotiation Suggestion: ").bold = True
+                p_sug.add_run(issue.negotiation_suggestion)
 
     # Red Flags
     doc.add_heading("Red Flags", level=1)
@@ -568,6 +798,21 @@ def export_as_docx(state: ContractReviewState) -> bytes:
             p = doc.add_paragraph(style="List Bullet")
             p.add_run(f"{flag.pattern_name} ").bold = True
             p.add_run(f"({str(flag.severity.value).upper()}): {flag.description}")
+            
+            roles = []
+            if flag.benefiting_party:
+                roles.append(f"Benefiting: {flag.benefiting_party}")
+            if flag.burdened_party:
+                roles.append(f"Burdened: {flag.burdened_party}")
+            if flag.liability_holder:
+                roles.append(f"Liability: {flag.liability_holder}")
+            if flag.decision_controller:
+                roles.append(f"Decision Controller: {flag.decision_controller}")
+            if roles:
+                p_roles = doc.add_paragraph()
+                p_roles.add_run("    Role Mapping: ").bold = True
+                p_roles.add_run(", ".join(roles))
+                
             if flag.evidence:
                 p_ev = doc.add_paragraph()
                 p_ev.add_run("    Evidence: ").italic = True

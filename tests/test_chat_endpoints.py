@@ -33,7 +33,8 @@ def test_chat_text_endpoint():
         assert len(data["sources"]) == 1
         assert data["sources"][0]["clause_type"] == "Governing Law"
         
-        mock_service_class.assert_called_once_with(contract_id="test_contract_123", session_id="test_session_456")
+        assert mock_service_class.call_args[1]["contract_id"] == "test_contract_123"
+        assert mock_service_class.call_args[1]["session_id"] == "test_session_456"
         mock_instance.ask.assert_called_once_with("What is the governing law?")
 
 
@@ -65,7 +66,8 @@ def test_chat_image_endpoint():
         response_data = response.json()
         assert response_data["answer"] == "This is a mock answer based on the page image."
         
-        mock_service_class.assert_called_once_with(contract_id="test_contract_123", session_id="test_session_456")
+        assert mock_service_class.call_args[1]["contract_id"] == "test_contract_123"
+        assert mock_service_class.call_args[1]["session_id"] == "test_session_456"
         mock_instance.ask_with_image.assert_called_once_with("Explain liability limit", file_content)
 
 

@@ -114,6 +114,14 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 
+		# Enrich perspective with extracted party name
+		if perspective and state.clause_extraction and state.clause_extraction.metadata.parties:
+			for party in state.clause_extraction.metadata.parties:
+				if party.role and perspective.lower() in party.role.lower():
+					perspective = f"{perspective} ({party.name})"
+					state.perspective = perspective
+					break
+
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
 		# Pass trace_id and identity context into each worker thread via initializer 
 		# so Langfuse can attribute all parallel agent token usage to the correct trace/user.

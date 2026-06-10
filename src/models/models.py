@@ -181,6 +181,14 @@ class RiskIssue(BaseModel):
     negotiation_suggestion: str | None = None
     evidence: list[str] = Field(default_factory=list)
     related_categories: list[CUADCategory | str] = Field(default_factory=list)
+    
+    # Party-centric metadata & dual-risk calculation
+    benefiting_party: str | None = None
+    burdened_party: str | None = None
+    liability_holder: str | None = None
+    decision_controller: str | None = None
+    vendor_risk_score: float | None = None
+    customer_risk_score: float | None = None
 
 
 class ObligationItem(BaseModel):
@@ -209,6 +217,12 @@ class RedFlagItem(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     safer_alternative: str | None = None
     matched_category: CUADCategory | str | None = None
+
+    # Party-centric metadata
+    benefiting_party: str | None = None
+    burdened_party: str | None = None
+    liability_holder: str | None = None
+    decision_controller: str | None = None
 
 
 class PlainEnglishClause(BaseModel):

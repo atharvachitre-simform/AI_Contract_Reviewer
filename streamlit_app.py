@@ -1051,7 +1051,6 @@ def main() -> None:
                         render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
             else:
                 from src.services.langfuse_tracer import LangFuseTracer
-                import time
                 tracer = LangFuseTracer()
                 user_id = st.session_state.get("auth_user", {}).get("id")
                 trace_id = tracer.start_pipeline_trace(
