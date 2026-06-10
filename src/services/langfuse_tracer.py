@@ -6,6 +6,20 @@ Langfuse SDK v3 API:
                    name=..., model=..., input=..., output=...,
                    usage_details={"input": N, "output": M, "total": T})
   .end()
+
+Per-User Tracing Design
+-----------------------
+Every trace now carries three identity fields that are stored in thread-local
+storage so that all nested agent/LLM calls within a single pipeline or chat
+request are automatically attributed to the correct user:
+
+- ``user_id``    — Supabase user UUID (or "anonymous" in dev/mock mode)
+- ``session_id`` — contract_id for pipeline traces; chat session_id for chat traces
+- ``contract_id``— the document being reviewed or chatted about
+
+These are forwarded into Langfuse as ``user_id`` on the trace and as
+``metadata`` on every generation span, enabling per-user filtering in the
+Langfuse dashboard.
 """
 
 from __future__ import annotations
@@ -24,9 +38,28 @@ import threading
 
 
 class LangFuseTracer:
-    """Trace contract review steps to local logs and Langfuse."""
+    """Trace contract review steps and chat sessions to local logs and Langfuse.
+
+    Thread-local state
+    ------------------
+    ``_thread_local.current_trace_id``  — active trace ID for this thread
+    ``_thread_local.current_user_id``   — authenticated user for this thread
+    ``_thread_local.current_session_id``— session/contract key for this thread
+    ``_thread_local.current_contract_id``— document being processed
+    """
 
     _thread_local = threading.local()
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(LangFuseTracer, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    # ------------------------------------------------------------------
+    # Thread-local accessors
+    # ------------------------------------------------------------------
 
     @classmethod
     def set_current_trace_id(cls, trace_id: str | None) -> None:
@@ -36,7 +69,39 @@ class LangFuseTracer:
     def get_current_trace_id(cls) -> str | None:
         return getattr(cls._thread_local, "current_trace_id", None)
 
+    @classmethod
+    def set_current_user_id(cls, user_id: str | None) -> None:
+        cls._thread_local.current_user_id = user_id or "anonymous"
+
+    @classmethod
+    def get_current_user_id(cls) -> str | None:
+        return getattr(cls._thread_local, "current_user_id", None)
+
+    @classmethod
+    def set_current_session_id(cls, session_id: str | None) -> None:
+        cls._thread_local.current_session_id = session_id
+
+    @classmethod
+    def get_current_session_id(cls) -> str | None:
+        return getattr(cls._thread_local, "current_session_id", None)
+
+    @classmethod
+    def set_current_contract_id(cls, contract_id: str | None) -> None:
+        cls._thread_local.current_contract_id = contract_id
+
+    @classmethod
+    def get_current_contract_id(cls) -> str | None:
+        return getattr(cls._thread_local, "current_contract_id", None)
+
+    # ------------------------------------------------------------------
+    # Initialisation
+    # ------------------------------------------------------------------
+
     def __init__(self) -> None:
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
+        
         repo_root = Path(__file__).resolve().parents[2]
         dotenv_path = repo_root / ".env"
         if dotenv_path.exists():
@@ -56,7 +121,7 @@ class LangFuseTracer:
                     public_key=self.public_key,
                     secret_key=self.secret_key,
                     host=self.host,
-                    tracing_enabled=True,
+                    debug=True,
                 )
             except Exception as exc:
                 print(f"Langfuse client init error: {exc}")
@@ -67,6 +132,10 @@ class LangFuseTracer:
             host=self.host,
             tracing_enabled=False,
         )
+
+    # ------------------------------------------------------------------
+    # Trace helpers
+    # ------------------------------------------------------------------
 
     def create_trace_id(self, *, seed: str | None = None) -> str:
         if self.enabled:
@@ -84,6 +153,108 @@ class LangFuseTracer:
         except Exception:
             return None
 
+    def start_pipeline_trace(
+        self,
+        *,
+        contract_id: str,
+        user_id: str | None = None,
+        source_file: str | None = None,
+        perspective: str | None = None,
+    ) -> str:
+        """Create a Langfuse root trace for the review pipeline and store identity in thread-local.
+
+        Returns the new trace_id. Call this at the start of each pipeline run.
+        """
+        trace_id = self.create_trace_id(seed=contract_id)
+        uid = user_id or "anonymous"
+
+        # Persist into thread-local so nested agents pick it up automatically
+        LangFuseTracer.set_current_trace_id(trace_id)
+        LangFuseTracer.set_current_user_id(uid)
+        LangFuseTracer.set_current_session_id(contract_id)
+        LangFuseTracer.set_current_contract_id(contract_id)
+
+        if self.enabled:
+            try:
+                from langfuse.types import TraceContext
+                ctx: TraceContext = {"trace_id": trace_id}
+                self.client.create_event(
+                    trace_context=ctx,
+                    name="pipeline_start",
+                    input={
+                        "contract_id": contract_id,
+                        "source_file": source_file,
+                        "perspective": perspective,
+                    },
+                    metadata={
+                        "user_id": uid,
+                        "session_id": contract_id,
+                        "contract_id": contract_id,
+                        "source": "pipeline",
+                    },
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug(f"Langfuse pipeline trace start error: {exc}")
+
+        return trace_id
+
+    def start_chat_trace(
+        self,
+        *,
+        contract_id: str,
+        session_id: str,
+        user_id: str | None = None,
+        question: str | None = None,
+        call_type: str = "text",
+    ) -> str:
+        """Create a Langfuse root trace for a single chat turn and store identity in thread-local.
+
+        Returns the new trace_id. Call once per ``ask()`` / ``ask_with_image()`` invocation.
+
+        Parameters
+        ----------
+        contract_id:
+            The document being chatted about.
+        session_id:
+            The user's chat session identifier.
+        user_id:
+            Authenticated user UUID. Defaults to ``"anonymous"``.
+        question:
+            The user's question (stored as trace input for quick inspection).
+        call_type:
+            ``"text"`` or ``"vision"`` — stored in trace metadata.
+        """
+        uid = user_id or "anonymous"
+        trace_id = self.create_trace_id(seed=f"{uid}:{session_id}:{uuid.uuid4().hex[:8]}")
+
+        LangFuseTracer.set_current_trace_id(trace_id)
+        LangFuseTracer.set_current_user_id(uid)
+        LangFuseTracer.set_current_session_id(session_id)
+        LangFuseTracer.set_current_contract_id(contract_id)
+
+        if self.enabled:
+            try:
+                from langfuse.types import TraceContext
+                ctx: TraceContext = {"trace_id": trace_id}
+                self.client.create_event(
+                    trace_context=ctx,
+                    name=f"chat_{call_type}_start",
+                    input={"question": question, "contract_id": contract_id},
+                    metadata={
+                        "user_id": uid,
+                        "session_id": session_id,
+                        "contract_id": contract_id,
+                        "call_type": call_type,
+                        "source": "chatbot",
+                    },
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug(f"Langfuse chat trace start error: {exc}")
+
+        return trace_id
+
     def trace(
         self,
         step: str,
@@ -91,11 +262,21 @@ class LangFuseTracer:
         payload: Any | None = None,
         status: str = "started",
         trace_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        contract_id: str | None = None,
     ) -> dict[str, Any]:
         tid = trace_id or self.get_current_trace_id()
+        uid = user_id or self.get_current_user_id() or "anonymous"
+        sid = session_id or self.get_current_session_id()
+        cid = contract_id or self.get_current_contract_id()
+
         event_data = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "trace_id": tid,
+            "user_id": uid,
+            "session_id": sid,
+            "contract_id": cid,
             "step": step,
             "description": description,
             "status": status,
@@ -104,16 +285,27 @@ class LangFuseTracer:
             "source": "ai-contract-reviewer",
         }
         self._write_local(event_data)
-        self._send_remote(step, description, payload, status, tid)
+        self._send_remote(step, description, payload, status, tid, uid, sid, cid)
         return event_data
 
     def _write_local(self, event: dict[str, Any]) -> None:
         with self.local_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, default=str) + "\n")
 
-    def _send_remote(self, step: str, description: str, payload: Any | None, status: str, trace_id: str | None) -> None:
+    def _send_remote(
+        self,
+        step: str,
+        description: str,
+        payload: Any | None,
+        status: str,
+        trace_id: str | None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        contract_id: str | None = None,
+    ) -> None:
         """Send an event observation using the Langfuse SDK v3 API."""
         tid = trace_id or self.get_current_trace_id()
+        uid = user_id or self.get_current_user_id() or "anonymous"
         if not self.enabled or not tid:
             return
         try:
@@ -123,7 +315,13 @@ class LangFuseTracer:
                 trace_context=ctx,
                 name=step,
                 input=payload,
-                metadata={"description": description, "status": status},
+                metadata={
+                    "description": description,
+                    "status": status,
+                    "user_id": uid,
+                    "session_id": session_id or self.get_current_session_id(),
+                    "contract_id": contract_id or self.get_current_contract_id(),
+                },
                 status_message=status,
             )
         except Exception as exc:
@@ -142,13 +340,23 @@ class LangFuseTracer:
         output_tokens: int = 0,
         total_tokens: int = 0,
         trace_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        contract_id: str | None = None,
     ) -> None:
         """Log an LLM generation span using the Langfuse SDK v3 API.
 
         Uses ``start_observation(as_type='generation')`` with
         ``usage_details`` (int token counts) as required by SDK v3.
+
+        All identity fields default to thread-local values set by
+        ``start_pipeline_trace()`` or ``start_chat_trace()``, so callers
+        inside agents and async workers don't need to pass them explicitly.
         """
         tid = trace_id or self.get_current_trace_id()
+        uid = user_id or self.get_current_user_id() or "anonymous"
+        sid = session_id or self.get_current_session_id()
+        cid = contract_id or self.get_current_contract_id()
         if not self.enabled or not tid:
             return
         try:
@@ -166,8 +374,26 @@ class LangFuseTracer:
                     "output": output_tokens,
                     "total": total_tokens if total_tokens else input_tokens + output_tokens,
                 },
+                metadata={
+                    "user_id": uid,
+                    "session_id": sid,
+                    "contract_id": cid,
+                },
             )
             obs.end()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).debug(f"Langfuse generation error: {exc}")
+
+    def flush(self) -> None:
+        """Force flush all pending events to Langfuse.
+        
+        Call this at the end of scripts or workflows to ensure all asynchronous
+        events are uploaded before the process exits.
+        """
+        if self.enabled and self.client:
+            try:
+                self.client.flush()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug(f"Langfuse flush error: {exc}")

@@ -44,6 +44,7 @@ class ContractReviewWorkflow:
 		contract_id: str | None = None,
 		source_file: str | None = None,
 		trace_id: str | None = None,
+		user_id: str | None = None,
 		llm_client: Any | None = None,
 		risk_llm_client: Any | None = None,
 		obligation_llm_client: Any | None = None,
@@ -54,10 +55,26 @@ class ContractReviewWorkflow:
 		retriever: Any | None = None,
 		perspective: str | None = None,
 	) -> ContractReviewState:
-		trace_id = trace_id or str(uuid.uuid4())
-		LangFuseTracer.set_current_trace_id(trace_id)
+		# Start a user-scoped pipeline trace in Langfuse.
+		# start_pipeline_trace() creates the root trace and stores user_id,
+		# session_id and contract_id in thread-local storage so every nested
+		# agent call can read them without being passed them explicitly.
+		resolved_contract_id = contract_id or str(uuid.uuid4())
+		if trace_id:
+			# Caller supplied an existing trace_id (e.g. resume from checkpoint)
+			LangFuseTracer.set_current_trace_id(trace_id)
+			LangFuseTracer.set_current_user_id(user_id or "anonymous")
+			LangFuseTracer.set_current_session_id(resolved_contract_id)
+			LangFuseTracer.set_current_contract_id(resolved_contract_id)
+		else:
+			trace_id = self.tracer.start_pipeline_trace(
+				contract_id=resolved_contract_id,
+				user_id=user_id,
+				source_file=source_file,
+				perspective=perspective,
+			)
 		state = ContractReviewState(
-			contract_id=contract_id,
+			contract_id=resolved_contract_id,
 			source_file=source_file,
 			source_format="text",
 			contract_text=contract_text or "",
@@ -97,14 +114,20 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 
-		# Cooperative Sequential Flow:
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
-		# Pass trace_id into each worker thread via initializer so Langfuse
-		# can attribute all parallel agent token usage to the correct trace.
-		def _worker_initializer(tid: str) -> None:
-			LangFuseTracer.set_current_trace_id(tid)
+		# Pass trace_id and identity context into each worker thread via initializer 
+		# so Langfuse can attribute all parallel agent token usage to the correct trace/user.
+		uid = LangFuseTracer.get_current_user_id()
+		sid = LangFuseTracer.get_current_session_id()
+		cid = LangFuseTracer.get_current_contract_id()
 
-		with ThreadPoolExecutor(max_workers=2, initializer=_worker_initializer, initargs=(trace_id,)) as executor:
+		def _worker_initializer(tid: str, u_id: str | None, s_id: str | None, c_id: str | None) -> None:
+			LangFuseTracer.set_current_trace_id(tid)
+			LangFuseTracer.set_current_user_id(u_id)
+			LangFuseTracer.set_current_session_id(s_id)
+			LangFuseTracer.set_current_contract_id(c_id)
+
+		with ThreadPoolExecutor(max_workers=2, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
 			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context, perspective)
 			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client, perspective)
 
@@ -205,6 +228,7 @@ class ContractReviewWorkflow:
 			trace_id=trace_id,
 		)
 		state.status = ProcessingStatus.COMPLETED
+		self.tracer.flush()
 		return state
 
 
@@ -214,6 +238,7 @@ def run_contract_review(
 	contract_id: str | None = None,
 	source_file: str | None = None,
 	trace_id: str | None = None,
+	user_id: str | None = None,
 	llm_client: Any | None = None,
 	risk_llm_client: Any | None = None,
 	obligation_llm_client: Any | None = None,
@@ -231,6 +256,7 @@ def run_contract_review(
 		contract_id=contract_id,
 		source_file=source_file,
 		trace_id=trace_id,
+		user_id=user_id,
 		llm_client=llm_client,
 		risk_llm_client=risk_llm_client,
 		obligation_llm_client=obligation_llm_client,

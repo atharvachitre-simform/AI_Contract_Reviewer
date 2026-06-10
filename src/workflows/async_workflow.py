@@ -43,8 +43,24 @@ class AsyncContractReviewWorkflow:
 
     @staticmethod
     async def _run_in_executor(fn, *args, **kwargs):
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+        loop = asyncio.get_running_loop()
+        
+        # Capture current thread-local tracing context
+        from ..services.langfuse_tracer import LangFuseTracer
+        tid = LangFuseTracer.get_current_trace_id()
+        uid = LangFuseTracer.get_current_user_id()
+        sid = LangFuseTracer.get_current_session_id()
+        cid = LangFuseTracer.get_current_contract_id()
+
+        def wrapper():
+            # Inject tracing context into the new worker thread
+            LangFuseTracer.set_current_trace_id(tid)
+            LangFuseTracer.set_current_user_id(uid)
+            LangFuseTracer.set_current_session_id(sid)
+            LangFuseTracer.set_current_contract_id(cid)
+            return fn(*args, **kwargs)
+
+        return await loop.run_in_executor(None, wrapper)
 
     # ------------------------------------------------------------------
     # Public: fire-and-forget full run
@@ -57,6 +73,7 @@ class AsyncContractReviewWorkflow:
         contract_id: str | None = None,
         source_file: str | None = None,
         trace_id: str | None = None,
+        user_id: str | None = None,
         llm_client: Any | None = None,
         risk_llm_client: Any | None = None,
         obligation_llm_client: Any | None = None,
@@ -82,6 +99,7 @@ class AsyncContractReviewWorkflow:
             contract_id=contract_id,
             source_file=source_file,
             trace_id=trace_id,
+            user_id=user_id,
             llm_client=llm_client,
             risk_llm_client=risk_llm_client,
             obligation_llm_client=obligation_llm_client,
@@ -113,6 +131,7 @@ class AsyncContractReviewWorkflow:
         contract_id: str | None = None,
         source_file: str | None = None,
         trace_id: str | None = None,
+        user_id: str | None = None,
         llm_client: Any | None = None,
         risk_llm_client: Any | None = None,
         obligation_llm_client: Any | None = None,
@@ -138,8 +157,23 @@ class AsyncContractReviewWorkflow:
         serialized ``state`` dict under the ``"state"`` key.
         """
         contract_id = contract_id or str(uuid.uuid4())
-        trace_id = trace_id or str(uuid.uuid4())
         checkpointer = RedisCheckpointer(contract_id=contract_id)
+
+        # Open a user-scoped Langfuse trace for this pipeline run.
+        # This stores user_id, session_id, and contract_id in thread-local so
+        # every agent LLM call is attributed to the right user automatically.
+        if trace_id:
+            LangFuseTracer.set_current_trace_id(trace_id)
+            LangFuseTracer.set_current_user_id(user_id or "anonymous")
+            LangFuseTracer.set_current_session_id(contract_id)
+            LangFuseTracer.set_current_contract_id(contract_id)
+        else:
+            trace_id = self.tracer.start_pipeline_trace(
+                contract_id=contract_id,
+                user_id=user_id,
+                source_file=source_file,
+                perspective=perspective,
+            )
 
         # Determine already-completed steps when resuming
         if resume:
@@ -362,4 +396,5 @@ class AsyncContractReviewWorkflow:
                 yield {"step": step, "status": "error", "detail": {"error": str(e)}}
 
         state.status = ProcessingStatus.COMPLETED
+        self.tracer.flush()
         yield {"step": "done", "status": "completed", "state": state.model_dump(mode="json")}

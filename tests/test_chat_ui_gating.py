@@ -75,8 +75,9 @@ def test_sources_persisted_in_history():
     mock_wrapper.is_configured.return_value = True
     mock_wrapper.chat_complete.return_value = "The liability is limited to $1M."
     
+    from unittest.mock import AsyncMock
     mock_sources = [{"clause_type": "Liability", "source_page": 4, "text": "Liability is capped at $1M."}]
-    service._retrieve_clauses = MagicMock(return_value=mock_sources)
+    service._retrieve_clauses = AsyncMock(return_value=mock_sources)
     
     async def mock_relevancy_check(question):
         return True
