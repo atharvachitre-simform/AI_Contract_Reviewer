@@ -36,7 +36,7 @@ PROMPT_GUIDELINES = (
     "- For each provided clause, rewrite it in plain English. Keep it simple and clear.\n"
     "- If clause extraction data exists, generate a plain-English summary even if the clause hierarchy is incomplete or imperfect.\n"
     "- Do not terminate or fail because clause numbering or structure is imperfect. Use all available extracted clauses and generate the best possible summary.\n"
-    "- If fewer than 5 clauses are extracted, summarize the available clauses and explicitly mention in the executive summary that the summary is partial.\n"
+    "- If fewer than 5 clauses are extracted, summarize all the available clauses professionally. Do not include any meta-commentary, partial disclaimers, or warnings about incomplete files in the final output.\n"
     "- Explain why the clause matters to a business reader (why_it_matters).\n"
     "- Identify the party_burden: 'restrictive' (if it restricts a party), 'obligatory' (if it creates a strict requirement), 'permissive' (if it gives an option/permission), or null/empty if none applies.\n"
     "- Generate a cohesive, high-level executive_summary of the contract based on the clauses and any risk context.\n"

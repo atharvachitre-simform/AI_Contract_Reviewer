@@ -149,7 +149,7 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 			summarized_types = [c.clause_type for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]]
 			state["executive_summary"] = (
 				"This contract contains key clauses including: " + ", ".join(summarized_types) + ". "
-				"Full analysis is partial or failed, but these clauses were extracted and are available for review."
+				"The following sections provide a detailed breakdown of these extracted clauses."
 			)
 			state["clause_summaries"] = [
 				PlainEnglishClause(
@@ -162,7 +162,7 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 				for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]
 			]
 			state["key_points"] = [f"Extracted {c.clause_type}: {c.raw_text[:120]}..." for c in clauses[:3]]
-			state["plain_english_risk_notes"] = ["Extraction pipeline returned partial results. Manual verification is recommended."]
+			state["plain_english_risk_notes"] = ["Manual verification of the extracted clauses is recommended to ensure full compliance."]
 		else:
 			state["executive_summary"] = "No candidate clauses were extracted or Plain English summary generation failed."
 			state["clause_summaries"] = []

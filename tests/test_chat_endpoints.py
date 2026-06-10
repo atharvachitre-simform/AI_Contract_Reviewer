@@ -134,3 +134,23 @@ def test_chat_service_fallback_to_memorystore():
     finally:
         checkpoint_file.unlink(missing_ok=True)
 
+
+def test_chat_unmasking():
+    """Verify that chat responses containing [MASK_i] tokens are correctly unmasked using original contract text."""
+    from src.services.chat_service import ContractChatService
+    from unittest.mock import patch
+    import asyncio
+
+    contract_id = "unmask-chat-test"
+    chat_service = ContractChatService(contract_id=contract_id)
+    
+    # Mock checkpoint load to return contract text
+    mock_state = MagicMock()
+    mock_state.contract_text = "The contract mentions Playboy issues and confidential info."
+    
+    with patch("src.services.services.ContractReviewService.load_checkpoint", return_value=mock_state):
+        # Playboy is trigger keyword at index 40
+        unmasked = asyncio.run(chat_service._unmask_chat_text("The contract mentions [MASK_40] issues."))
+        assert "Playboy" in unmasked
+        assert "[MASK_40]" not in unmasked
+

@@ -964,6 +964,9 @@ def main() -> None:
                         service = ContractReviewService()
                         loaded_state = service.load_checkpoint(c_id)
                         if loaded_state:
+                            from src.helpers.mask import unmask_review_state
+                            from src.config import SENSITIVE_KEYWORDS
+                            loaded_state = unmask_review_state(loaded_state, SENSITIVE_KEYWORDS)
                             st.session_state["review_state"] = loaded_state
                             st.session_state["active_view"] = "📄 Review Report"
                             st.rerun()
@@ -1033,6 +1036,9 @@ def main() -> None:
                 controller = ContractReviewController()
                 source_file = uploaded_file.name if uploaded_file else None
                 state = controller.review_contract(contract_text, perspective=perspective, source_file=source_file)
+                from src.helpers.mask import unmask_review_state
+                from src.config import SENSITIVE_KEYWORDS
+                state = unmask_review_state(state, SENSITIVE_KEYWORDS)
                 st.session_state["review_state"] = state
                 
                 # Register contract ownership in Redis for the logged-in user immediately
@@ -1104,6 +1110,12 @@ def main() -> None:
                                 perspective=perspective,
                             )
                 finally:
+                    if st.session_state.get("single_model_output") is not None:
+                        from src.helpers.mask import unmask_single_output
+                        from src.config import SENSITIVE_KEYWORDS
+                        st.session_state["single_model_output"] = unmask_single_output(
+                            st.session_state["single_model_output"], contract_text, SENSITIVE_KEYWORDS
+                        )
                     tracer.flush()
 
     # Render persisted state

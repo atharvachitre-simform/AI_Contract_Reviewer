@@ -235,6 +235,7 @@ class ContractReviewWorkflow:
 			"completed",
 			trace_id=trace_id,
 		)
+
 		state.status = ProcessingStatus.COMPLETED
 		self.tracer.flush()
 		return state
