@@ -31,6 +31,18 @@ MODEL_OPTIONS = [
     "Report Assembler",
 ]
 
+import os
+import streamlit.components.v1 as components
+
+PARENT_DIR = os.path.dirname(os.path.abspath(__file__))
+COMPONENT_DIR = os.path.join(PARENT_DIR, "src", "helpers", "session_component")
+
+_session_component = components.declare_component(
+    "session_component",
+    path=COMPONENT_DIR
+)
+
+
 def check_supabase_auth(email, password) -> dict | None:
     import httpx
     import os
@@ -577,7 +589,8 @@ def render_chat_tab(contract_id: str) -> None:
                 st.markdown(turn["content"])
 
         # Chat Input
-        if prompt := st.chat_input("Ask a question...", key="chat_input"):
+        is_generating = len(history) > 0 and history[-1]["role"] == "user"
+        if prompt := st.chat_input("Ask a question...", key="chat_input", disabled=is_generating):
             # Append user message immediately and rerun to display it instantly
             history.append({"role": "user", "content": prompt})
             st.rerun()
@@ -718,6 +731,37 @@ def render_full_review(state: object) -> None:
             render_chat_tab(contract_id)
 
 
+# ---------------------------------------------------------------------------
+# localStorage-based session bridge helpers
+# ---------------------------------------------------------------------------
+
+INACTIVITY_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
+
+
+def _save_session_to_localstorage(token: str, refresh: str, user_id: str, user_email: str) -> None:
+    """Prepare the session payload to be saved on the next run."""
+    st.session_state["save_session_payload"] = {
+        "token": token,
+        "refresh": refresh,
+        "user_id": user_id,
+        "user_email": user_email,
+        "last_activity": str(time.time()),
+    }
+
+
+def _update_last_activity_in_localstorage() -> None:
+    """Trigger the session component to update the last activity timestamp in localStorage."""
+    _session_component(action="update_activity", key="session_updater")
+
+
+def _clear_localstorage_session() -> None:
+    """Prepare a flag to clear localStorage on the next script run."""
+    st.session_state["clear_session_flag"] = True
+
+
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
     st.set_page_config(page_title="AI Contract Reviewer", layout="wide")
     st.title("AI Contract Reviewer")
@@ -738,58 +782,129 @@ def main() -> None:
         st.session_state["auth_token"] = None
         st.session_state["auth_refresh_token"] = None
         st.session_state["session_start_time"] = None
+        st.session_state["last_activity_time"] = None
+        st.session_state["pipeline_running"] = False
 
-    # Load session token from query parameters on refresh
-    # NOTE: We no longer write access tokens into the URL (browser history leak — Issue 3).
-    # Sessions are preserved via st.session_state within the same browser tab.
+    if "clear_session_flag" not in st.session_state:
+        st.session_state["clear_session_flag"] = False
 
-    # Perform active session TTL (30 minutes) and auto-refresh logic
-    if st.session_state["auth_user"] is not None and st.session_state["session_start_time"] is not None:
-        elapsed_seconds = time.time() - st.session_state["session_start_time"]
+    # -----------------------------------------------------------------------
+    # Render deferred session operations
+    # -----------------------------------------------------------------------
+    if st.session_state.get("clear_session_flag"):
+        st.session_state["clear_session_flag"] = False
+        _session_component(action="clear", key="session_clearer")
 
-        # Enforce 30-minute session TTL
-        if elapsed_seconds > 30 * 60:
+    if st.session_state.get("save_session_payload"):
+        payload = st.session_state.pop("save_session_payload")
+        _session_component(action="save", session_data=payload, key="session_saver")
+
+    # -----------------------------------------------------------------------
+    # Restore session from localStorage on page reload
+    # -----------------------------------------------------------------------
+    if st.session_state["auth_user"] is None and not st.session_state.get("clear_session_flag"):
+        stored_session = _session_component(action="read", key="session_reader")
+        if stored_session:
+            sr_token = stored_session.get("token")
+            sr_refresh = stored_session.get("refresh", "")
+            sr_user_id = stored_session.get("user_id", "")
+            sr_user_email = stored_session.get("user_email", "")
+            sr_last_activity = stored_session.get("last_activity", "")
+
+            # Validate the token is still alive
+            import os as _os
+            is_mock = not _os.getenv("SUPABASE_URL")
+            if is_mock:
+                restored_user = {"id": sr_user_id or "mock_user_id", "email": sr_user_email or "dev@local"}
+            else:
+                restored_user = get_user_from_token(sr_token)
+
+            if restored_user:
+                # Check inactivity timeout
+                last_act = float(sr_last_activity) if sr_last_activity else 0.0
+                inactive_seconds = time.time() - last_act if last_act else INACTIVITY_TIMEOUT_SECONDS + 1
+                pipeline_was_running = st.session_state.get("pipeline_running", False)
+                if inactive_seconds < INACTIVITY_TIMEOUT_SECONDS or pipeline_was_running:
+                    st.session_state["auth_user"] = restored_user
+                    st.session_state["auth_token"] = sr_token
+                    st.session_state["auth_refresh_token"] = sr_refresh
+                    st.session_state["session_start_time"] = time.time()
+                    st.session_state["last_activity_time"] = time.time()
+                    st.session_state["last_token_validation"] = time.time()
+                    st.rerun()
+                else:
+                    _clear_localstorage_session()
+                    st.warning("Session expired due to inactivity. Please sign in again.")
+                    st.rerun()
+            else:
+                _clear_localstorage_session()
+                st.rerun()
+
+    # -----------------------------------------------------------------------
+    # Inactivity timeout + Supabase token validation (for live sessions)
+    # -----------------------------------------------------------------------
+    if st.session_state["auth_user"] is not None:
+        now = time.time()
+        last_activity = st.session_state.get("last_activity_time") or st.session_state.get("session_start_time") or now
+        inactive_seconds = now - last_activity
+        pipeline_running = st.session_state.get("pipeline_running", False)
+
+        # Enforce 15-minute inactivity timeout (skipped while pipeline is running)
+        if not pipeline_running and inactive_seconds > INACTIVITY_TIMEOUT_SECONDS:
             st.session_state["auth_user"] = None
             st.session_state["auth_token"] = None
             st.session_state["auth_refresh_token"] = None
             st.session_state["session_start_time"] = None
-            st.warning("Session expired. Please sign in again.")
+            st.session_state["last_activity_time"] = None
+            _clear_localstorage_session()
+            st.warning("Session expired due to 15 minutes of inactivity. Please sign in again.")
             st.rerun()
 
-        # Trigger token refresh 10 minutes before 30-minute expiration
-        elif elapsed_seconds > 20 * 60 and st.session_state["auth_refresh_token"] is not None:
-            with st.spinner("Refreshing authentication session..."):
-                refresh_data = refresh_supabase_token(st.session_state["auth_refresh_token"])
-                if refresh_data:
-                    st.session_state["auth_user"] = refresh_data["user"]
-                    st.session_state["auth_token"] = refresh_data["access_token"]
-                    st.session_state["auth_refresh_token"] = refresh_data["refresh_token"]
-                    st.session_state["session_start_time"] = time.time()
-                    st.info("Authentication session refreshed.")
-                else:
-                    # If refresh fails, log out to be safe
-                    st.session_state["auth_user"] = None
-                    st.session_state["auth_token"] = None
-                    st.session_state["auth_refresh_token"] = None
-                    st.session_state["session_start_time"] = None
-                    st.warning("Authentication refresh failed. Please log in again.")
-                    st.rerun()
+        # Trigger token refresh when approaching 30 minutes since last session_start
+        elapsed_since_start = now - (st.session_state.get("session_start_time") or now)
+        if elapsed_since_start > 20 * 60 and st.session_state.get("auth_refresh_token"):
+            import os as _os
+            if _os.getenv("SUPABASE_URL"):  # Only refresh real Supabase tokens
+                with st.spinner("Refreshing authentication session..."):
+                    refresh_data = refresh_supabase_token(st.session_state["auth_refresh_token"])
+                    if refresh_data:
+                        st.session_state["auth_user"] = refresh_data["user"]
+                        st.session_state["auth_token"] = refresh_data["access_token"]
+                        st.session_state["auth_refresh_token"] = refresh_data["refresh_token"]
+                        st.session_state["session_start_time"] = now
+                        _save_session_to_localstorage(
+                            refresh_data["access_token"],
+                            refresh_data["refresh_token"] or "",
+                            st.session_state["auth_user"].get("id", ""),
+                            st.session_state["auth_user"].get("email", ""),
+                        )
+                    else:
+                        st.session_state["auth_user"] = None
+                        st.session_state["auth_token"] = None
+                        st.session_state["auth_refresh_token"] = None
+                        st.session_state["session_start_time"] = None
+                        _clear_localstorage_session()
+                        st.warning("Authentication refresh failed. Please log in again.")
+                        st.rerun()
 
-        # Re-validate token against Supabase every 5 minutes to catch admin-revoked sessions.
-        # This ensures that if a Supabase admin revokes a token (e.g., security incident),
-        # the Streamlit session is invalidated within 5 minutes instead of up to 30 minutes.
+        # Re-validate token against Supabase every 5 minutes
         current_token = st.session_state.get("auth_token")
         if current_token and current_token != "mock-token":
             last_validated = st.session_state.get("last_token_validation", 0)
-            if time.time() - last_validated > 5 * 60:
+            if now - last_validated > 5 * 60:
                 re_validated_user = get_user_from_token(current_token)
                 if not re_validated_user:
-                    for k in ["auth_user", "auth_token", "auth_refresh_token", "session_start_time", "last_token_validation"]:
+                    for k in ["auth_user", "auth_token", "auth_refresh_token", "session_start_time", "last_token_validation", "last_activity_time"]:
                         st.session_state[k] = None
+                    _clear_localstorage_session()
                     st.warning("🔒 Your session was invalidated remotely. Please sign in again.")
                     st.rerun()
                 else:
-                    st.session_state["last_token_validation"] = time.time()
+                    st.session_state["last_token_validation"] = now
+
+        # Update last_activity on every script rerun (= every user interaction)
+        st.session_state["last_activity_time"] = now
+        _update_last_activity_in_localstorage()
 
     if st.session_state["auth_user"] is None:
         col_l, col_r = st.columns([1, 1])
@@ -799,12 +914,12 @@ def main() -> None:
                 "Please sign in to access your contract pipeline, reviews, "
                 "risk scoring, and interactive Q&A workspace."
             )
-            
+
             with st.form("login_form", clear_on_submit=False):
                 email = st.text_input("Email Address", placeholder="user@example.com")
                 password = st.text_input("Password", type="password", placeholder="••••••••")
                 submit = st.form_submit_button("Sign In")
-                
+
                 if submit:
                     if not email or not password:
                         st.error("Please enter email and password.")
@@ -812,11 +927,21 @@ def main() -> None:
                         with st.spinner("Verifying credentials..."):
                             auth_data = check_supabase_auth(email, password)
                             if auth_data:
-                                st.session_state["auth_user"] = auth_data["user"]
-                                st.session_state["auth_token"] = auth_data["access_token"]
-                                st.session_state["auth_refresh_token"] = auth_data.get("refresh_token")
+                                user_obj = auth_data["user"]
+                                token = auth_data["access_token"]
+                                refresh = auth_data.get("refresh_token") or ""
+                                st.session_state["auth_user"] = user_obj
+                                st.session_state["auth_token"] = token
+                                st.session_state["auth_refresh_token"] = refresh
                                 st.session_state["session_start_time"] = time.time()
+                                st.session_state["last_activity_time"] = time.time()
                                 st.session_state["last_token_validation"] = time.time()
+                                # Persist to localStorage so the session survives reloads
+                                _save_session_to_localstorage(
+                                    token, refresh,
+                                    user_obj.get("id", ""),
+                                    user_obj.get("email", ""),
+                                )
                                 st.success("Logged in successfully!")
                                 st.rerun()
                             else:
@@ -857,8 +982,12 @@ def main() -> None:
         # Profile Info and Log Out Button
         st.write(f"👤 **Logged in as:** `{st.session_state['auth_user']['email']}`")
         if st.button("Log Out"):
+            _clear_localstorage_session()
             st.session_state["auth_user"] = None
             st.session_state["auth_token"] = None
+            st.session_state["auth_refresh_token"] = None
+            st.session_state["session_start_time"] = None
+            st.session_state["last_activity_time"] = None
             st.rerun()
         st.divider()
         
@@ -1031,92 +1160,103 @@ def main() -> None:
         st.session_state["single_model_output"] = None
         st.session_state["single_model_type"] = None
 
-        with st.spinner("Running contract review..."):
-            if selected_model == "Full Contract Review Pipeline":
-                controller = ContractReviewController()
-                source_file = uploaded_file.name if uploaded_file else None
-                state = controller.review_contract(contract_text, perspective=perspective, source_file=source_file)
-                from src.helpers.mask import unmask_review_state
-                from src.config import SENSITIVE_KEYWORDS
-                state = unmask_review_state(state, SENSITIVE_KEYWORDS)
-                st.session_state["review_state"] = state
-                
-                # Register contract ownership in Redis for the logged-in user immediately
-                from src.helpers.auth import check_contract_ownership
-                import asyncio
-                try:
-                    asyncio.run(check_contract_ownership(state.contract_id, st.session_state["auth_user"]))
-                except Exception as e:
-                    pass
-                
-                # Render clause crops if PDF bytes exist in session state
-                if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
-                    from src.helpers.page_renderer import render_clause_crops
-                    pdf_bytes = st.session_state["uploaded_pdf_bytes"]
-                    if getattr(state, "clause_extraction", None) and getattr(state.clause_extraction, "clauses", None):
-                        render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
-            else:
-                from src.services.langfuse_tracer import LangFuseTracer
-                tracer = LangFuseTracer()
-                user_id = st.session_state.get("auth_user", {}).get("id")
-                trace_id = tracer.start_pipeline_trace(
-                    contract_id=f"single_model_{int(time.time())}",
-                    user_id=user_id,
-                    perspective=perspective,
-                    source_file=uploaded_file.name if uploaded_file else None
-                )
-                try:
-                    clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
-                    clause_output = extract_clauses(contract_text, llm_client=clause_client)
-                    st.session_state["single_model_type"] = selected_model
+        # Mark pipeline as running so the inactivity timeout is suspended
+        st.session_state["pipeline_running"] = True
+        try:
+            with st.spinner("Running contract review..."):
+                if selected_model == "Full Contract Review Pipeline":
+                    controller = ContractReviewController()
+                    source_file = uploaded_file.name if uploaded_file else None
+                    # Derive a stable contract_id from the content hash so re-uploading
+                    # the same document reuses the existing checkpoint instead of
+                    # creating a duplicate entry in the Past Reviews dropdown.
+                    import hashlib as _hashlib
+                    stable_contract_id = _hashlib.sha256(contract_text.strip().encode("utf-8")).hexdigest()[:16]
+                    user_id = st.session_state["auth_user"].get("id")
+                    state = controller.review_contract(contract_text, contract_id=stable_contract_id, perspective=perspective, source_file=source_file, user_id=user_id)
+                    from src.helpers.mask import unmask_review_state
+                    from src.config import SENSITIVE_KEYWORDS
+                    state = unmask_review_state(state, SENSITIVE_KEYWORDS)
+                    st.session_state["review_state"] = state
                     
-                    if selected_model == "Clause Extractor":
-                        st.session_state["single_model_output"] = clause_output
-                    elif selected_model == "Risk Scorer":
-                        risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
-                        if not risk_client or not risk_client.is_configured():
-                            st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
-                        else:
-                            st.session_state["single_model_output"] = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
-                    elif selected_model == "Obligation Finder":
-                        obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
-                        if not obligation_client or not obligation_client.is_configured():
-                            st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
-                        else:
-                            st.session_state["single_model_output"] = find_obligations(clause_output, llm_client=obligation_client)
-                    elif selected_model == "Red Flag Detector":
-                        red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                        st.session_state["single_model_output"] = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
-                    elif selected_model == "Plain English Writer":
-                        plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
-                        st.session_state["single_model_output"] = generate_plain_english(clause_output, llm_client=plain_client)
-                    elif selected_model == "Report Assembler":
-                        risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
-                        if not risk_client or not risk_client.is_configured():
-                            st.error("Report assembly requires the Risk Scorer client to be configured.")
-                        else:
-                            risk_output = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                    # Register contract ownership in Redis for the logged-in user immediately
+                    from src.helpers.auth import check_contract_ownership
+                    import asyncio
+                    try:
+                        asyncio.run(check_contract_ownership(state.contract_id, st.session_state["auth_user"]))
+                    except Exception as e:
+                        pass
+                    
+                    # Render clause crops if PDF bytes exist in session state
+                    if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
+                        from src.helpers.page_renderer import render_clause_crops
+                        pdf_bytes = st.session_state["uploaded_pdf_bytes"]
+                        if getattr(state, "clause_extraction", None) and getattr(state.clause_extraction, "clauses", None):
+                            render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
+                else:
+                    from src.services.langfuse_tracer import LangFuseTracer
+                    tracer = LangFuseTracer()
+                    user_id = st.session_state.get("auth_user", {}).get("id")
+                    trace_id = tracer.start_pipeline_trace(
+                        contract_id=f"single_model_{int(time.time())}",
+                        user_id=user_id,
+                        perspective=perspective,
+                        source_file=uploaded_file.name if uploaded_file else None
+                    )
+                    try:
+                        clause_client = AzureClientFactory().get_openai_client_for_agent("clause_extractor")
+                        clause_output = extract_clauses(contract_text, llm_client=clause_client)
+                        st.session_state["single_model_type"] = selected_model
+                        
+                        if selected_model == "Clause Extractor":
+                            st.session_state["single_model_output"] = clause_output
+                        elif selected_model == "Risk Scorer":
+                            risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                            if not risk_client or not risk_client.is_configured():
+                                st.error("Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings.")
+                            else:
+                                st.session_state["single_model_output"] = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                        elif selected_model == "Obligation Finder":
+                            obligation_client = AzureClientFactory().get_openai_client_for_agent("obligation_finder")
+                            if not obligation_client or not obligation_client.is_configured():
+                                st.error("Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+                            else:
+                                st.session_state["single_model_output"] = find_obligations(clause_output, llm_client=obligation_client)
+                        elif selected_model == "Red Flag Detector":
                             red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
-                            red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                            st.session_state["single_model_output"] = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                        elif selected_model == "Plain English Writer":
                             plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
-                            plain_output = generate_plain_english(clause_output, llm_client=plain_client)
-                            assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
-                            st.session_state["single_model_output"] = assemble_report(
-                                clause_extraction=clause_output,
-                                risk_scoring=risk_output,
-                                red_flags=red_flag_output,
-                                plain_english=plain_output,
-                                llm_client=assembler_client,
-                                perspective=perspective,
+                            st.session_state["single_model_output"] = generate_plain_english(clause_output, llm_client=plain_client)
+                        elif selected_model == "Report Assembler":
+                            risk_client = AzureClientFactory().get_openai_client_for_agent("risk_scorer")
+                            if not risk_client or not risk_client.is_configured():
+                                st.error("Report assembly requires the Risk Scorer client to be configured.")
+                            else:
+                                risk_output = score_risks(clause_output, llm_client=risk_client, perspective=perspective)
+                                red_flag_client = AzureClientFactory().get_openai_client_for_agent("red_flag_detector")
+                                red_flag_output = detect_red_flags(clause_output, llm_client=red_flag_client, perspective=perspective)
+                                plain_client = AzureClientFactory().get_openai_client_for_agent("plain_english_writer")
+                                plain_output = generate_plain_english(clause_output, llm_client=plain_client)
+                                assembler_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
+                                st.session_state["single_model_output"] = assemble_report(
+                                    clause_extraction=clause_output,
+                                    risk_scoring=risk_output,
+                                    red_flags=red_flag_output,
+                                    plain_english=plain_output,
+                                    llm_client=assembler_client,
+                                    perspective=perspective,
+                                )
+                    finally:
+                        if st.session_state.get("single_model_output") is not None:
+                            from src.helpers.mask import unmask_single_output
+                            from src.config import SENSITIVE_KEYWORDS
+                            st.session_state["single_model_output"] = unmask_single_output(
+                                st.session_state["single_model_output"], contract_text, SENSITIVE_KEYWORDS
                             )
-                finally:
-                    if st.session_state.get("single_model_output") is not None:
-                        from src.helpers.mask import unmask_single_output
-                        from src.config import SENSITIVE_KEYWORDS
-                        st.session_state["single_model_output"] = unmask_single_output(
-                            st.session_state["single_model_output"], contract_text, SENSITIVE_KEYWORDS
-                        )
-                    tracer.flush()
+                        tracer.flush()
+        finally:
+            st.session_state["pipeline_running"] = False
 
     # Render persisted state
     if st.session_state.get("review_state") is not None:

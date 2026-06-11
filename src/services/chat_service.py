@@ -21,8 +21,61 @@ from .redis_client import AsyncRedisClient
 logger = logging.getLogger(__name__)
 
 
+from contextlib import asynccontextmanager
+from fastapi import HTTPException
+
+class UserChatQueueManager:
+    """Manages per-user chat concurrency by queuing up to 3 messages and rejecting beyond that."""
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self.waiting_counts = {}
+        self.locks = {}
+
+    @asynccontextmanager
+    async def limit_concurrency(self, user_id: str):
+        acquired = False
+        in_queue = False
+        try:
+            async with self._lock:
+                if user_id not in self.waiting_counts:
+                    self.waiting_counts[user_id] = 0
+                if user_id not in self.locks:
+                    self.locks[user_id] = asyncio.Lock()
+                
+                is_locked = self.locks[user_id].locked()
+                if is_locked:
+                    if self.waiting_counts[user_id] >= 3:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Too many requests in queue. Please wait."
+                        )
+                    self.waiting_counts[user_id] += 1
+                    in_queue = True
+            
+            await self.locks[user_id].acquire()
+            acquired = True
+            
+            if in_queue:
+                async with self._lock:
+                    self.waiting_counts[user_id] = max(0, self.waiting_counts[user_id] - 1)
+                    in_queue = False
+            
+            yield
+        finally:
+            async with self._lock:
+                if in_queue:
+                    self.waiting_counts[user_id] = max(0, self.waiting_counts[user_id] - 1)
+                if acquired:
+                    try:
+                        self.locks[user_id].release()
+                    except RuntimeError:
+                        pass
+
+
 class ContractChatService:
     """Service to handle conversational RAG QA about a contract with summary buffer memory."""
+
+    queue_manager = UserChatQueueManager()
 
     def __init__(self, contract_id: str, session_id: str | None = None, user_id: str | None = None):
         self.contract_id = contract_id
@@ -351,6 +404,10 @@ class ContractChatService:
                 return False
 
     async def ask(self, question: str) -> dict[str, Any]:
+        async with self.queue_manager.limit_concurrency(self.user_id):
+            return await self._ask_internal(question)
+
+    async def _ask_internal(self, question: str) -> dict[str, Any]:
         """Ask a text question and get RAG grounded answer (async).
 
         Opens a Langfuse trace for this chat turn tagged with the authenticated
@@ -547,6 +604,10 @@ class ContractChatService:
             }
 
     async def ask_with_image(self, question: str, image_bytes: bytes) -> dict[str, Any]:
+        async with self.queue_manager.limit_concurrency(self.user_id):
+            return await self._ask_with_image_internal(question, image_bytes)
+
+    async def _ask_with_image_internal(self, question: str, image_bytes: bytes) -> dict[str, Any]:
         """Ask a question containing a page screenshot/image using multimodal vision model (async).
 
         Opens a Langfuse trace for this vision chat turn tagged with the authenticated

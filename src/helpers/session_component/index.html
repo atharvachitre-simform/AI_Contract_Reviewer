@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Streamlit Session Component</title>
+</head>
+<body>
+    <script>
+        // Send streamlit:componentReady message to initialize the component connection
+        function initializeComponent() {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:componentReady",
+                apiVersion: 1
+            }, "*");
+        }
+
+        // Handle commands/arguments received from Streamlit (Python)
+        function onRender(event) {
+            var message = event.data;
+            if (message.type === "streamlit:render") {
+                var args = message.args;
+                var action = args.action;
+
+                try {
+                    if (action === "read") {
+                        var data = localStorage.getItem("contract_reviewer_session");
+                        window.parent.postMessage({
+                            isStreamlitMessage: true,
+                            type: "streamlit:setComponentValue",
+                            value: data ? JSON.parse(data) : null
+                        }, "*");
+                    } else if (action === "save") {
+                        if (args.session_data) {
+                            localStorage.setItem("contract_reviewer_session", JSON.stringify(args.session_data));
+                        }
+                    } else if (action === "clear") {
+                        localStorage.removeItem("contract_reviewer_session");
+                    } else if (action === "update_activity") {
+                        var raw = localStorage.getItem("contract_reviewer_session");
+                        if (raw) {
+                            var sess = JSON.parse(raw);
+                            sess.last_activity = String(Date.now() / 1000);
+                            localStorage.setItem("contract_reviewer_session", JSON.stringify(sess));
+                        }
+                    }
+                } catch (e) {
+                    console.error("Session component error:", e);
+                }
+            }
+        }
+
+        // Register event listener for messages from Streamlit
+        window.addEventListener("message", onRender);
+
+        // Tell Streamlit we are ready to receive args
+        initializeComponent();
+    </script>
+</body>
+</html>
