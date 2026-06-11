@@ -376,9 +376,7 @@ class ContractReviewService:
             )
             state.trace_id = self.current_trace_id
             self._save_memory(contract_id, session_id, state)
-            self.save_checkpoint(session_id, state)
-            if contract_id:
-                self.save_checkpoint(contract_id, state)
+            self.save_checkpoint(contract_id, state)
             self._trace(
                 "process_contract",
                 "End-to-end contract review completed.",
