@@ -11,8 +11,6 @@ from pydantic import BaseModel
 import re
 from .controllers.controller import review_contract
 from .helpers.auth import get_current_user, check_contract_ownership, require_admin
-from .helpers.rate_limiter import RateLimiter
-
 def sanitize_contract_id(contract_id: str) -> str:
     if not re.match(r'^[a-zA-Z0-9_\-]+$', contract_id):
         raise HTTPException(status_code=400,
@@ -56,9 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Rate Limiters
-chat_limiter = RateLimiter(limit=10, window_seconds=60, name="chat")
-review_limiter = RateLimiter(limit=10, window_seconds=60, name="review")
+# No rate limiters initialized
 
 # Dependency to check contract ownership from path parameter
 async def verify_path_contract_access(contract_id: str, user: dict = Depends(get_current_user)):
@@ -183,7 +179,7 @@ def export_review(format: str = "pdf", contract_id: str = Depends(verify_path_co
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/chat")
-async def chat(request: ChatRequest, user: dict = Depends(get_current_user), _rate_limit = Depends(chat_limiter)):
+async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     """Answer a text question using RAG grounding (async)."""
     sanitize_contract_id(request.contract_id)
     if request.session_id:
@@ -213,7 +209,6 @@ async def chat_image(
     session_id: str | None = Form(None),
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
-    _rate_limit = Depends(chat_limiter),
 ):
     sanitize_contract_id(contract_id)
     if session_id:
@@ -302,8 +297,7 @@ async def _sse_event_stream(
 @app.post("/api/v1/review/stream")
 async def review_stream(
     request: StreamReviewRequest,
-    user: dict = Depends(get_current_user),
-    _rate_limit = Depends(review_limiter)
+    user: dict = Depends(get_current_user)
 ):
     """Run the async contract review workflow and stream progress via SSE.
 

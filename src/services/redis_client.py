@@ -25,12 +25,20 @@ class AsyncRedisClient:
     def __init__(self, url: Optional[str] = None):
         self.url = url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self._client: Optional[AsyncRedis] = None
+        self._loop = None
 
     async def _get_client(self) -> AsyncRedis:
-        if self._client is None:
+        import asyncio
+        current_loop = asyncio.get_running_loop()
+        
+        if self._client is None or self._loop is not current_loop:
             if AsyncRedis is None:
                 raise RuntimeError("redis.asyncio is not installed. Install 'redis' package with async support.")
+            # If there was a previous client from a different loop, we can't safely await aclose() here 
+            # because we are in a new loop, but we will let garbage collection handle it.
             self._client = AsyncRedis.from_url(self.url, encoding="utf-8", decode_responses=True)
+            self._loop = current_loop
+            
         return self._client
 
     async def get(self, key: str) -> Optional[Any]:
