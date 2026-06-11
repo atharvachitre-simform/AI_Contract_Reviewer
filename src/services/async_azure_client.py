@@ -29,7 +29,7 @@ class AsyncAzureOpenAIWrapper:
         self.is_configured = wrapper.is_configured
 
     async def _run_sync_in_executor(self, func, *args, **kwargs):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     async def async_chat_complete(

@@ -609,6 +609,7 @@ def render_chat_tab(contract_id: str) -> None:
                         "content": res["answer"],
                         "sources": res.get("sources", [])
                     })
+                    
                     st.rerun()
 
     with col_grounding:
