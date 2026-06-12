@@ -662,12 +662,44 @@ def render_chat_tab(contract_id: str) -> None:
                             import hashlib
                             clause_hash = hashlib.md5(snippet.strip().encode("utf-8")).hexdigest()
                             crop_path = pages_dir / f"clause_{clause_hash}.png"
+                            
+                            # Extract and format confidence score if present
+                            confidence = src.get("confidence")
+                            conf_badge_html = ""
+                            conf_suffix = ""
+                            if confidence is not None:
+                                try:
+                                    conf_val = float(confidence)
+                                    if 0.0 <= conf_val <= 1.0:
+                                        conf_percentage = int(conf_val * 100)
+                                        conf_suffix = f" (Confidence: {conf_percentage}%)"
+                                        conf_color = "#2ecc71" if conf_val >= 0.8 else ("#e67e22" if conf_val >= 0.5 else "#e74c3c")
+                                        conf_badge_html = f'<div style="margin-top: 5px; margin-bottom: 10px;"><span style="background-color: {conf_color}22; color: {conf_color}; border: 1px solid {conf_color}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{conf_percentage}% Confidence Score</span></div>'
+                                    else:
+                                        conf_suffix = f" (Confidence: {conf_val})"
+                                        conf_badge_html = f'<div style="margin-top: 5px; margin-bottom: 10px;"><span style="background-color: #3498db22; color: #3498db; border: 1px solid #3498db; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{confidence} Confidence Score</span></div>'
+                                except (ValueError, TypeError):
+                                    conf_val_str = str(confidence).lower()
+                                    conf_suffix = f" (Confidence: {confidence})"
+                                    conf_color = "#3498db"
+                                    if "high" in conf_val_str:
+                                        conf_color = "#2ecc71"
+                                    elif "medium" in conf_val_str:
+                                        conf_color = "#e67e22"
+                                    elif "low" in conf_val_str:
+                                        conf_color = "#e74c3c"
+                                    conf_badge_html = f'<div style="margin-top: 5px; margin-bottom: 10px;"><span style="background-color: {conf_color}22; color: {conf_color}; border: 1px solid {conf_color}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{str(confidence).upper()} Confidence Score</span></div>'
+
                             if crop_path.exists():
-                                st.image(str(crop_path), caption=f"Page {page} - Clause Crop", use_container_width=True)
+                                st.image(str(crop_path), caption=f"Page {page} - Clause Crop{conf_suffix}", use_container_width=True)
+                                if conf_badge_html:
+                                    st.markdown(conf_badge_html, unsafe_allow_html=True)
                             else:
                                 page_path = pages_dir / f"page_{page}.png"
                                 if page_path.exists():
-                                    st.image(str(page_path), caption=f"Page {page}", use_container_width=True)
+                                    st.image(str(page_path), caption=f"Page {page}{conf_suffix}", use_container_width=True)
+                                    if conf_badge_html:
+                                        st.markdown(conf_badge_html, unsafe_allow_html=True)
 
 
 def render_full_review(state: object) -> None:

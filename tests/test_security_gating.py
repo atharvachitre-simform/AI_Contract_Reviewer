@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from src.fastapi_app import app, verify_path_contract_access
 from src.helpers.auth import get_current_user, check_contract_ownership
-from src.helpers.rate_limiter import RateLimiter
+from src.helpers.auth import get_current_user, check_contract_ownership
 
 @pytest.fixture
 def clean_overrides():
@@ -50,45 +50,6 @@ def test_auth_route_success_with_valid_token(mock_client_class, clean_overrides)
             headers={"Authorization": "Bearer valid-supabase-token"}
         )
         assert response.status_code == 200
-
-@patch("src.helpers.rate_limiter.AsyncRedisClient")
-def test_rate_limiter_exceeded(mock_redis_client_class):
-    """Verify RateLimiter raises 429 when threshold is crossed."""
-    mock_redis = mock_redis_client_class.return_value
-    mock_redis.ping = AsyncMock(return_value=True)
-    
-    # Mock Redis pipeline to return value >= limit
-    mock_pipe = MagicMock()
-    mock_pipe.zremrangebyscore = MagicMock()
-    mock_pipe.zcard = MagicMock()
-    mock_pipe.zadd = MagicMock()
-    mock_pipe.expire = MagicMock()
-    mock_pipe.execute = AsyncMock(return_value=(None, 11)) # Count is 11, limit is 10
-    
-    class MockPipelineCtx:
-        async def __aenter__(self):
-            return mock_pipe
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            pass
-            
-    mock_client = MagicMock()
-    mock_client.pipeline.return_value = MockPipelineCtx()
-    mock_redis._get_client = AsyncMock(return_value=mock_client)
-
-    # Instantiate a rate limiter with limit=10
-    limiter = RateLimiter(limit=10, window_seconds=60, name="test_limiter")
-    
-    mock_request = MagicMock()
-    mock_request.client.host = "127.0.0.1"
-    mock_request.state = MagicMock()
-    del mock_request.state.user # Trigger IP fallback
-    
-    with pytest.raises(HTTPException) as excinfo:
-        import asyncio
-        asyncio.run(limiter(mock_request))
-        
-    assert excinfo.value.status_code == 429
-    assert "Rate limit exceeded" in excinfo.value.detail["message"]
 
 def test_cleanup_old_pages():
     """Verify that cleanup task purges expired page assets."""

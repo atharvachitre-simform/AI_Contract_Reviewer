@@ -29,8 +29,23 @@ class AsyncAzureOpenAIWrapper:
         self.is_configured = wrapper.is_configured
 
     async def _run_sync_in_executor(self, func, *args, **kwargs):
+        # Capture current thread-local trace context in the parent async thread
+        from .langfuse_tracer import LangFuseTracer
+        tid = LangFuseTracer.get_current_trace_id()
+        uid = LangFuseTracer.get_current_user_id()
+        sid = LangFuseTracer.get_current_session_id()
+        cid = LangFuseTracer.get_current_contract_id()
+
+        def wrapper():
+            # Apply to the synchronous thread context in the executor pool
+            LangFuseTracer.set_current_trace_id(tid)
+            LangFuseTracer.set_current_user_id(uid)
+            LangFuseTracer.set_current_session_id(sid)
+            LangFuseTracer.set_current_contract_id(cid)
+            return func(*args, **kwargs)
+
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+        return await loop.run_in_executor(None, wrapper)
 
     async def async_chat_complete(
         self,
@@ -56,7 +71,7 @@ class AsyncAzureOpenAIWrapper:
             user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
             system_prompt = mask_sensitive_text(system_prompt, keywords=user_keywords or None, use_builtin=True)
 
-        # Build messages identical to sync version
+        # Build messages identical to sync version — system MUST be first
         if system_prompt:
             if "B2B legal technology platform" not in system_prompt:
                 sys_content = BUSINESS_DOMAIN_HEADER + system_prompt
@@ -83,7 +98,7 @@ class AsyncAzureOpenAIWrapper:
                 resp.raise_for_status()
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"] or ""
-                # Log to Langfuse
+                # Log to Langfuse using SDK v3 API (log_generation)
                 try:
                     from .langfuse_tracer import LangFuseTracer
                     tracer = LangFuseTracer()
@@ -93,17 +108,15 @@ class AsyncAzureOpenAIWrapper:
                         p_tok = usage.get("prompt_tokens", 0)
                         c_tok = usage.get("completion_tokens", 0)
                         t_tok = usage.get("total_tokens", p_tok + c_tok)
-                        tracer.client.generation(
-                            trace_id=trace_id,
+                        tracer.log_generation(
                             name=getattr(self._wrapper, "agent_name", "chat_complete"),
                             model=self.deployment_name,
-                            input=messages,
+                            input_messages=messages,
                             output=content,
-                            usage={
-                                "input": p_tok,
-                                "output": c_tok,
-                                "total": t_tok
-                            }
+                            input_tokens=p_tok,
+                            output_tokens=c_tok,
+                            total_tokens=t_tok,
+                            trace_id=trace_id,
                         )
                 except Exception as lf_err:
                     logger.debug(f"Failed to log generation to Langfuse in async: {lf_err}")
@@ -145,7 +158,7 @@ class AsyncAzureOpenAIWrapper:
                 resp.raise_for_status()
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"] or ""
-                # Log to Langfuse
+                # Log to Langfuse using SDK v3 API (log_generation)
                 try:
                     from .langfuse_tracer import LangFuseTracer
                     tracer = LangFuseTracer()
@@ -155,17 +168,15 @@ class AsyncAzureOpenAIWrapper:
                         p_tok = usage.get("prompt_tokens", 0)
                         c_tok = usage.get("completion_tokens", 0)
                         t_tok = usage.get("total_tokens", p_tok + c_tok)
-                        tracer.client.generation(
-                            trace_id=trace_id,
+                        tracer.log_generation(
                             name=getattr(self._wrapper, "agent_name", "chat_complete_multimodal"),
                             model=self.deployment_name,
-                            input=messages,
+                            input_messages=messages,
                             output=content,
-                            usage={
-                                "input": p_tok,
-                                "output": c_tok,
-                                "total": t_tok
-                            }
+                            input_tokens=p_tok,
+                            output_tokens=c_tok,
+                            total_tokens=t_tok,
+                            trace_id=trace_id,
                         )
                 except Exception as lf_err:
                     logger.debug(f"Failed to log generation to Langfuse in async multimodal: {lf_err}")

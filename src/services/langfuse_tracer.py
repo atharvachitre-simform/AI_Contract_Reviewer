@@ -165,7 +165,7 @@ class LangFuseTracer:
 
         Returns the new trace_id. Call this at the start of each pipeline run.
         """
-        trace_id = self.create_trace_id(seed=contract_id)
+        trace_id = self.create_trace_id(seed=f"{contract_id}:{uuid.uuid4().hex[:8]}")
         uid = user_id or "anonymous"
 
         # Persist into thread-local so nested agents pick it up automatically
@@ -344,10 +344,13 @@ class LangFuseTracer:
         session_id: str | None = None,
         contract_id: str | None = None,
     ) -> None:
-        """Log an LLM generation span using the Langfuse SDK v3 API.
+        """Log an LLM generation span using the Langfuse SDK v4 API (OTEL-based).
 
         Uses ``start_observation(as_type='generation')`` with
-        ``usage_details`` (int token counts) as required by SDK v3.
+        ``usage_details`` (int token counts) as required by SDK v4.
+
+        Also writes token data to the local JSONL log for guaranteed visibility
+        regardless of Langfuse dashboard state.
 
         All identity fields default to thread-local values set by
         ``start_pipeline_trace()`` or ``start_chat_trace()``, so callers
@@ -357,6 +360,27 @@ class LangFuseTracer:
         uid = user_id or self.get_current_user_id() or "anonymous"
         sid = session_id or self.get_current_session_id()
         cid = contract_id or self.get_current_contract_id()
+
+        # Always write token data to local JSONL so it's visible in logs
+        # even when the Langfuse remote dashboard has issues.
+        generation_event = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "trace_id": tid,
+            "user_id": uid,
+            "session_id": sid,
+            "contract_id": cid,
+            "step": f"generation:{name}",
+            "description": f"LLM generation — {name}",
+            "status": "completed",
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens if total_tokens else input_tokens + output_tokens,
+            "trace_url": self.get_trace_url(tid) if tid else None,
+            "source": "ai-contract-reviewer",
+        }
+        self._write_local(generation_event)
+
         if not self.enabled or not tid:
             return
         try:
@@ -381,9 +405,14 @@ class LangFuseTracer:
                 },
             )
             obs.end()
+            # Flush immediately so the OTEL span is exported before the thread
+            # pool worker exits. Without this, background batching may miss spans
+            # from short-lived executor threads.
+            self.client.flush()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).debug(f"Langfuse generation error: {exc}")
+
 
     def flush(self) -> None:
         """Force flush all pending events to Langfuse.

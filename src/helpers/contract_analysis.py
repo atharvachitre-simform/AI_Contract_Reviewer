@@ -17,9 +17,86 @@ _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def normalize_whitespace(text: str) -> str:
-    """Collapse excessive whitespace while preserving paragraph boundaries."""
+    """Collapse excessive whitespace, preserve paragraph boundaries, and strip recurring headers/footers."""
 
     cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # --- Dynamic Header/Footer Stripping ---
+    # Split text into pages based on page markers
+    page_marker_re = re.compile(r"(--- page \d+ ---)", re.IGNORECASE)
+    parts = page_marker_re.split(cleaned)
+
+    # Extract pages and markers separately
+    pages = []
+    markers = []
+
+    # If the text starts with a page marker, the first element will be empty
+    i = 0
+    if len(parts) > 1:
+        if not parts[0].strip() and page_marker_re.match(parts[1]):
+            i = 1
+
+    while i < len(parts):
+        if page_marker_re.match(parts[i]):
+            markers.append(parts[i])
+            if i + 1 < len(parts):
+                pages.append(parts[i+1])
+                i += 2
+            else:
+                pages.append("")
+                i += 1
+        else:
+            pages.append(parts[i])
+            markers.append("")  # No marker before this chunk
+            i += 1
+
+    # Count frequency of each line across pages to find boilerplates
+    from collections import Counter
+    line_counts = Counter()
+
+    for page in pages:
+        seen_lines_in_page = set()
+        for line in page.split("\n"):
+            line_clean = _WHITESPACE_RE.sub(" ", line).strip()
+            if len(line_clean) > 8:  # ignore very short lines, page numbers, etc.
+                seen_lines_in_page.add(line_clean)
+        for line_clean in seen_lines_in_page:
+            line_counts[line_clean] += 1
+
+    # Identify candidates that appear on >= 3 pages
+    # Ensure they don't look like legal section headings (e.g. "Section", "Article")
+    header_footer_candidates = set()
+    for line_clean, count in line_counts.items():
+        if count >= 3:
+            lower_line = line_clean.lower()
+            is_heading = any(lower_line.startswith(prefix) for prefix in [
+                "section", "article", "clause", "para", "part", "schedule", "exhibit"
+            ])
+            is_heading = is_heading or bool(re.match(r"^\d+[\.\s]+[A-Z]", line_clean))
+            if not is_heading:
+                header_footer_candidates.add(line_clean)
+
+    # Strip candidates from each page
+    cleaned_pages = []
+    for page in pages:
+        cleaned_lines = []
+        for line in page.split("\n"):
+            line_clean = _WHITESPACE_RE.sub(" ", line).strip()
+            if line_clean in header_footer_candidates:
+                continue
+            cleaned_lines.append(line)
+        cleaned_pages.append("\n".join(cleaned_lines))
+
+    # Reassemble text
+    reassembled = []
+    for m, p in zip(markers, cleaned_pages):
+        if m:
+            reassembled.append(m)
+        reassembled.append(p)
+    cleaned = "".join(reassembled)
+
+    # --- End Header/Footer Stripping ---
+
     cleaned = _MULTI_NEWLINE_RE.sub("\n\n", cleaned)
     lines = [_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n")]
     return "\n".join(line for line in lines if line)

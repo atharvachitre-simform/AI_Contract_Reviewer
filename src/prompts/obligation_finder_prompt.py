@@ -39,7 +39,7 @@ def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[
     for c in clauses:
         clause_type = getattr(c, "clause_type", "Clause")
         raw = getattr(c, "raw_text", "").strip().replace("\n", " ")
-        clause_lines.append(f"- {clause_type}: {raw[:800]}")
+        clause_lines.append(f"- {clause_type}: {raw[:400]}")
 
     clauses_text = "\n".join(clause_lines) if clause_lines else "(no clauses provided)"
 

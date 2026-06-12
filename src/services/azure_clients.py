@@ -400,10 +400,24 @@ class AzureOpenAIWrapper:
                 BUSINESS_DOMAIN_HEADER
                 + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
             )
-        messages = [
-            {"role": "system", "content": sys_content},
-            {"role": "user", "content": prompt},
-        ]
+        # Split prompt to extract large contract/clause data content for prefix caching.
+        # We always want prompt caching (putting large content like CONTRACT_TEXT into the first user turn)
+        # to save input tokens.
+        from ..agents.pipeline_tools import split_prompt_for_prompt_caching
+        instructions, data_content = split_prompt_for_prompt_caching(prompt)
+
+        if data_content:
+            # System MUST be first; contract data and instructions follow as separate user turns
+            messages = [
+                {"role": "system", "content": sys_content},
+                {"role": "user", "content": data_content},
+                {"role": "user", "content": instructions}
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": sys_content},
+                {"role": "user", "content": prompt}
+            ]
 
         if self.use_groq and self.groq_client is not None:
             kwargs = {}

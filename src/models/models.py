@@ -164,6 +164,7 @@ class ClauseSpan(BaseModel):
     source_page: int | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     normalized_text: str | None = None
+    clause_tag: str | None = None
     cuad_category: CUADCategory | str | None = None
     subclauses: list[ClauseSpan] = Field(default_factory=list)
 

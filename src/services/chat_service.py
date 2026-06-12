@@ -253,6 +253,7 @@ class ContractChatService:
                             c_text = getattr(c, "raw_text", "") or (c.get("raw_text", "") if isinstance(c, dict) else "")
                             c_type = getattr(c, "clause_type", "") or (c.get("clause_type", "") if isinstance(c, dict) else "")
                             c_page = getattr(c, "source_page", None) or (c.get("source_page") if isinstance(c, dict) else None)
+                            c_confidence = getattr(c, "confidence", None) or (c.get("confidence") if isinstance(c, dict) else None)
 
                             clause_words = set(re.findall(r"\w+", (c_text + " " + c_type).lower())) - STOP_WORDS
                             word_overlap = len(query_words.intersection(clause_words))
@@ -263,7 +264,8 @@ class ContractChatService:
                                 ranked_clauses.append((word_overlap, {
                                     "clause_type": c_type,
                                     "text": c_text,
-                                    "source_page": c_page
+                                    "source_page": c_page,
+                                    "confidence": c_confidence
                                 }))
                         
                         # Sort descending by word overlap
@@ -274,13 +276,19 @@ class ContractChatService:
                 
         return sources
 
-    def is_question_relevant(self, question: str) -> bool:
-        """Check if the user's question is relevant to legal standards, contract terms, or document analysis."""
+    def check_relevance_heuristically(self, question: str) -> bool | None:
+        """Fast local checks for question relevance.
+        
+        Returns:
+            True if definitively relevant (fast-pass)
+            False if definitively irrelevant (fast-reject)
+            None if ambiguous/inconclusive (needs LLM gate)
+        """
         q_clean = question.strip().lower()
         if not q_clean:
             return False
 
-        # Pre-check for prompt injection
+        # 1. Pre-check for prompt injection
         injection_keywords = [
             "ignore", "forget", "disregard", "override", "bypass",
             "pretend", "act as", "you are now", "new instructions",
@@ -291,9 +299,70 @@ class ContractChatService:
             if match_count >= 2:
                 return False
 
-        # Relevance gating system prompt
+        # 2. Check for obvious off-topic patterns
+        off_topic_patterns = [
+            r"\b(recipe|cook|bake|chocolate|cake|ingredients|curry|soup|pasta|pizza|salad)\b",
+            r"\b(weather|forecast|temperature\s+outside|raining|snowing|sunny)\b",
+            r"(\bcalc\w*|\bmath\w*|\bmultiply|\bdivide|\bsum\b|\bsubtract\b|\b\d+\s*[\+\-\*\/]\s*\d+)",
+            r"\b(write|create|generate)\s+a?\s*(code|script|function|program|python|javascript|html|css|java|c\+\+|rust|golang)\b",
+            r"\b(football|basketball|soccer|baseball|hockey|tennis|olympics|sports\s+news)\b",
+            r"\b(joke|riddle|funny\s+story)\b",
+            r"\b(game|gaming|xbox|playstation|nintendo|fortnite|minecraft)\b",
+        ]
+        for pattern in off_topic_patterns:
+            if re.search(pattern, q_clean):
+                logger.info(f"Heuristic gate: query '{question}' blocked by off-topic pattern.")
+                return False
+
+        # 3. Contract referencing fast-pass phrases
+        fast_pass_phrases = [
+            "this contract", "our contract", "the contract", "this agreement", 
+            "our agreement", "the agreement", "the document", "this document",
+            "in the contract", "in this contract", "in our contract", "in the agreement"
+        ]
+        if any(phrase in q_clean for phrase in fast_pass_phrases):
+            logger.info(f"Heuristic gate: query '{question}' approved via contract-referencing phrase.")
+            return True
+
+        # 4. Review-oriented keywords (red flags, risks, summary, etc.)
+        review_keywords = {
+            "red flag", "redflags", "red-flag", "risk", "risks", "recommendation", 
+            "recommendations", "deviation", "deviations", "summary", "summarize", 
+            "overview", "highlight", "highlights", "brief", "outline"
+        }
+        words = set(re.findall(r"\w+", q_clean))
+        if any(kw in q_clean for kw in review_keywords) or not review_keywords.isdisjoint(words):
+            logger.info(f"Heuristic gate: query '{question}' approved via review keywords.")
+            return True
+
+        # 5. General legal/contract vocabulary
+        legal_keywords = {
+            "clause", "clauses", "indemnity", "liability", "termination", "covenant", 
+            "warrant", "warranty", "warranties", "breach", "payment", "invoice", "fee", 
+            "fees", "confidential", "confidentiality", "notice", "notices", "signature", 
+            "signatures", "sign", "signed", "signing", "amendment", "force majeure", 
+            "arbitration", "dispute", "governing law", "jurisdiction", "party", "parties",
+            "obligation", "obligations", "liquidated", "damages", "severability", "waiver",
+            "assignment", "intellectual property", "ip", "patent", "trademarks", "copyright"
+        }
+        if not legal_keywords.isdisjoint(words):
+            logger.info(f"Heuristic gate: query '{question}' approved via legal/contract keywords.")
+            return True
+
+        return None
+
+    def is_question_relevant(self, question: str) -> bool:
+        """Check if the user's question is relevant to legal standards, contract terms, or document analysis."""
+        heuristic_res = self.check_relevance_heuristically(question)
+        if heuristic_res is not None:
+            return heuristic_res
+
+        # Relevance gating system prompt (now assuming a contract review session context)
         system_instruction = (
             "You are a legal document and contract analysis gatekeeper. "
+            "Assume that the user is in a chat session reviewing a specific legal contract. "
+            "Therefore, general context-dependent questions like 'what is the biggest red flag?', 'summarize this', "
+            "or 'what are the risks?' are relevant to the contract review and must receive a YES.\n"
             "Determine if the user's chat question is related to a contract, legal terminology, "
             "legal advice, legal standards, liability, rights, obligations, or document review.\n"
             "Answer with YES if it is relevant, or NO if it is irrelevant (e.g. general recipes, sports, "
@@ -326,6 +395,11 @@ class ContractChatService:
 
     async def transient_relevancy_check(self, question: str) -> bool:
         """Transient relevance check using Groq fallback if Azure fails or is rate‑limited (async)."""
+        # 1. Run local heuristic check first to avoid thread pool or API calls for fast paths
+        heuristic_res = self.check_relevance_heuristically(question)
+        if heuristic_res is not None:
+            return heuristic_res
+
         try:
             # Primary check using existing sync method (run in thread pool to avoid blocking event loop)
             loop = asyncio.get_running_loop()
@@ -339,7 +413,11 @@ class ContractChatService:
             if not groq_client:
                 logger.error("Groq client not configured for relevance gating.")
                 return False
-            system_instruction = "You are a legal document gatekeeper. Reply YES if question is contract‑related, else NO."
+            system_instruction = (
+                "You are a legal document gatekeeper in a contract review system. "
+                "Reply YES if the question is contract‑related, review‑related (e.g., asking about risks or red flags), "
+                "or asks about the current document, else reply NO."
+            )
             prompt = f"User Question:\n{question}"
             try:
                 loop = asyncio.get_running_loop()
@@ -357,16 +435,110 @@ class ContractChatService:
                 logger.error(f"Groq relevance check also failed: {e2}")
                 return False
 
+    def _tool_retrieve_contract_metadata(self) -> str:
+        """Retrieve contract metadata from the local pipeline checkpoint."""
+        try:
+            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
+            if checkpoint_file.exists():
+                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                metadata = state.get("metadata", {})
+                risk = state.get("risk_scorer", {})
+                assembler = state.get("report_assembler", {})
+                
+                info = {
+                    "document_name": metadata.get("document_name", "Unknown"),
+                    "parties": metadata.get("parties", []),
+                    "agreement_date": metadata.get("agreement_date", "Unknown"),
+                    "effective_date": metadata.get("effective_date", "Unknown"),
+                    "governing_law": metadata.get("governing_law", "Unknown"),
+                    "overall_risk_level": risk.get("overall_risk_level", "Unknown"),
+                    "overall_risk_score": risk.get("overall_risk_score", "Unknown"),
+                    "review_verdict": assembler.get("verdict", "Unknown")
+                }
+                return json.dumps(info, indent=2)
+            return f"Error: No review checkpoint found for contract ID '{self.contract_id}'."
+        except Exception as e:
+            logger.error(f"Failed to read contract metadata for tool: {e}")
+            return f"Error: Failed to read contract metadata: {str(e)}"
+
+    async def _tool_search_grounding_clauses(self, query: str) -> str:
+        """Search relevant contract clauses and cache them in session sources."""
+        try:
+            sources = await self._retrieve_clauses(query, top_k=config.CHAT_TOP_K_CLAUSES)
+            if not hasattr(self, "_retrieved_sources"):
+                self._retrieved_sources = []
+            
+            for s in sources:
+                if s not in self._retrieved_sources:
+                    self._retrieved_sources.append(s)
+            
+            context_lines = []
+            for s in sources:
+                clause_type = s.get("clause_type", "General")
+                source_page = s.get("source_page")
+                page_suffix = f" (Page {source_page})" if source_page else ""
+                context_lines.append(f"[{clause_type}{page_suffix}]: {s.get('text', '')}")
+            
+            return "\n\n".join(context_lines) if context_lines else "No matching clauses found."
+        except Exception as e:
+            logger.error(f"Failed to search clauses for tool: {e}")
+            return f"Error: Failed to search clauses: {str(e)}"
+
+    def _tool_fetch_page_visual_screenshot(self, page_number: int) -> dict[str, Any]:
+        """Load visual screenshot bytes of a specific page."""
+        try:
+            page_img_path = Path("logs/pages") / self.contract_id / f"page_{page_number}.png"
+            if page_img_path.exists():
+                image_bytes = page_img_path.read_bytes()
+                b64_image = base64.b64encode(image_bytes).decode("utf-8")
+                mime_type = "image/png"
+                return {
+                    "status": "success",
+                    "page_number": page_number,
+                    "mime_type": mime_type,
+                    "b64_image": b64_image,
+                    "message": f"Successfully loaded visual layout of Page {page_number}."
+                }
+            return {
+                "status": "error",
+                "message": f"Error: Visual page screenshot for Page {page_number} does not exist."
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch page visual screenshot: {e}")
+            return {
+                "status": "error",
+                "message": f"Error: Failed to fetch visual page: {str(e)}"
+            }
+
+    def _tool_list_active_obligations(self) -> str:
+        """Load and return active obligations from the checkpoint."""
+        try:
+            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
+            if checkpoint_file.exists():
+                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                obligation_data = state.get("obligation_finder", {})
+                obligations = obligation_data.get("obligations", [])
+                
+                if obligations:
+                    formatted = []
+                    for i, obl in enumerate(obligations, 1):
+                        party = obl.get("party", "Both")
+                        desc = obl.get("description", "")
+                        deadline = obl.get("deadline", "None")
+                        category = obl.get("category", "General")
+                        formatted.append(f"{i}. [{category.upper()} - {party}]: {desc} (Deadline/Milestone: {deadline})")
+                    return "\n".join(formatted)
+                return "No active obligations or commitments extracted for this contract."
+            return f"Error: No review checkpoint found for contract ID '{self.contract_id}'."
+        except Exception as e:
+            logger.error(f"Failed to read obligations for tool: {e}")
+            return f"Error: Failed to read obligations: {str(e)}"
+
     async def ask(self, question: str) -> dict[str, Any]:
         return await self._ask_internal(question)
 
     async def _ask_internal(self, question: str) -> dict[str, Any]:
-        """Ask a text question and get RAG grounded answer (async).
-
-        Opens a Langfuse trace for this chat turn tagged with the authenticated
-        user's identity so every LLM generation span is correctly attributed.
-        """
-        # Open a per-turn Langfuse trace scoped to this user + session
+        """Ask a text question and get RAG grounded answer with agentic tool calling (async)."""
         tracer = LangFuseTracer()
         tracer.start_chat_trace(
             contract_id=self.contract_id,
@@ -395,7 +567,183 @@ class ContractChatService:
             "accepted",
         )
 
-        # Auto-delegate to ask_with_image if we have a matched page image or crop
+        chat_deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT")
+            or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or self.azure.openai_deployment_name
+            or "GPT-4o-mini"
+        )
+        chat_client = self.azure.get_openai_client(chat_deployment)
+        if not chat_client or not chat_client.is_configured():
+            return {
+                "answer": "Error: Chat LLM model is not configured. Please set AZURE_OPENAI_DEPLOYMENT_CHAT in your .env file.",
+                "sources": []
+            }
+
+        # 1. Attempt agentic tool calling if active client (OpenAI or Groq) is modern
+        active_client = chat_client.openai_client or chat_client.groq_client
+        if active_client is not None:
+            try:
+                summary, history = await self._load_history()
+
+                # Hybrid Summary Buffer Logic
+                max_turns = config.CHAT_MAX_HISTORY_TURNS
+                if len(history) > max_turns:
+                    turns_to_summarize = history[:-max_turns]
+                    history = history[-max_turns:]
+                    summary = self._summarize_turns(summary, turns_to_summarize)
+                    await self._save_history(summary, history)
+
+                system_instruction = (
+                    BUSINESS_DOMAIN_HEADER +
+                    "ROLE: You are a contract review chat assistant. Answer the user's question using the tools "
+                    "provided to fetch contract details, clauses, or obligations. Answer clearly and cite the "
+                    "Clause Type and Page Number where possible. Always search for grounding clauses if the question "
+                    "asks about specific details or terms in the contract. Do not make up or fabricate clauses."
+                )
+
+                messages = [
+                    {"role": "system", "content": system_instruction}
+                ]
+                if summary:
+                    messages.append({"role": "system", "content": f"SUMMARY OF PRIOR CONVERSATION:\n{summary}"})
+                
+                for turn in history:
+                    messages.append({"role": turn["role"], "content": turn["content"]})
+                
+                messages.append({"role": "user", "content": question})
+
+                from .chat_tools import TOOLS_SCHEMA
+                max_tool_loops = 3
+                loop_count = 0
+                self._retrieved_sources = []
+                
+                loop = asyncio.get_running_loop()
+
+                while loop_count < max_tool_loops:
+                    kwargs = {
+                        "messages": messages,
+                        "temperature": 0.1,
+                        "max_tokens": 800,
+                    }
+                    if not chat_client.use_groq:
+                        kwargs["model"] = chat_client.deployment_name
+                    else:
+                        kwargs["model"] = chat_client.deployment_name
+                        
+                    kwargs["tools"] = TOOLS_SCHEMA
+                    kwargs["tool_choice"] = "auto"
+
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: active_client.chat.completions.create(**kwargs)
+                    )
+
+                    choice = response.choices[0]
+                    message = choice.message
+
+                    if message.tool_calls:
+                        assistant_msg = {
+                            "role": "assistant",
+                            "content": message.content,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                } for tc in message.tool_calls
+                            ]
+                        }
+                        messages.append(assistant_msg)
+
+                        for tc in message.tool_calls:
+                            tool_name = tc.function.name
+                            tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                            
+                            logger.info(f"Agent chatbot invoking tool '{tool_name}' with args {tool_args}")
+                            
+                            tool_output = ""
+                            if tool_name == "retrieve_contract_metadata":
+                                tool_output = self._tool_retrieve_contract_metadata()
+                            elif tool_name == "search_grounding_clauses":
+                                q = tool_args.get("query", "")
+                                tool_output = await self._tool_search_grounding_clauses(q)
+                            elif tool_name == "fetch_page_visual_screenshot":
+                                pg = tool_args.get("page_number", 1)
+                                res = self._tool_fetch_page_visual_screenshot(pg)
+                                tool_output = res["message"]
+                                if res["status"] == "success":
+                                    messages.append({
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": f"[Visual Layout of Page {pg}]"},
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": f"data:{res['mime_type']};base64,{res['b64_image']}"
+                                                }
+                                            }
+                                        ]
+                                    })
+                            elif tool_name == "list_active_obligations":
+                                tool_output = self._tool_list_active_obligations()
+                            else:
+                                tool_output = f"Error: Tool '{tool_name}' is not supported."
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "name": tool_name,
+                                "content": tool_output
+                            })
+
+                        loop_count += 1
+                        continue
+                    else:
+                        answer = message.content or ""
+                        break
+                else:
+                    kwargs_fallback = {
+                        "messages": messages,
+                        "temperature": 0.1,
+                        "max_tokens": 800,
+                    }
+                    if not chat_client.use_groq:
+                        kwargs_fallback["model"] = chat_client.deployment_name
+                    else:
+                        kwargs_fallback["model"] = chat_client.deployment_name
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: active_client.chat.completions.create(**kwargs_fallback)
+                    )
+                    answer = response.choices[0].message.content or ""
+
+                history.append({"role": "user", "content": question})
+                unmasked_answer = await self._unmask_chat_text(answer)
+                
+                sources = getattr(self, "_retrieved_sources", [])
+                unmasked_sources = []
+                for src in sources:
+                    unmasked_src = dict(src)
+                    if "text" in unmasked_src:
+                        unmasked_src["text"] = await self._unmask_chat_text(unmasked_src["text"])
+                    unmasked_sources.append(unmasked_src)
+                
+                history.append({"role": "assistant", "content": unmasked_answer, "sources": unmasked_sources})
+                await self._save_history(summary, history)
+                
+                tracer.flush()
+                return {
+                    "answer": unmasked_answer,
+                    "sources": unmasked_sources
+                }
+            except Exception as ex:
+                logger.warning(f"Agentic tool-calling chat failed ({ex}); falling back to static RAG flow.")
+
+        # 2. Static RAG Flow Fallback (Existing Logic)
         sources = await self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
         if sources:
             import hashlib
@@ -443,15 +791,12 @@ class ContractChatService:
         # Hybrid Summary Buffer Logic
         max_turns = config.CHAT_MAX_HISTORY_TURNS
         if len(history) > max_turns:
-            # Summarize older turns (everything except the last max_turns)
             turns_to_summarize = history[:-max_turns]
             history = history[-max_turns:]
             summary = self._summarize_turns(summary, turns_to_summarize)
             await self._save_history(summary, history)
 
-        # Retrieve grounding references
         sources = await self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
-        
         context_lines = []
         for s in sources:
             clause_type = s.get("clause_type", "General")
@@ -461,7 +806,6 @@ class ContractChatService:
             
         context = "\n\n".join(context_lines)
 
-        # Build prompt
         system_instruction = (
             BUSINESS_DOMAIN_HEADER +
             "ROLE: You are a contract review chat assistant. Answer the user's question using the retrieved "
@@ -474,8 +818,6 @@ class ContractChatService:
         if context:
             prompt_parts.append(f"RETRIEVED CONTRACT CONTEXT:\n{context}\n")
         else:
-            # Explicitly tell the model that no clause context was retrieved so it
-            # does not fabricate clause citations or evidence.
             prompt_parts.append(
                 "RETRIEVED CONTRACT CONTEXT: None available. "
                 "The contract clauses could not be retrieved for this session. "
@@ -485,28 +827,12 @@ class ContractChatService:
         if summary:
             prompt_parts.append(f"SUMMARY OF PRIOR CONVERSATION:\n{summary}\n")
         prompt_parts.append(f"USER QUESTION: {question}")
-        
         prompt = "\n".join(prompt_parts)
 
-        chat_deployment = (
-            os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT")
-            or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-            or self.azure.openai_deployment_name
-            or "GPT-4o-mini"
-        )
-        chat_client = self.azure.get_openai_client(chat_deployment)
-        if not chat_client or not chat_client.is_configured():
-            return {
-                "answer": "Error: Chat LLM model is not configured. Please set AZURE_OPENAI_DEPLOYMENT_CHAT in your .env file.",
-                "sources": []
-            }
-
         try:
-            # Format history for the LLM
             history_str = "\n".join([f"{t['role'].upper()}: {t['content']}" for t in history])
             final_user_prompt = f"{history_str}\n\nUSER: {prompt}" if history_str else prompt
 
-            # chat_complete is sync — always run inside a thread pool to avoid blocking event loop
             loop = asyncio.get_running_loop()
             answer = await loop.run_in_executor(
                 None,
@@ -518,7 +844,6 @@ class ContractChatService:
                 ),
             )
             
-            # Save new turns
             history.append({"role": "user", "content": question})
             unmasked_answer = await self._unmask_chat_text(answer)
             unmasked_sources = []

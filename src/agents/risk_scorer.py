@@ -14,6 +14,7 @@ from ..prompts.risk_scorer_prompt import build_risk_scorer_prompt
 
 logger = logging.getLogger(__name__)
 from src import config
+from .pipeline_tools import run_agent_tool_loop
 
 
 class RiskScorerState(TypedDict):
@@ -44,7 +45,7 @@ class RiskScorerAgent:
 
         # Add nodes
         graph.add_node("retrieve_reference_risks", lambda state: self._retrieve_reference_risks_node(state, retriever))
-        graph.add_node("llm_risk_analysis", lambda state: self._llm_risk_analysis_node(state, llm_client))
+        graph.add_node("llm_risk_analysis", lambda state: self._llm_risk_analysis_node(state, llm_client, retriever))
         graph.add_node("consolidate_risks", lambda state: self._consolidate_risks_node(state))
 
         # Add edges
@@ -174,7 +175,7 @@ class RiskScorerAgent:
             return RiskLevel.HIGH
         return RiskLevel.LOW
 
-    def _llm_risk_analysis_node(self, state: RiskScorerState, llm_client: Any | None) -> dict:
+    def _llm_risk_analysis_node(self, state: RiskScorerState, llm_client: Any | None, retriever: Any | None = None) -> dict:
         """Call LLM for structured risk analysis."""
         if llm_client is None:
             logger.warning("LLM client is None, cannot perform risk analysis")
@@ -183,7 +184,18 @@ class RiskScorerAgent:
 
         try:
             clause_extraction = state["clause_extraction"]
-            clauses_to_analyze = (clause_extraction.clauses or [])[: self.MAX_CLAUSES_TO_ANALYZE]
+            raw_clauses = clause_extraction.clauses or []
+            SKIP_FOR_RISK = {
+                "Document Name", "Parties", "Agreement Date", "Effective Date", 
+                "Governing Law"
+            }
+            filtered_clauses = [
+                c for c in raw_clauses
+                if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_RISK
+                and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
+                and getattr(c, "clause_tag", "") not in {"definition", "placeholder"}
+            ]
+            clauses_to_analyze = filtered_clauses[: self.MAX_CLAUSES_TO_ANALYZE]
             chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
             
             # Divide into chunks
@@ -209,21 +221,25 @@ class RiskScorerAgent:
                     perspective=state.get("perspective"),
                 )
 
-                # Split prompt into system_prompt and user_prompt
                 sep = "CONTRACT CLAUSES TO ANALYZE:\n"
                 if sep in prompt:
                     system_prompt, user_prompt = prompt.split(sep, 1)
+                    system_prompt = system_prompt.replace("SYSTEM:", "").strip()
                     user_prompt = sep + user_prompt
                 else:
                     system_prompt = None
                     user_prompt = prompt
 
-                response_text = llm_client.chat_complete(
-                    user_prompt,
-                    temperature=0.0,
-                    max_tokens=config.RISK_SCORER_MAX_TOKENS,
+                response_text = run_agent_tool_loop(
+                    llm_client=llm_client,
+                    prompt=user_prompt,
+                    tool_names=[],
+                    context={
+                        "retriever": retriever,
+                    },
                     system_prompt=system_prompt,
-                ).strip()
+                    max_tokens=config.RISK_SCORER_MAX_TOKENS
+                )
 
                 import hashlib
                 clauses_hash = hashlib.sha256(clauses_text.encode("utf-8")).hexdigest()
