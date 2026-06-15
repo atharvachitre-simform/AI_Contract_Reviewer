@@ -122,6 +122,9 @@ class ContractReviewWorkflow:
 					state.perspective = perspective
 					break
 
+		from ..helpers.contract_analysis import filter_boilerplate_clauses
+		filtered_extraction = filter_boilerplate_clauses(clause_extraction)
+
 		# 1. Run Obligation Finder & Red Flag Detector in parallel first
 		# Pass trace_id and identity context into each worker thread via initializer 
 		# so Langfuse can attribute all parallel agent token usage to the correct trace/user.
@@ -135,9 +138,13 @@ class ContractReviewWorkflow:
 			LangFuseTracer.set_current_session_id(s_id)
 			LangFuseTracer.set_current_contract_id(c_id)
 
+		import contextvars
+		ctx_obl = contextvars.copy_context()
+		ctx_red = contextvars.copy_context()
+
 		with ThreadPoolExecutor(max_workers=2, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
-			obligation_future = executor.submit(find_obligations, clause_extraction, obligation_llm_client, memory_context, perspective)
-			red_flag_future = executor.submit(detect_red_flags, clause_extraction, red_flag_llm_client, perspective)
+			obligation_future = executor.submit(lambda: ctx_obl.run(find_obligations, filtered_extraction, obligation_llm_client, memory_context, perspective))
+			red_flag_future = executor.submit(lambda: ctx_red.run(detect_red_flags, filtered_extraction, red_flag_llm_client, perspective))
 
 			state.obligation_finding = obligation_future.result()
 			state.api_trace.append({
@@ -170,7 +177,7 @@ class ContractReviewWorkflow:
 			)
 
 		# 2. Run Risk Scorer sequentially, consuming retriever (Azure AI Search)
-		state.risk_scoring = score_risks(clause_extraction, risk_llm_client, retriever, memory_context, perspective)
+		state.risk_scoring = score_risks(filtered_extraction, risk_llm_client, retriever, memory_context, perspective)
 		state.api_trace.append({
 			"step": "risk_scoring",
 			"agent": "Risk Scorer",
@@ -191,7 +198,7 @@ class ContractReviewWorkflow:
 
 		# 4. Run Plain English Writer sequentially, passing the formatted risk context
 		state.plain_english = generate_plain_english(
-			clause_extraction,
+			filtered_extraction,
 			plain_llm_client,
 			risks_text=risks_text,
 			red_flags_text=red_flags_text,

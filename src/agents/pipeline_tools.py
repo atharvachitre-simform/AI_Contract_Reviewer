@@ -305,13 +305,14 @@ def execute_pipeline_tool(
     logger.info(f"Pipeline tool execute: {name} with args {arguments}")
     try:
         if name == "search_clause_playbook":
+            from ..helpers.compression_helper import compress_guideline_text
             category = arguments.get("category", "").strip().lower()
             retriever = context.get("retriever")
             if retriever:
                 try:
                     res = retriever.retrieve_from_knowledge_base(category, "contracts")
                     if res:
-                        return json.dumps(res, indent=2, default=str)
+                        return compress_guideline_text(json.dumps(res, indent=2, default=str))
                 except Exception as err:
                     logger.warning(f"Tool search_clause_playbook retrieval failed: {err}")
             
@@ -323,8 +324,8 @@ def execute_pipeline_tool(
             }
             for k, v in playbook_examples.items():
                 if k in category:
-                    return v
-            return f"No specific playbook guidelines found for category '{category}'."
+                    return compress_guideline_text(v)
+            return compress_guideline_text(f"No specific playbook guidelines found for category '{category}'.")
 
         elif name == "verify_raw_text_existence":
             snippet = arguments.get("snippet", "").strip()
@@ -389,6 +390,7 @@ def execute_pipeline_tool(
             return f"Standard obligations for general agreements: Cure period of 30 days, payment Net 30."
 
         elif name == "query_compliance_playbook":
+            from ..helpers.compression_helper import compress_guideline_text
             clause_type = arguments.get("clause_type", "").strip().lower()
             text = arguments.get("text", "").strip().lower()
             
@@ -405,8 +407,9 @@ def execute_pipeline_tool(
                     deviations.append("Super cap for data breaches exists, verify compliance.")
             
             if deviations:
-                return f"Deviation Alert against Preferred Positions:\n" + "\n".join([f"- {d}" for d in deviations])
-            return "Compliance check: Clause conforms to company-preferred standards."
+                raw_alert = f"Deviation Alert against Preferred Positions:\n" + "\n".join([f"- {d}" for d in deviations])
+                return compress_guideline_text(raw_alert)
+            return compress_guideline_text("Compliance check: Clause conforms to company-preferred standards.")
 
         elif name == "search_legal_definitions":
             concept = arguments.get("concept", "").strip().lower()
@@ -599,7 +602,42 @@ def run_agent_tool_loop(
             kwargs["max_tokens"] = max_tokens
 
         try:
-            response = active_client.chat.completions.create(**kwargs)
+            try:
+                response = active_client.chat.completions.create(**kwargs)
+            except Exception as e:
+                err_msg = str(e).lower()
+                is_rate_limit = "429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg or "tpm" in err_msg or getattr(e, "status_code", None) == 429
+                from src import config
+                if is_rate_limit and config.GROQ_API_KEY and not getattr(llm_client, "use_groq", False):
+                    logger.warning(f"Rate limit hit in agent tool loop: {e}. Falling back to Groq API with {config.GROQ_DEFAULT_MODEL}...")
+                    from groq import Groq
+                    groq_client = Groq(api_key=config.GROQ_API_KEY)
+                    active_client = groq_client
+                    llm_client.use_groq = True
+                    llm_client.deployment_name = f"groq:{config.GROQ_DEFAULT_MODEL}"
+                    kwargs["model"] = config.GROQ_DEFAULT_MODEL
+                    response = active_client.chat.completions.create(**kwargs)
+                else:
+                    try:
+                        from ..services.langfuse_tracer import LangFuseTracer
+                        tracer = LangFuseTracer()
+                        trace_id = tracer.get_current_trace_id()
+                        if trace_id and tracer.enabled:
+                            tracer.log_generation(
+                                name=getattr(llm_client, "agent_name", "agent_tool_loop_failed"),
+                                model=llm_client.deployment_name,
+                                input_messages=messages,
+                                output=f"Error: {str(e)}",
+                                input_tokens=0,
+                                output_tokens=0,
+                                total_tokens=0,
+                                trace_id=trace_id,
+                                metadata={"status": "failed", "error": str(e)}
+                            )
+                    except Exception as lf_err:
+                        pass
+                    raise
+
             choice = response.choices[0]
             message = choice.message
             

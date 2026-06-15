@@ -45,12 +45,15 @@ class AsyncContractReviewWorkflow:
     async def _run_in_executor(fn, *args, **kwargs):
         loop = asyncio.get_running_loop()
         
-        # Capture current thread-local tracing context
+        # Capture current tracing context
         from ..services.langfuse_tracer import LangFuseTracer
         tid = LangFuseTracer.get_current_trace_id()
         uid = LangFuseTracer.get_current_user_id()
         sid = LangFuseTracer.get_current_session_id()
         cid = LangFuseTracer.get_current_contract_id()
+
+        import contextvars
+        ctx = contextvars.copy_context()
 
         def wrapper():
             # Inject tracing context into the new worker thread
@@ -60,7 +63,7 @@ class AsyncContractReviewWorkflow:
             LangFuseTracer.set_current_contract_id(cid)
             return fn(*args, **kwargs)
 
-        return await loop.run_in_executor(None, wrapper)
+        return await loop.run_in_executor(None, lambda: ctx.run(wrapper))
 
     # ------------------------------------------------------------------
     # Public: fire-and-forget full run
@@ -249,6 +252,9 @@ class AsyncContractReviewWorkflow:
                     state.perspective = perspective
                     break
 
+        from ..helpers.contract_analysis import filter_boilerplate_clauses
+        filtered_extraction = filter_boilerplate_clauses(state.clause_extraction)
+
         # ------------------------------------------------------------------
         # Steps 2+3: Obligation Finder & Red Flag Detector (parallel)
         # ------------------------------------------------------------------
@@ -280,12 +286,12 @@ class AsyncContractReviewWorkflow:
         if not obligation_skipped:
             yield {"step": obligation_step, "status": "started", "detail": {}}
             tasks_to_run.append(("obligation", self._run_in_executor(
-                find_obligations, state.clause_extraction, obligation_llm_client, memory_context, perspective
+                find_obligations, filtered_extraction, obligation_llm_client, memory_context, perspective
             )))
         if not red_flag_skipped:
             yield {"step": red_flag_step, "status": "started", "detail": {}}
             tasks_to_run.append(("red_flag", self._run_in_executor(
-                detect_red_flags, state.clause_extraction, red_flag_llm_client, perspective
+                detect_red_flags, filtered_extraction, red_flag_llm_client, perspective
             )))
 
         if tasks_to_run:
@@ -321,7 +327,7 @@ class AsyncContractReviewWorkflow:
             yield {"step": step, "status": "started", "detail": {}}
             try:
                 risk_scoring = await self._run_in_executor(
-                    score_risks, state.clause_extraction, risk_llm_client, retriever, memory_context, perspective
+                    score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective
                 )
                 state.risk_scoring = risk_scoring
                 await checkpointer.save(step, risk_scoring)
@@ -356,7 +362,7 @@ class AsyncContractReviewWorkflow:
                 ])
                 plain_english = await self._run_in_executor(
                     generate_plain_english,
-                    state.clause_extraction,
+                    filtered_extraction,
                     plain_llm_client,
                     risks_text=risks_text,
                     red_flags_text=red_flags_text,
