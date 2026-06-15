@@ -432,12 +432,12 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
             current_sub = title
             u["section_path"] = f"{current_parent} > {current_sub}"
 
-    # Pre-split oversized sections (hard max = 2200 tokens) into preferred size (~1300 tokens) chunks
+    # Pre-split oversized sections (hard max = 3000 tokens) into preferred size (~1800 tokens) chunks
     processed_raw_units = []
     for u in raw_units:
         u_tokens = len(u["text"]) // 4
-        if u_tokens > 2200:
-            sub_chunks = split_oversized_text(u["text"], u["section_path"], max_tokens=1300)
+        if u_tokens > 3000:
+            sub_chunks = split_oversized_text(u["text"], u["section_path"], max_tokens=1800)
             for sub_chunk in sub_chunks:
                 processed_raw_units.append({
                     "section_title": u["section_title"],
@@ -456,13 +456,13 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
         parent = u["section_path"].split(" > ")[0] if " > " in u["section_path"] else u["section_title"]
         u_tokens = len(u["text"]) // 4
         
-        # Preferred group target is 1300 tokens (midpoint of 1000-1500)
+        # Preferred group target is 1800 tokens
         if (current_group_parent is not None and parent != current_group_parent) or \
-           (current_group_tokens + u_tokens > 1300 and current_group):
+           (current_group_tokens + u_tokens > 1800 and current_group):
             combined_text = "\n\n".join(item["text"] for item in current_group)
             combined_path = " & ".join(item["section_path"] for item in current_group)
-            # Split using soft max of 1800 tokens
-            for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=1800):
+            # Split using soft max of 2200 tokens
+            for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2200):
                 final_units.append(split_chunk)
             current_group = [u]
             current_group_tokens = u_tokens
@@ -475,8 +475,8 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
     if current_group:
         combined_text = "\n\n".join(item["text"] for item in current_group)
         combined_path = " & ".join(item["section_path"] for item in current_group)
-        # Split using soft max of 1800 tokens
-        for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=1800):
+        # Split using soft max of 2200 tokens
+        for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2200):
             final_units.append(split_chunk)
             
     parent_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()

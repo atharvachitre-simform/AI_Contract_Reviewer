@@ -151,3 +151,36 @@ def extract_metadata(text: str, source_file: str | None = None, source_format: s
         parties=extract_party_names(cleaned),
     )
 
+
+def is_boilerplate_clause(clause) -> bool:
+    """Check if a clause is boilerplate (signature block, recitals, counterparts, formatting)."""
+    t = (clause.clause_type or "").lower()
+    ref = (clause.section_reference or "").lower()
+    text = (clause.raw_text or "").lower()
+    
+    # Check title / type / reference keywords
+    keywords = {"signature", "recitals", "counterparts", "table of contents", "formatting", "boilerplate", "preamble"}
+    if any(kw in t for kw in keywords) or any(kw in ref for kw in keywords):
+        return True
+        
+    # If the text is very short and starts with formatting/header patterns
+    if len(text.strip()) < 150:
+        short_keywords = {"page", "continued", "confidential", "exhibit", "schedule"}
+        if any(text.strip().lower().startswith(kw) for kw in short_keywords):
+            return True
+            
+    return False
+
+
+def filter_boilerplate_clauses(clause_extraction):
+    """Filter out boilerplate clauses from the ClauseExtractorOutput object."""
+    from copy import copy
+    if not clause_extraction or not getattr(clause_extraction, "clauses", None):
+        return clause_extraction
+        
+    filtered = [c for c in clause_extraction.clauses if not is_boilerplate_clause(c)]
+    
+    new_extraction = copy(clause_extraction)
+    new_extraction.clauses = filtered
+    return new_extraction
+

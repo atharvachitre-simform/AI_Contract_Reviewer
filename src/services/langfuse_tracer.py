@@ -35,20 +35,25 @@ from dotenv import load_dotenv
 from langfuse._client.client import Langfuse
 
 import threading
+import contextvars
 
 
 class LangFuseTracer:
     """Trace contract review steps and chat sessions to local logs and Langfuse.
 
-    Thread-local state
-    ------------------
-    ``_thread_local.current_trace_id``  — active trace ID for this thread
-    ``_thread_local.current_user_id``   — authenticated user for this thread
-    ``_thread_local.current_session_id``— session/contract key for this thread
-    ``_thread_local.current_contract_id``— document being processed
+    Task-local ContextVar state
+    --------------------------
+    ``_current_trace_id_var``    — active trace ID for this task
+    ``_current_user_id_var``     — authenticated user for this task
+    ``_current_session_id_var``  — session/contract key for this task
+    ``_current_contract_id_var`` — document being processed
     """
 
-    _thread_local = threading.local()
+    _current_trace_id_var = contextvars.ContextVar("current_trace_id", default=None)
+    _current_user_id_var = contextvars.ContextVar("current_user_id", default="anonymous")
+    _current_session_id_var = contextvars.ContextVar("current_session_id", default=None)
+    _current_contract_id_var = contextvars.ContextVar("current_contract_id", default=None)
+
     _instance = None
 
     def __new__(cls, *args, **kwargs):
@@ -58,40 +63,40 @@ class LangFuseTracer:
         return cls._instance
 
     # ------------------------------------------------------------------
-    # Thread-local accessors
+    # ContextVar accessors
     # ------------------------------------------------------------------
 
     @classmethod
     def set_current_trace_id(cls, trace_id: str | None) -> None:
-        cls._thread_local.current_trace_id = trace_id
+        cls._current_trace_id_var.set(trace_id)
 
     @classmethod
     def get_current_trace_id(cls) -> str | None:
-        return getattr(cls._thread_local, "current_trace_id", None)
+        return cls._current_trace_id_var.get()
 
     @classmethod
     def set_current_user_id(cls, user_id: str | None) -> None:
-        cls._thread_local.current_user_id = user_id or "anonymous"
+        cls._current_user_id_var.set(user_id or "anonymous")
 
     @classmethod
     def get_current_user_id(cls) -> str | None:
-        return getattr(cls._thread_local, "current_user_id", None)
+        return cls._current_user_id_var.get()
 
     @classmethod
     def set_current_session_id(cls, session_id: str | None) -> None:
-        cls._thread_local.current_session_id = session_id
+        cls._current_session_id_var.set(session_id)
 
     @classmethod
     def get_current_session_id(cls) -> str | None:
-        return getattr(cls._thread_local, "current_session_id", None)
+        return cls._current_session_id_var.get()
 
     @classmethod
     def set_current_contract_id(cls, contract_id: str | None) -> None:
-        cls._thread_local.current_contract_id = contract_id
+        cls._current_contract_id_var.set(contract_id)
 
     @classmethod
     def get_current_contract_id(cls) -> str | None:
-        return getattr(cls._thread_local, "current_contract_id", None)
+        return cls._current_contract_id_var.get()
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -396,7 +401,7 @@ class LangFuseTracer:
             
             # calculate cost
             model_lower = model.lower()
-            if "mini" in model_lower:
+            if "mini" in model_lower or "llama" in model_lower or "gemini" in model_lower or "groq" in model_lower or "flash" in model_lower:
                 cost = (input_tokens - cached_tokens) * 0.15 / 1e6 + cached_tokens * 0.075 / 1e6 + output_tokens * 0.60 / 1e6
             else:
                 cost = (input_tokens - cached_tokens) * 5.00 / 1e6 + cached_tokens * 2.50 / 1e6 + output_tokens * 15.00 / 1e6

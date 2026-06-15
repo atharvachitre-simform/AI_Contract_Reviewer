@@ -266,96 +266,119 @@ class AzureOpenAIWrapper:
     )
     def chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800, response_format: dict[str, Any] | None = None, system_prompt: str | None = None) -> str:
         """Send chat completion with content-filtering detection, sanitization, and fallback resilience."""
-        res = ""
         try:
-            self._last_response = None
-            res = self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
-        except Exception as e:
-            if is_content_filter_error(e):
-                logger.warning("Azure OpenAI content filter triggered. Attempting prompt sanitization & retry...")
-                sanitized_prompt = sanitize_prompt_for_content_filter(prompt)
-                sanitized_system = sanitize_prompt_for_content_filter(system_prompt) if system_prompt else None
-                try:
-                    res = self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
-                except Exception as retry_err:
-                    if is_content_filter_error(retry_err):
-                        logger.error("Sanitized prompt still triggered Azure content policy. Attempting Groq fallback...")
-                        groq_key = get_secret("GROQ_API_KEY")
-                        if groq_key and "test" not in self.api_key and "test" not in self.endpoint:
-                            try:
-                                fallback_wrapper = AzureOpenAIWrapper(
-                                    endpoint="",
-                                    api_key=groq_key,
-                                    deployment_name="groq:llama-3.3-70b-versatile"
-                                )
-                                if fallback_wrapper.is_configured():
-                                    res = fallback_wrapper.chat_complete(
-                                        prompt=prompt,
-                                        temperature=temperature,
-                                        max_tokens=max_tokens,
-                                        response_format=response_format,
-                                        system_prompt=system_prompt
+            res = ""
+            try:
+                self._last_response = None
+                res = self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
+            except Exception as e:
+                if is_content_filter_error(e):
+                    logger.warning("Azure OpenAI content filter triggered. Attempting prompt sanitization & retry...")
+                    sanitized_prompt = sanitize_prompt_for_content_filter(prompt)
+                    sanitized_system = sanitize_prompt_for_content_filter(system_prompt) if system_prompt else None
+                    try:
+                        res = self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
+                    except Exception as retry_err:
+                        if is_content_filter_error(retry_err):
+                            logger.error("Sanitized prompt still triggered Azure content policy. Attempting Groq fallback...")
+                            groq_key = get_secret("GROQ_API_KEY")
+                            if groq_key and "test" not in self.api_key and "test" not in self.endpoint:
+                                try:
+                                    fallback_wrapper = AzureOpenAIWrapper(
+                                        endpoint="",
+                                        api_key=groq_key,
+                                        deployment_name="groq:llama-3.3-70b-versatile"
                                     )
-                                    self._last_response = getattr(fallback_wrapper, "_last_response", None)
-                                    logger.info("Successfully recovered from content filter error using Groq fallback.")
-                                else:
-                                    raise RuntimeError("Groq fallback client not configured")
-                            except Exception as groq_err:
-                                logger.error(f"Groq fallback failed: {groq_err}. Generating graceful fallback response.")
+                                    if fallback_wrapper.is_configured():
+                                        res = fallback_wrapper.chat_complete(
+                                            prompt=prompt,
+                                            temperature=temperature,
+                                            max_tokens=max_tokens,
+                                            response_format=response_format,
+                                            system_prompt=system_prompt
+                                        )
+                                        self._last_response = getattr(fallback_wrapper, "_last_response", None)
+                                        logger.info("Successfully recovered from content filter error using Groq fallback.")
+                                    else:
+                                        raise RuntimeError("Groq fallback client not configured")
+                                except Exception as groq_err:
+                                    logger.error(f"Groq fallback failed: {groq_err}. Generating graceful fallback response.")
+                                    if response_format is not None:
+                                        res = get_fallback_json_for_prompt(prompt)
+                                    else:
+                                        res = "Content filtered: Request blocked by Azure content policies."
+                            else:
                                 if response_format is not None:
                                     res = get_fallback_json_for_prompt(prompt)
                                 else:
                                     res = "Content filtered: Request blocked by Azure content policies."
                         else:
-                            if response_format is not None:
-                                res = get_fallback_json_for_prompt(prompt)
-                            else:
-                                res = "Content filtered: Request blocked by Azure content policies."
-                    else:
-                        raise
-            else:
-                raise
+                            raise
+                else:
+                    raise
 
-        # Log to Langfuse using the v3 API via log_generation()
-        # Ensure logs do not leak credential strings – add a dynamic log filter if not already present.
-        root_logger = logging.getLogger()
-        if not any(isinstance(f, LogMaskFilter) for f in root_logger.filters):
-            root_logger.addFilter(LogMaskFilter())
-        try:
-            from .langfuse_tracer import LangFuseTracer
-            tracer = LangFuseTracer()
-            trace_id = tracer.get_current_trace_id()
-            if trace_id and tracer.enabled:
-                p_tok = 0
-                c_tok = 0
-                t_tok = 0
-                cached_tok = 0
-                if getattr(self, "_last_response", None) is not None:
-                    usage = getattr(self._last_response, "usage", None)
-                    if usage:
-                        p_tok = getattr(usage, "prompt_tokens", 0) or 0
-                        c_tok = getattr(usage, "completion_tokens", 0) or 0
-                        t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
-                        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
-                            cached_tok = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+            # Log to Langfuse using the v3 API via log_generation()
+            # Ensure logs do not leak credential strings – add a dynamic log filter if not already present.
+            root_logger = logging.getLogger()
+            if not any(isinstance(f, LogMaskFilter) for f in root_logger.filters):
+                root_logger.addFilter(LogMaskFilter())
+            try:
+                from .langfuse_tracer import LangFuseTracer
+                tracer = LangFuseTracer()
+                trace_id = tracer.get_current_trace_id()
+                if trace_id and tracer.enabled:
+                    p_tok = 0
+                    c_tok = 0
+                    t_tok = 0
+                    cached_tok = 0
+                    if getattr(self, "_last_response", None) is not None:
+                        usage = getattr(self._last_response, "usage", None)
+                        if usage:
+                            p_tok = getattr(usage, "prompt_tokens", 0) or 0
+                            c_tok = getattr(usage, "completion_tokens", 0) or 0
+                            t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
+                            if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+                                cached_tok = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
 
-                sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
-                messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
-                tracer.log_generation(
-                    name=getattr(self, "agent_name", "chat_complete"),
-                    model=self.deployment_name,
-                    input_messages=messages,
-                    output=res,
-                    input_tokens=p_tok,
-                    output_tokens=c_tok,
-                    total_tokens=t_tok,
-                    cached_tokens=cached_tok,
-                    trace_id=trace_id,
-                )
-        except Exception as lf_err:
-            logger.debug(f"Failed to log generation to Langfuse: {lf_err}")
+                    sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+                    messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
+                    tracer.log_generation(
+                        name=getattr(self, "agent_name", "chat_complete"),
+                        model=self.deployment_name,
+                        input_messages=messages,
+                        output=res,
+                        input_tokens=p_tok,
+                        output_tokens=c_tok,
+                        total_tokens=t_tok,
+                        cached_tokens=cached_tok,
+                        trace_id=trace_id,
+                    )
+            except Exception as lf_err:
+                logger.debug(f"Failed to log generation to Langfuse: {lf_err}")
 
-        return res
+            return res
+        except Exception as outer_err:
+            try:
+                from .langfuse_tracer import LangFuseTracer
+                tracer = LangFuseTracer()
+                trace_id = tracer.get_current_trace_id()
+                if trace_id and tracer.enabled:
+                    sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+                    messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
+                    tracer.log_generation(
+                        name=getattr(self, "agent_name", "chat_complete_failed"),
+                        model=self.deployment_name,
+                        input_messages=messages,
+                        output=f"Error: {str(outer_err)}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        total_tokens=0,
+                        trace_id=trace_id,
+                        metadata={"status": "failed", "error": str(outer_err)}
+                    )
+            except Exception as lf_err:
+                pass
+            raise
 
     def _is_rate_limit_error(self, exception: Exception) -> bool:
         exc_name = type(exception).__name__
@@ -523,54 +546,75 @@ class AzureOpenAIWrapper:
 
     def chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> str:
         """Send multimodal vision request with content-filtering detection, sanitization, and fallback resilience."""
-        res = ""
         try:
-            self._last_response = None
-            res = self._execute_chat_complete_multimodal(messages, max_tokens, temperature)
-        except Exception as e:
-            if is_content_filter_error(e):
-                logger.warning("Azure OpenAI content filter triggered on multimodal request. Sanitizing messages and retrying...")
-                sanitized_messages = sanitize_messages_for_content_filter(messages)
-                try:
-                    res = self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
-                except Exception as retry_err:
-                    if is_content_filter_error(retry_err):
-                        logger.error("Sanitized multimodal request still triggered content filter. Returning graceful fallback.")
-                        res = "Content filtered: Multimodal request blocked by Azure content policies."
-                    else:
-                        raise
-            else:
-                raise
+            res = ""
+            try:
+                self._last_response = None
+                res = self._execute_chat_complete_multimodal(messages, max_tokens, temperature)
+            except Exception as e:
+                if is_content_filter_error(e):
+                    logger.warning("Azure OpenAI content filter triggered on multimodal request. Sanitizing messages and retrying...")
+                    sanitized_messages = sanitize_messages_for_content_filter(messages)
+                    try:
+                        res = self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
+                    except Exception as retry_err:
+                        if is_content_filter_error(retry_err):
+                            logger.error("Sanitized multimodal request still triggered content filter. Returning graceful fallback.")
+                            res = "Content filtered: Multimodal request blocked by Azure content policies."
+                        else:
+                            raise
+                else:
+                    raise
 
-        # Log to Langfuse using the v3 API via log_generation()
-        try:
-            from .langfuse_tracer import LangFuseTracer
-            tracer = LangFuseTracer()
-            trace_id = tracer.get_current_trace_id()
-            if trace_id and tracer.enabled:
-                p_tok = 0
-                c_tok = 0
-                t_tok = 0
-                if getattr(self, "_last_response", None) is not None:
-                    usage = getattr(self._last_response, "usage", None)
-                    if usage:
-                        p_tok = getattr(usage, "prompt_tokens", 0) or 0
-                        c_tok = getattr(usage, "completion_tokens", 0) or 0
-                        t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
-                tracer.log_generation(
-                    name=getattr(self, "agent_name", "chat_complete_multimodal"),
-                    model=self.deployment_name,
-                    input_messages=messages,
-                    output=res,
-                    input_tokens=p_tok,
-                    output_tokens=c_tok,
-                    total_tokens=t_tok,
-                    trace_id=trace_id,
-                )
-        except Exception as lf_err:
-            logger.debug(f"Failed to log generation to Langfuse in multimodal: {lf_err}")
+            # Log to Langfuse using the v3 API via log_generation()
+            try:
+                from .langfuse_tracer import LangFuseTracer
+                tracer = LangFuseTracer()
+                trace_id = tracer.get_current_trace_id()
+                if trace_id and tracer.enabled:
+                    p_tok = 0
+                    c_tok = 0
+                    t_tok = 0
+                    if getattr(self, "_last_response", None) is not None:
+                        usage = getattr(self._last_response, "usage", None)
+                        if usage:
+                            p_tok = getattr(usage, "prompt_tokens", 0) or 0
+                            c_tok = getattr(usage, "completion_tokens", 0) or 0
+                            t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
+                    tracer.log_generation(
+                        name=getattr(self, "agent_name", "chat_complete_multimodal"),
+                        model=self.deployment_name,
+                        input_messages=messages,
+                        output=res,
+                        input_tokens=p_tok,
+                        output_tokens=c_tok,
+                        total_tokens=t_tok,
+                        trace_id=trace_id,
+                    )
+            except Exception as lf_err:
+                logger.debug(f"Failed to log generation to Langfuse in multimodal: {lf_err}")
 
-        return res
+            return res
+        except Exception as outer_err:
+            try:
+                from .langfuse_tracer import LangFuseTracer
+                tracer = LangFuseTracer()
+                trace_id = tracer.get_current_trace_id()
+                if trace_id and tracer.enabled:
+                    tracer.log_generation(
+                        name=getattr(self, "agent_name", "chat_complete_multimodal_failed"),
+                        model=self.deployment_name,
+                        input_messages=messages,
+                        output=f"Error: {str(outer_err)}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        total_tokens=0,
+                        trace_id=trace_id,
+                        metadata={"status": "failed", "error": str(outer_err)}
+                    )
+            except Exception as lf_err:
+                pass
+            raise
 
     def _execute_chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> str:
         if not self.is_configured():

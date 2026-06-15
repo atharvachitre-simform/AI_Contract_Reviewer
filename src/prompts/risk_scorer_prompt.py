@@ -26,13 +26,16 @@ def build_risk_scorer_prompt(
     """
     reference_section = ""
     if reference_risks and isinstance(reference_risks, list):
+        from ..helpers.compression_helper import compress_guideline_text
         ref_list = []
         for ref in reference_risks[:3]:  # Limit to 3 examples
             if isinstance(ref, dict):
                 risk_type = ref.get("risk_type", "Unknown")
                 description = ref.get("description", "")
                 example = ref.get("example", "")
-                truncated = (description or example)[:250]
+                val = description or example
+                compressed_val = compress_guideline_text(val)
+                truncated = compressed_val[:250]
                 ref_list.append(f"- {risk_type}: {truncated}")
         
         if ref_list:
