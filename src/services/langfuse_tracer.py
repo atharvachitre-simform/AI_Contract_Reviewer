@@ -113,6 +113,12 @@ class LangFuseTracer:
         self.local_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.client = self._initialize_client()
         self.enabled = bool(self.public_key and self.secret_key and self.client is not None)
+        
+        from collections import defaultdict
+        self.trace_cached_tokens = defaultdict(int)
+        self.trace_input_tokens = defaultdict(int)
+        self.trace_output_tokens = defaultdict(int)
+        self.trace_costs = defaultdict(float)
 
     def _initialize_client(self) -> Langfuse:
         if self.public_key and self.secret_key:
@@ -339,6 +345,7 @@ class LangFuseTracer:
         input_tokens: int = 0,
         output_tokens: int = 0,
         total_tokens: int = 0,
+        cached_tokens: int = 0,
         trace_id: str | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
@@ -375,11 +382,25 @@ class LangFuseTracer:
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
             "total_tokens": total_tokens if total_tokens else input_tokens + output_tokens,
             "trace_url": self.get_trace_url(tid) if tid else None,
             "source": "ai-contract-reviewer",
         }
         self._write_local(generation_event)
+        
+        if tid:
+            self.trace_input_tokens[tid] += input_tokens
+            self.trace_output_tokens[tid] += output_tokens
+            self.trace_cached_tokens[tid] += cached_tokens
+            
+            # calculate cost
+            model_lower = model.lower()
+            if "mini" in model_lower:
+                cost = (input_tokens - cached_tokens) * 0.15 / 1e6 + cached_tokens * 0.075 / 1e6 + output_tokens * 0.60 / 1e6
+            else:
+                cost = (input_tokens - cached_tokens) * 5.00 / 1e6 + cached_tokens * 2.50 / 1e6 + output_tokens * 15.00 / 1e6
+            self.trace_costs[tid] += cost
 
         if not self.enabled or not tid:
             return
@@ -426,3 +447,46 @@ class LangFuseTracer:
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).debug(f"Langfuse flush error: {exc}")
+
+    def log_pipeline_metrics(self, trace_id: str, useful_clauses: int) -> None:
+        """Calculate and log cache_effective_input_ratio and cost_per_useful_clause."""
+        inp = self.trace_input_tokens[trace_id]
+        out = self.trace_output_tokens[trace_id]
+        cached = self.trace_cached_tokens[trace_id]
+        cost = self.trace_costs[trace_id]
+        
+        ratio = cached / max(1, inp)
+        cost_per_clause = cost / max(1, useful_clauses)
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"[Pipeline Metrics] trace_id={trace_id} | "
+            f"input_tokens={inp} | cached_tokens={cached} | "
+            f"cache_effective_input_ratio={ratio:.4f} | "
+            f"total_cost=${cost:.6f} | useful_clauses={useful_clauses} | "
+            f"cost_per_useful_clause=${cost_per_clause:.6f}"
+        )
+        
+        # Log to Langfuse as custom event
+        if self.enabled:
+            try:
+                from langfuse.types import TraceContext
+                ctx: TraceContext = {"trace_id": trace_id}
+                self.client.create_event(
+                    trace_context=ctx,
+                    name="pipeline_metrics",
+                    input={
+                        "input_tokens": inp,
+                        "output_tokens": out,
+                        "cached_tokens": cached,
+                        "total_cost": cost,
+                        "useful_clauses": useful_clauses
+                    },
+                    metadata={
+                        "cache_effective_input_ratio": round(ratio, 4),
+                        "cost_per_useful_clause": round(cost_per_clause, 6)
+                    }
+                )
+            except Exception as exc:
+                logger.debug(f"Langfuse metrics logging error: {exc}")

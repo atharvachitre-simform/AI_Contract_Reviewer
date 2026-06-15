@@ -127,16 +127,16 @@ def test_run_agent_tool_loop_reorders_messages():
     messages = client.last_kwargs["messages"]
     
     # Expected structure:
-    # Index 0: System instructions
-    # Index 1: Extraction instructions user block
-    # Index 2: CONTRACT_TEXT user block
+    # Index 0: CONTRACT_TEXT user block
+    # Index 1: System instructions
+    # Index 2: Extraction instructions user block
     assert len(messages) == 3
-    assert messages[0]["role"] == "system"
-    assert "System instructions" in messages[0]["content"]
-    assert messages[1]["role"] == "user"
-    assert "Instructions to extract metadata." in messages[1]["content"]
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "CONTRACT_TEXT:\nverbatim contract text content"
+    assert messages[1]["role"] == "system"
+    assert "System instructions" in messages[1]["content"]
     assert messages[2]["role"] == "user"
-    assert messages[2]["content"] == "CONTRACT_TEXT:\nverbatim contract text content"
+    assert "Instructions to extract metadata." in messages[2]["content"]
 
 
 def test_run_agent_tool_loop_no_split_fallback():

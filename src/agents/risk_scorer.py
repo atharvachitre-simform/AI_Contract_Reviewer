@@ -206,13 +206,9 @@ class RiskScorerAgent:
             for chunk_idx, chunk in enumerate(chunks):
                 logger.info(f"Processing risk scorer chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
                 
-                clause_lines = []
-                for clause in chunk:
-                    clause_lines.append(
-                        f"[{global_idx + 1}] Type: {clause.clause_type}\nText: {clause.raw_text[:self.CLAUSE_TEXT_TRUNCATION]}"
-                    )
-                    global_idx += 1
-                clauses_text = "\n\n".join(clause_lines)
+                from ..helpers.compression_helper import get_compressed_payload_string
+                clauses_text = get_compressed_payload_string(chunk)
+                global_idx += len(chunk)
 
                 prompt = build_risk_scorer_prompt(
                     clauses_text=clauses_text,

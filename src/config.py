@@ -78,3 +78,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()# --- File Upload Limits ---
 MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "50"))
 
+# --- Extraction Trace Mode ---
+# When true, every pipeline stage is snapshotted to artifacts/extraction_runs/<contract_id>/
+TRACE_EXTRACTION = os.getenv("TRACE_EXTRACTION", "false").lower() in ("1", "true", "yes")

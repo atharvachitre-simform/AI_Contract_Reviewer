@@ -1,55 +1,15 @@
-```json
-{
-  "clauses": [
-    {
-      "clause_type": "PREAMBLE",
-      "raw_text": "This Commercialization and License Agreement (this \"Agreement\") is made effective as of [MASK_DATE_0] (the \"Effective Date\") by and between Vyera Pharmaceuticals, LLC, a Delaware limited liability company (\"Vyera\"), and CytoDyn Inc., a Delaware corporation (\"CytoDyn\"). CytoDyn and Vyera are sometimes referred to herein individually as a \"Party\" and collectively as the \"Parties.\"",
-      "section_reference": null,
-      "confidence": 1.0,
-      "normalized_text": null,
-      "cuad_category": null,
-      "subclauses": []
-    },
-    {
-      "clause_type": "RECITAL",
-      "raw_text": "WHEREAS, Vyera is a pharmaceutical company engaged in the commercialization of products useful in the amelioration, treatment or prevention of certain human diseases and conditions.\nWHEREAS, CytoDyn has developed leronlimab (PRO 140), an anti-CCR5 humanized monoclonal antibody and is pursuing the clinical development of its PRO 140 drug candidate for the treatment of multi-drug resistant Human Immunodeficiency Virus (\"HIV\") infection, as well as related HIV infection indications.\nWHEREAS, the Parties desire that, upon regulatory approval of PRO 140 for the Initial Indication (as defined below), Vyera will Commercialize (as defined below) Licensed Products (as defined below) in the Field (as defined below) in the Territory (as defined below), all in accordance with the terms and conditions of this Agreement.",
-      "section_reference": null,
-      "confidence": 1.0,
-      "normalized_text": null,
-      "cuad_category": null,
-      "subclauses": []
-    },
-    {
-      "clause_type": "DEFINITIONS",
-      "raw_text": "ARTICLE 1 DEFINITIONS",
-      "section_reference": "1",
-      "confidence": 1.0,
-      "normalized_text": null,
-      "cuad_category": "Definitions",
-      "subclauses": [
-        {
-          "clause_type": "DEFINITION",
-          "raw_text": "1.1 \"AAA\" has the meaning set forth in Section 12.3(a).",
-          "section_reference": "1.1",
-          "confidence": 1.0,
-          "normalized_text": null,
-          "cuad_category": "Definitions",
-          "subclauses": []
-        },
-        {
-          "clause_type": "DEFINITION",
-          "raw_text": "1.2 \"AAI Agreement\" has the meaning set forth in Section 9.2(o).",
-          "section_reference": "1.2",
-          "confidence": 1.0,
-          "normalized_text": null,
-          "cuad_category": "Definitions",
-          "subclauses": []
-        },
-        {
-          "clause_type": "DEFINITION",
-          "raw_text": "1.3 \"Affiliate\" means, with respect to a particular Party, a Person that controls, is controlled by or is under common control with such Party. For the purposes of this definition, the word \"control\" (including, with correlative meaning, the terms \"controlled by\" or \"under the common control with\") means the actual power, either directly or indirectly through one (1) or more intermediaries, to direct or cause the direction of the management and policies of such entity, whether by the ownership of fifty percent (50%) or more of the voting stock of such entity, by contract or otherwise.",
-          "section_reference": "1.3",
-          "confidence": 1.0,
-          "normalized_text": null,
-          "cuad_category": "Definitions",
-         
+```markdown
+## Metadata
+- Document Name: null
+- Contract Type: null
+- Parties: [null], [null]
+- Agreement Date: null
+- Effective Date: null
+- Expiration Date: null
+- Renewal Term: null
+- Notice Period to Terminate Renewal: null
+- Governing Law: null
+
+## Clauses
+NO_SUBSTANTIVE_CLAUSE
+```

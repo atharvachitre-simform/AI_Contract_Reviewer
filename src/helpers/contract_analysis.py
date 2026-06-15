@@ -98,8 +98,16 @@ def normalize_whitespace(text: str) -> str:
     # --- End Header/Footer Stripping ---
 
     cleaned = _MULTI_NEWLINE_RE.sub("\n\n", cleaned)
-    lines = [_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n")]
-    return "\n".join(line for line in lines if line)
+    lines = []
+    for line in cleaned.split("\n"):
+        line_stripped = line.strip()
+        if page_marker_re.match(line_stripped):
+            lines.append(line_stripped)
+        else:
+            cleaned_line = _WHITESPACE_RE.sub(" ", line).strip()
+            if cleaned_line:
+                lines.append(cleaned_line)
+    return "\n".join(lines)
 
 
 def extract_party_names(text: str) -> list[ContractParty]:

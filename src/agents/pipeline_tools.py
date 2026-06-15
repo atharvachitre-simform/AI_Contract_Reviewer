@@ -567,11 +567,13 @@ def run_agent_tool_loop(
     instructions, data_content = split_prompt_for_prompt_caching(sanitized_prompt)
 
     if data_content:
-        # System MUST be first; task instructions (static) then contract data (variable) for prompt caching
+        # Contract data at position [0] — forms the stable byte-for-byte prefix for Azure OpenAI
+        # prefix caching. System prompt and task instructions follow as smaller, variable content.
+        # On tool loop iteration 2+, position [0] is a cache hit → contract tokens not billed again.
         messages = [
+            {"role": "user", "content": data_content},
             {"role": "system", "content": sys_content},
             {"role": "user", "content": instructions},
-            {"role": "user", "content": data_content}
         ]
     else:
         messages = [
@@ -678,9 +680,11 @@ def run_agent_tool_loop(
             logger.warning(f"ReAct tool loop failed in agent ({e}). Falling back to standard chat_complete.")
             break
 
-    # Fallback if loop exceeded or error occurred
+    # Fallback if loop exceeded or error occurred.
+    # Use sanitized_prompt (not the raw `prompt`) to avoid triggering the same content filter
+    # hit that caused the tool loop to bail in the first place.
     kwargs = {}
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    return llm_client.chat_complete(prompt, temperature=0.0, system_prompt=system_prompt, **kwargs)
+    return llm_client.chat_complete(sanitized_prompt, temperature=0.0, system_prompt=system_prompt, **kwargs)
 

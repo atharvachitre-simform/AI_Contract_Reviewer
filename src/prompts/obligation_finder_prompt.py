@@ -35,13 +35,8 @@ def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[
     elif isinstance(clause_extraction, list):
         clauses = clause_extraction
 
-    clause_lines = []
-    for c in clauses:
-        clause_type = getattr(c, "clause_type", "Clause")
-        raw = getattr(c, "raw_text", "").strip().replace("\n", " ")
-        clause_lines.append(f"- {clause_type}: {raw[:400]}")
-
-    clauses_text = "\n".join(clause_lines) if clause_lines else "(no clauses provided)"
+    from ..helpers.compression_helper import get_compressed_payload_string
+    clauses_text = get_compressed_payload_string(clauses) if clauses else "(no clauses provided)"
 
     prior_context_block = ""
     if memory_context:

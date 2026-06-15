@@ -104,17 +104,9 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 
 		for chunk_idx, chunk in enumerate(chunks):
 			logger.info(f"Processing red flag detector chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
-			clause_lines = []
-			for clause in chunk:
-				clause_lines.append(
-					f"Clause {global_idx + 1}:\n"
-					f"Type: {clause.clause_type}\n"
-					# 3000 chars: gives full operative legal language to the model.
-					# 1200 chars: Standardized limit across all parallel agents for consistency.
-					f"Text: {clause.raw_text[:config.CLAUSE_TEXT_TRUNCATION]}\n"
-				)
-				global_idx += 1
-			clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+			from ..helpers.compression_helper import get_compressed_payload_string
+			clauses_text = get_compressed_payload_string(chunk) if chunk else "(No candidate clauses were extracted from the contract.)"
+			global_idx += len(chunk)
 
 			prompt = build_red_flag_detector_prompt(clauses_text, state.get("perspective"))
 			sep = "CONTRACT CLAUSES TO ANALYZE:\n"

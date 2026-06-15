@@ -27,7 +27,7 @@ from ..helpers.contract_analysis import (
     normalize_whitespace,
 )
 from ..models import ClauseExtractorOutput, ClauseSpan, CUADClauseLabel, ContractMetadata, ContractParty
-from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt
+from ..prompts.clause_extractor_prompt import build_clause_extractor_prompt, SYSTEM_INSTRUCTION, OUTPUT_SCHEMA
 from ..helpers.coverage_validator import calculate_coverage
 from .pipeline_tools import run_agent_tool_loop
 
@@ -67,6 +67,7 @@ class ClauseExtractorState(TypedDict):
     used_extraction_method: str
     confidence_score: float
     error_messages: list[str]
+    tracer: Any  # ExtractionTracer | _NoOpTracer — injected at graph creation time
 
 
 def normalize_text_node(state: ClauseExtractorState) -> ClauseExtractorState:
@@ -78,7 +79,14 @@ def normalize_text_node(state: ClauseExtractorState) -> ClauseExtractorState:
         state["metadata"] = metadata if isinstance(metadata, ContractMetadata) else ContractMetadata()
     except Exception as e:
         state["error_messages"].append(f"Normalization error: {str(e)}")
-    
+
+    # ── Trace stage 1: save raw + cleaned text ────────────────────────────────
+    tracer = state.get("tracer")
+    if tracer:
+        tracer.save_raw(state["contract_text"])
+        tracer.save_preprocessed(state["cleaned_text"], {})
+    # ─────────────────────────────────────────────────────────────────────────
+
     return state
 
 
@@ -86,13 +94,85 @@ def retrieve_reference_clauses_node(state: ClauseExtractorState, retriever: Any 
     """Step 1.5: Retrieve reference clauses from knowledge base for RAG context."""
     state["reference_clauses"] = []
     if retriever is None:
+        # ── Trace: record zero retrieval ─────────────────────────────────────
+        tracer = state.get("tracer")
+        if tracer:
+            tracer.record_retrieval([], [], [])
+        # ────────────────────────────────────────────────────────────────────
         return state
     
     try:
-        contract_type = state["metadata"].contract_type or "general"
-        query = f"clauses in {contract_type} contracts"
+        metadata = state.get("metadata")
+        contract_type = getattr(metadata, "contract_type", None) if metadata else None
+        is_valid_type = (
+            contract_type 
+            and str(contract_type).lower() not in ("null", "none", "unknown", "")
+        )
+        
+        if is_valid_type:
+            query = (
+                f"example {contract_type} agreement clauses: "
+                f"termination payment liability confidentiality IP ownership"
+            )
+        else:
+            query = (
+                "pharmaceutical commercialization license agreement clauses: "
+                "termination payment royalty IP indemnification"
+            )
+        
         references = retriever.retrieve_from_knowledge_base(query, "contracts")
-        state["reference_clauses"] = references if isinstance(references, list) else []
+        references_list = references if isinstance(references, list) else []
+        
+        contract_type_label = contract_type if is_valid_type else None
+        filtered_examples = [
+            ex for ex in references_list
+            if contract_type_label is None
+            or not isinstance(ex, dict)
+            or ex.get("contract_type", "").lower() in (contract_type_label.lower(), "general", "")
+        ]
+
+        # Change E: enforce similarity threshold and log similarity/source
+        similarity_threshold = 0.70
+        valid_retrieved_examples = []
+        for ex in filtered_examples:
+            score = 0.0
+            if isinstance(ex, dict):
+                score = ex.get("score") or ex.get("@search.score") or 0.0
+            if score >= similarity_threshold:
+                valid_retrieved_examples.append(ex)
+
+        valid_retrieved_examples = valid_retrieved_examples[:1]
+        
+        example_source = "retrieved"
+        example_similarity = [ex.get("score") or ex.get("@search.score") or 0.0 for ex in valid_retrieved_examples]
+
+        if not valid_retrieved_examples:
+            from ..prompts.clause_extractor_prompt import STATIC_FALLBACK_EXAMPLES
+            state["reference_clauses"] = STATIC_FALLBACK_EXAMPLES[:1]
+            example_source = "static"
+            example_similarity = [1.0, 1.0]
+        else:
+            state["reference_clauses"] = valid_retrieved_examples
+        
+        # ── Trace stage 5: record retrieval outcome ───────────────────────────
+        tracer = state.get("tracer")
+        if tracer:
+            # Annotate used list with example_source and similarity
+            annotated_used = []
+            for i, ex in enumerate(state["reference_clauses"]):
+                score_val = example_similarity[i] if i < len(example_similarity) else 1.0
+                annotated_used.append({
+                    **ex,
+                    "example_source": example_source,
+                    "example_similarity": score_val
+                })
+            tracer.record_retrieval(
+                retrieved=references_list,
+                filtered=filtered_examples,
+                used=annotated_used,
+            )
+        # ────────────────────────────────────────────────────────────────────
+
     except Exception as e:
         state["error_messages"].append(f"Reference retrieval error: {str(e)}")
     
@@ -184,16 +264,30 @@ def _hash_clause_text(text: str) -> list[int]:
 
 
 def _split_by_sections(text: str) -> list[str]:
-    """Split contract text into logical sections based on headings."""
+    """Split contract text into logical sections based on headings.
+
+    Matches two types of section boundaries:
+    1. Explicit keyword headers: ``ARTICLE IV``, ``SECTION 3.``, ``SCHEDULE A``, etc.
+       The keyword must be followed by a numeric digit or Roman numeral so single-word
+       labels like ``BETWEEN:`` and ``WHEREAS:`` are not treated as section breaks.
+    2. Numbered clause prefixes: ``1.``, ``1.1``, ``1.1.1`` followed by a title-case
+       label of 3–60 chars.
+
+    The old all-caps catch-all (``[A-Z0-9\\s,\\-\\(\\)]{5,50}``) was removed because it
+    split on party names, preamble headers, table column labels, and other non-section
+    uppercase lines, producing micro-chunks that lost surrounding context.
+    """
     heading_pattern = re.compile(
         r"(?:\n|^)"
         r"(?:"
-        r"\s*(?:ARTICLE|SECTION|SECT|EXHIBIT|SCHEDULE)\s+[IVXLCDM\d]+[.:\-\s]*.*"
-        r"|\s*\d+\.\d+(?:\.\d+)*\s+[A-Z].*"
-        r"|\s*\d+\.\s+[A-Z][a-zA-Z0-9\s,\-\(\)]{3,50}"
-        r"|\s*[A-Z0-9\s,\-\(\)]{5,50}(?:\n|$)"
+        # Branch 1: explicit keyword + numeric/roman-numeral index
+        r"\s*(?:ARTICLE|SECTION|SECT|CLAUSE|EXHIBIT|SCHEDULE|APPENDIX)"
+        r"\s+(?:[IVXLCDM]+|\d+(?:\.\d+)*)[\.\:\-\s].*"
+        r"|"
+        # Branch 2: dotted numeric prefix  e.g. "1.", "2.3", "4.1.2"
+        r"\s*\d+(?:\.\d+){0,2}\.?\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
         r")",
-        re.IGNORECASE
+        re.MULTILINE,
     )
     matches = list(heading_pattern.finditer(text))
     if not matches:
@@ -209,6 +303,225 @@ def _split_by_sections(text: str) -> list[str]:
         
     sections.append(text[prev_idx:])
     return [s.strip() for s in sections if s.strip()]
+
+
+
+
+
+
+def classify_extraction_unit(text: str) -> str:
+    text_lower = text.lower()
+    is_definition = False
+    if "means" in text_lower or "has the meaning" in text_lower:
+        if re.search(r'(?i)"[^"]+"\s+means', text) or re.search(r"(?i)'[^']+'\s+means", text) or "has the meaning set forth" in text_lower:
+            is_definition = True
+            
+    if is_definition:
+        duty_patterns = [
+            r"\bshall\b", r"\bmust\b", r"\bwill\s+not\b", r"\bis\s+required\s+to\b",
+            r"\bis\s+prohibited\s+from\b", r"\bis\s+entitled\s+to\b", r"\bagrees?\s+to\b",
+            r"\bundertakes?\s+to\b"
+        ]
+        if any(re.search(pat, text_lower) for pat in duty_patterns):
+            return "OPERATIVE_DEFINITION"
+        else:
+            return "PURE_DEFINITION"
+    return "SUBSTANTIVE"
+
+
+def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[dict]:
+    est_tokens = len(text) // 4
+    if est_tokens <= max_tokens:
+        return [{"text": text, "path": path}]
+        
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks = []
+    current_chunk = []
+    current_tokens = 0
+    
+    for p in paragraphs:
+        p_tokens = len(p) // 4
+        if current_tokens + p_tokens > max_tokens and current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+            current_chunk = [p]
+            current_tokens = p_tokens
+        else:
+            current_chunk.append(p)
+            current_tokens += p_tokens
+            
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+        
+    result = []
+    for idx, chunk in enumerate(chunks, 1):
+        result.append({
+            "text": chunk,
+            "path": f"{path} (Part {idx})"
+        })
+    return result
+
+
+def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
+    from ..helpers.contract_analysis import normalize_whitespace
+    import hashlib
+    
+    raw_sections = _split_by_sections(text)
+    
+    heading_pattern = re.compile(
+        r"(?:\n|^)"
+        r"(?:"
+        r"\s*(?:ARTICLE|SECTION|SECT|CLAUSE|EXHIBIT|SCHEDULE|APPENDIX)"
+        r"\s+(?:[IVXLCDM]+|\d+(?:\.\d+)*)[\.\:\-\s].*"
+        r"|"
+        r"\s*\d+(?:\.\d+){0,2}\.?\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
+        r")",
+        re.MULTILINE,
+    )
+    
+    matches = list(heading_pattern.finditer(text))
+    
+    raw_units = []
+    if not matches:
+        raw_units.append({
+            "section_title": "Preamble",
+            "section_path": "Preamble",
+            "text": text,
+        })
+    else:
+        first_start = matches[0].start()
+        if first_start > 0:
+            preamble_text = text[:first_start].strip()
+            if preamble_text:
+                raw_units.append({
+                    "section_title": "Preamble",
+                    "section_path": "Preamble",
+                    "text": preamble_text,
+                })
+        
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i+1].start() if i + 1 < len(matches) else len(text)
+            sec_text = text[start:end].strip()
+            heading_text = match.group(0).strip()
+            raw_units.append({
+                "section_title": heading_text,
+                "section_path": heading_text,
+                "text": sec_text,
+            })
+            
+    current_parent = "Preamble"
+    current_sub = ""
+    
+    for u in raw_units:
+        title = u["section_title"]
+        if title == "Preamble":
+            u["section_path"] = "Preamble"
+            continue
+            
+        is_parent = False
+        if any(w in title.upper() for w in ["ARTICLE", "EXHIBIT", "SCHEDULE", "APPENDIX"]):
+            is_parent = True
+        elif re.match(r"^\d+\.\s+[A-Z]", title):
+            is_parent = True
+            
+        if is_parent:
+            current_parent = title
+            current_sub = ""
+            u["section_path"] = title
+        else:
+            current_sub = title
+            u["section_path"] = f"{current_parent} > {current_sub}"
+
+    # Pre-split oversized sections (hard max = 2200 tokens) into preferred size (~1300 tokens) chunks
+    processed_raw_units = []
+    for u in raw_units:
+        u_tokens = len(u["text"]) // 4
+        if u_tokens > 2200:
+            sub_chunks = split_oversized_text(u["text"], u["section_path"], max_tokens=1300)
+            for sub_chunk in sub_chunks:
+                processed_raw_units.append({
+                    "section_title": u["section_title"],
+                    "section_path": sub_chunk["path"],
+                    "text": sub_chunk["text"]
+                })
+        else:
+            processed_raw_units.append(u)
+
+    final_units = []
+    current_group = []
+    current_group_tokens = 0
+    current_group_parent = None
+    
+    for u in processed_raw_units:
+        parent = u["section_path"].split(" > ")[0] if " > " in u["section_path"] else u["section_title"]
+        u_tokens = len(u["text"]) // 4
+        
+        # Preferred group target is 1300 tokens (midpoint of 1000-1500)
+        if (current_group_parent is not None and parent != current_group_parent) or \
+           (current_group_tokens + u_tokens > 1300 and current_group):
+            combined_text = "\n\n".join(item["text"] for item in current_group)
+            combined_path = " & ".join(item["section_path"] for item in current_group)
+            # Split using soft max of 1800 tokens
+            for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=1800):
+                final_units.append(split_chunk)
+            current_group = [u]
+            current_group_tokens = u_tokens
+            current_group_parent = parent
+        else:
+            current_group.append(u)
+            current_group_tokens += u_tokens
+            current_group_parent = parent
+            
+    if current_group:
+        combined_text = "\n\n".join(item["text"] for item in current_group)
+        combined_path = " & ".join(item["section_path"] for item in current_group)
+        # Split using soft max of 1800 tokens
+        for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=1800):
+            final_units.append(split_chunk)
+            
+    parent_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    
+    structured_units = []
+    for idx, unit in enumerate(final_units):
+        unit_text = unit["text"]
+        unit_path = unit["path"]
+        
+        norm_text = normalize_whitespace(unit_text)
+        chunk_hash = hashlib.sha1(f"{contract_type}:{unit_path}:{norm_text}".encode("utf-8")).hexdigest()
+        
+        prev_title = final_units[idx-1]["path"] if idx > 0 else "None"
+        next_title = final_units[idx+1]["path"] if idx + 1 < len(final_units) else "None"
+        parent_title = unit_path.split(" > ")[0] if " > " in unit_path else "None"
+        
+        context_header = (
+            f"Context Headers:\n"
+            f"- Contract Type: {contract_type}\n"
+            f"- Current Section: {unit_path}\n"
+            f"- Parent Section: {parent_title}\n"
+            f"- Previous Section: {prev_title}\n"
+            f"- Next Section: {next_title}"
+        )
+        
+        structured_units.append({
+            "id": chunk_hash,
+            "section": unit_path,
+            "path": unit_path,
+            "text": unit_text,
+            "token_count": len(unit_text) // 4,
+            "context_header": context_header,
+            "parent_hash": parent_hash,
+        })
+        
+    return structured_units
+
+
+def contains_risk_trigger_terms(text: str) -> bool:
+    text_lower = text.lower()
+    triggers = [
+        "shall", "must", "payment", "royalty", "termination", 
+        "indemnify", "confidential", "audit", "notice", "obligation", "restriction"
+    ]
+    return any(t in text_lower for t in triggers)
 
 
 def llm_extraction_node(
@@ -230,251 +543,257 @@ def llm_extraction_node(
         # Apply masking if enabled before sending to LLM
         if config.ENABLE_SENSITIVE_MASKING:
             cleaned_text = mask_sensitive_text(cleaned_text, config.SENSITIVE_KEYWORDS)
-        chunk_size = config.CLAUSE_EXTRACTOR_CHUNK_SIZE
-        overlap = config.CLAUSE_EXTRACTOR_CHUNK_OVERLAP
+            
+        metadata = state.get("metadata")
+        contract_type = getattr(metadata, "contract_type", "general") if metadata else "general"
+        if not contract_type or str(contract_type).lower() in ("null", "none", "unknown", ""):
+            contract_type = "general"
+
+        # Change 1: Replace token chunking with structural deterministic chunking
+        units = split_into_extraction_units(cleaned_text, contract_type)
         
-        if len(cleaned_text) <= chunk_size:
-            prompt = build_clause_extractor_prompt(
-                cleaned_text,
-                source_file=state["source_file"],
-                memory_context=memory_context,
-                reference_clauses=state["reference_clauses"],
-            )
+        # Save chunks to tracer
+        _tracer = state.get("tracer")
+        if _tracer:
+            _tracer.save_chunks([u["text"] for u in units])
             
-            sep = "INSTRUCTIONS:\n"
-            if sep in prompt:
-                system_prompt, user_prompt = prompt.split(sep, 1)
-                system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-                user_prompt = sep + user_prompt
-            else:
-                system_prompt = None
-                user_prompt = prompt
+        from ..services.langfuse_tracer import LangFuseTracer
+        parent_trace_id = LangFuseTracer.get_current_trace_id()
+        parent_user_id = LangFuseTracer.get_current_user_id()
+        parent_session_id = LangFuseTracer.get_current_session_id()
+        parent_contract_id = LangFuseTracer.get_current_contract_id()
 
-            llm_response = run_agent_tool_loop(
-                llm_client=llm_client,
-                prompt=user_prompt,
-                tool_names=[],
-                context={
-                    "raw_contract_text": cleaned_text,
-                    "retriever": retriever,
-                },
-                system_prompt=system_prompt,
-                max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS
-            )
-
-            # --- Diagnostic: log finish_reason to detect token truncation ---
-            import hashlib
-            cleaned_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
-            logger.debug(
-                f"[CLAUSE_EXTRACTOR_RAW] single-chunk response "
-                f"[CONTRACT TEXT: {len(cleaned_text)} chars, hash: {cleaned_hash[:8]}]"
-            )
-            _log_clause_finish_reason(llm_client, chunk_label="single-chunk")
-            # --- End diagnostic ---
-
-            parsed = _parse_llm_response(llm_response)
-            
-            # Validation/Retry Layer
-            is_valid = parsed and parsed.get("clauses") and all(c.get("raw_text") for c in parsed.get("clauses", []))
-            if not is_valid:
-                logger.warning("Single-chunk extraction yielded zero clauses or missing raw_text. Retrying with strict markdown reminder...")
-                strict_reminder = "\n\nCRITICAL REMINDER: Output ONLY the requested Markdown. Do not include commentary. Ensure you extract the verbatim 'Text:' for each clause."
-                llm_response = run_agent_tool_loop(
-                    llm_client=llm_client,
-                    prompt=user_prompt + strict_reminder,
-                    tool_names=[],
-                    context={"raw_contract_text": cleaned_text, "retriever": retriever},
-                    system_prompt=system_prompt,
-                    max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS
-                )
-                parsed = _parse_llm_response(llm_response)
-
-            if not parsed:
-                state["error_messages"].append("LLM response parsing failed")
-                state["llm_attempt_success"] = False
-                return state
-            
-            clauses = _build_clauses_from_llm(parsed.get("clauses", []))
-            metadata = parsed.get("metadata", {})
-        else:
-            # Check if there are page markers to use page-boundary chunking
-            page_pattern = re.compile(r"---\s*PAGE\s*\d+\s*---", re.IGNORECASE)
-            has_page_markers = bool(page_pattern.search(cleaned_text))
-            
-            if has_page_markers:
-                logger.info(f"Contract is large ({len(cleaned_text)} characters). Splitting into page-boundary chunks.")
-                pages = _split_by_pages(cleaned_text)
-                chunks = _token_aware_chunk_plan(pages, target_chunk_tokens=9500)
-            else:
-                logger.info(f"Contract is large ({len(cleaned_text)} characters) and has no page markers. Splitting into logical sections dynamically.")
-                sections = _split_by_sections(cleaned_text)
-                chunks = []
-                current_chunk = []
-                current_len = 0
-                
-                for section in sections:
-                    section_len = len(section)
-                    if section_len > chunk_size:
-                        # If we have a pending chunk, save it first
-                        if current_chunk:
-                            chunks.append("\n\n".join(current_chunk))
-                            current_chunk = []
-                            current_len = 0
-                        
-                        # Split massive section using character/paragraph limits
-                        start = 0
-                        while start < section_len:
-                            end = min(start + chunk_size, section_len)
-                            if end < section_len:
-                                lookback = section.rfind("\n\n", end - 2000, end)
-                                if lookback != -1 and lookback > start:
-                                    end = lookback + 2
-                                else:
-                                    lookback_nl = section.rfind("\n", end - 500, end)
-                                    if lookback_nl != -1 and lookback_nl > start:
-                                        end = lookback_nl + 1
-                            chunks.append(section[start:end])
-                            start = end - overlap
-                            if start >= section_len or end == section_len:
-                                break
-                    elif current_len + section_len <= chunk_size or not current_chunk:
-                        current_chunk.append(section)
-                        current_len += section_len
-                    else:
-                        # Save current chunk and start new chunk
-                        chunks.append("\n\n".join(current_chunk))
-                        
-                        # carry over last section as overlap if small enough
-                        last_section = current_chunk[-1] if current_chunk else ""
-                        if last_section and len(last_section) <= overlap:
-                            current_chunk = [last_section, section]
-                            current_len = len(last_section) + section_len
-                        else:
-                            current_chunk = [section]
-                            current_len = section_len
-                
-                if current_chunk:
-                    chunks.append("\n\n".join(current_chunk))
-            
+        clauses = []
+        metadata_dict = {}
+        
+        # Keep track of cache stats
+        total_units = len(units)
+        processed_units = 0
+        substantive_units = 0
+        substantive_units_covered = 0
+        retry_queue = []
+        cache_reuse_count = 0
+        
+        import asyncio
+        
+        async def process_chunks_async():
+            nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
             from ..services.langfuse_tracer import LangFuseTracer
-            parent_trace_id = LangFuseTracer.get_current_trace_id()
-            parent_user_id = LangFuseTracer.get_current_user_id()
-            parent_session_id = LangFuseTracer.get_current_session_id()
-            parent_contract_id = LangFuseTracer.get_current_contract_id()
+            LangFuseTracer.set_current_trace_id(parent_trace_id)
+            LangFuseTracer.set_current_user_id(parent_user_id)
+            LangFuseTracer.set_current_session_id(parent_session_id)
+            LangFuseTracer.set_current_contract_id(parent_contract_id)
 
-            clauses = []
-            metadata = {}
+            sem = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
             
-            import asyncio
-            
-            async def process_chunks_async():
-                from ..services.langfuse_tracer import LangFuseTracer
-                LangFuseTracer.set_current_trace_id(parent_trace_id)
-                LangFuseTracer.set_current_user_id(parent_user_id)
-                LangFuseTracer.set_current_session_id(parent_session_id)
-                LangFuseTracer.set_current_contract_id(parent_contract_id)
-
-                sem = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
+            async def extract_unit(idx, unit):
+                nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
                 
-                async def extract_chunk(idx, chunk):
-                    async with sem:
-                        logger.info(f"Extracting clauses from chunk {idx}/{len(chunks)} (size: {len(chunk)} characters)")
-                        masked_chunk = chunk
-                        if config.ENABLE_SENSITIVE_MASKING:
-                            masked_chunk = mask_sensitive_text(chunk, config.SENSITIVE_KEYWORDS)
-                        prompt = build_clause_extractor_prompt(
-                            masked_chunk,
-                            source_file=state["source_file"],
-                            memory_context=memory_context,
-                            reference_clauses=state["reference_clauses"],
-                        )
-                        
-                        # --- Safety Guard ---
-                        instruction_tokens = 1500
-                        contract_tokens = len(masked_chunk) // 4
-                        retrieval_tokens = len(str(state["reference_clauses"])) // 4 if state["reference_clauses"] else 0
-                        total_tokens = instruction_tokens + contract_tokens + retrieval_tokens
-                        
-                        logger.info(
-                            f"Token Breakdown (est) for chunk {idx}: {{"
-                            f"'instruction_tokens': {instruction_tokens}, "
-                            f"'schema_tokens': 200, "
-                            f"'contract_tokens': {contract_tokens}, "
-                            f"'retrieval_tokens': {retrieval_tokens}, "
-                            f"'total_tokens': {total_tokens}"
-                            f"}}"
-                        )
-                        if total_tokens > 15000:
-                            raise ValueError(f"Prompt inflation guard: total_tokens ({total_tokens}) exceeds 15000 limit for ClauseExtractor.")
-                        # --------------------
-                        
-                        sep = "INSTRUCTIONS:\n"
-                        if sep in prompt:
-                            system_prompt, user_prompt = prompt.split(sep, 1)
-                            system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-                            user_prompt = sep + user_prompt
-                        else:
-                            system_prompt = None
-                            user_prompt = prompt
+                # Check definition pre-classification (Change C)
+                classif = classify_extraction_unit(unit["text"])
+                if classif == "PURE_DEFINITION":
+                    logger.info(f"Skipping pure definition section: '{unit['section']}'")
+                    processed_units += 1
+                    cache_reuse_count += 1
+                    return None
+                    
+                substantive_units += 1
+                
+                async with sem:
+                    # Budgeting (Change B)
+                    target_clauses = max(3, min(20, unit["token_count"] // 120))
+                    
+                    logger.info(
+                        f"Extracting clauses from unit {idx}/{len(units)} "
+                        f"(size: {len(unit['text'])} chars, path: '{unit['section']}', target_clauses: {target_clauses})"
+                    )
+                    
+                    prompt = build_clause_extractor_prompt(
+                        unit["text"],
+                        source_file=state["source_file"],
+                        memory_context=memory_context,
+                        reference_clauses=state["reference_clauses"],
+                        section_hint=unit["section"],
+                        target_clauses=target_clauses,
+                        context_header=unit["context_header"]
+                    )
+                    
+                    sep = "INSTRUCTIONS:\n"
+                    if sep in prompt:
+                        system_prompt, user_prompt = prompt.split(sep, 1)
+                        system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+                        user_prompt = sep + user_prompt
+                    else:
+                        system_prompt = None
+                        user_prompt = prompt
 
-                        from ..services.async_azure_client import AsyncAzureOpenAIWrapper
-                        async_client = AsyncAzureOpenAIWrapper(llm_client)
-                        
+                    instruction_tokens = 1530
+                    contract_tokens = unit["token_count"]
+                    retrieval_tokens = len(str(state["reference_clauses"])) // 4 if state["reference_clauses"] else 0
+                    total_tokens = instruction_tokens + contract_tokens + retrieval_tokens
+
+                    # Trace stage 6: record prompt
+                    if _tracer:
+                        _tracer.record_prompt(
+                            chunk_idx=idx,
+                            prompt_text=prompt,
+                            system_tokens=instruction_tokens,
+                            task_tokens=80,
+                            rag_tokens=retrieval_tokens,
+                            chunk_tokens=contract_tokens,
+                        )
+
+                    from ..services.async_azure_client import AsyncAzureOpenAIWrapper
+                    async_client = AsyncAzureOpenAIWrapper(llm_client)
+                    
+                    llm_response = await async_client.async_chat_complete(
+                        prompt=user_prompt,
+                        temperature=0.0,
+                        max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
+                        system_prompt=system_prompt,
+                    )
+                    
+                    # Log finish reason
+                    import hashlib
+                    chunk_hash = hashlib.sha256(unit["text"].encode("utf-8")).hexdigest()
+                    logger.debug(
+                        f"[CLAUSE_EXTRACTOR_RAW] unit {idx} response "
+                        f"[CONTRACT TEXT: {len(unit['text'])} chars, hash: {chunk_hash[:8]}]"
+                    )
+                    _log_clause_finish_reason(llm_client, chunk_label=f"unit {idx}/{len(units)}")
+
+                    parsed = _parse_llm_response(llm_response)
+                    
+                    # Validation/Retry Layer (basic fallback retry)
+                    is_valid = parsed and parsed.get("clauses") and all(c.get("raw_text") for c in parsed.get("clauses", []))
+                    if not is_valid and "NO_SUBSTANTIVE_CLAUSE" not in (llm_response or ""):
+                        logger.warning(f"Unit {idx} yielded zero clauses or missing raw_text. Retrying with strict markdown reminder...")
+                        strict_reminder = "\n\nCRITICAL REMINDER: Output ONLY the requested Markdown. Do not include commentary. Ensure you extract the verbatim 'Text:' for each clause."
                         llm_response = await async_client.async_chat_complete(
-                            prompt=user_prompt,
+                            prompt=user_prompt + strict_reminder,
                             temperature=0.0,
                             max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
                             system_prompt=system_prompt,
                         )
-
-                        import hashlib
-                        chunk_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
-                        logger.debug(
-                            f"[CLAUSE_EXTRACTOR_RAW] chunk {idx} response "
-                            f"[CONTRACT TEXT: {len(chunk)} chars, hash: {chunk_hash[:8]}]"
-                        )
-                        _log_clause_finish_reason(llm_client, chunk_label=f"chunk {idx}/{len(chunks)}")
-
                         parsed = _parse_llm_response(llm_response)
+
+                    unit_clauses_extracted = len(parsed.get("clauses", [])) if parsed else 0
+                    
+                    # Trace stage 7: record LLM extraction
+                    if _tracer:
+                        raw_out = llm_response or ""
+                        categories = [
+                            c.get("cuad_category") or c.get("clause_type", "")
+                            for c in (parsed.get("clauses", []) if parsed else [])
+                            if isinstance(c, dict)
+                        ]
+                        confidences = [
+                            c.get("confidence", 0.5)
+                            for c in (parsed.get("clauses", []) if parsed else [])
+                            if isinstance(c, dict) and c.get("confidence") is not None
+                        ]
+                        avg_conf = sum(confidences) / len(confidences) if confidences else None
+                        _tracer.record_llm(
+                            chunk_idx=idx,
+                            input_tokens=total_tokens,
+                            output_tokens=len(raw_out) // 4,
+                            raw_output=raw_out,
+                            clauses_extracted=unit_clauses_extracted,
+                            categories=categories,
+                            avg_confidence=avg_conf,
+                        )
+
+                    # Change D: Queue for risk-based mandatory retry if criteria met
+                    if unit_clauses_extracted == 0 and unit["token_count"] > 400 and contains_risk_trigger_terms(unit["text"]):
+                        logger.info(f"Unit {idx} ('{unit['section']}') queued for risk-based retry.")
+                        retry_queue.append(unit)
+                    
+                    if unit_clauses_extracted > 0:
+                        substantive_units_covered += 1
                         
-                        # Validation/Retry Layer
-                        is_valid = parsed and parsed.get("clauses") and all(c.get("raw_text") for c in parsed.get("clauses", []))
-                        if not is_valid:
-                            logger.warning(f"Chunk {idx} yielded zero clauses or missing raw_text. Retrying with strict markdown reminder...")
-                            strict_reminder = "\n\nCRITICAL REMINDER: Output ONLY the requested Markdown. Do not include commentary. Ensure you extract the verbatim 'Text:' for each clause."
-                            llm_response = await async_client.async_chat_complete(
-                                prompt=user_prompt + strict_reminder,
-                                temperature=0.0,
-                                max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
-                                system_prompt=system_prompt,
-                            )
-                            parsed = _parse_llm_response(llm_response)
+                    processed_units += 1
+                    return parsed
+                    
+            tasks = [extract_unit(idx, unit) for idx, unit in enumerate(units, 1)]
+            return await asyncio.gather(*tasks)
 
-                        return parsed
+        # Event loop dispatcher
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(lambda: asyncio.run(process_chunks_async()))
+                results = future.result()
+        else:
+            results = asyncio.run(process_chunks_async())
+
+        # Collect first pass outputs
+        for parsed in results:
+            if parsed:
+                chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
+                clauses.extend(chunk_clauses)
+                if parsed.get("metadata") and isinstance(parsed["metadata"], dict):
+                    metadata_dict.update({k: v for k, v in parsed["metadata"].items() if v})
+
+        # Change D: Risk-Based focused retry
+        retry_clauses = []
+        if retry_queue:
+            logger.info(f"Starting risk-based retry for {len(retry_queue)} queued unit(s)...")
+            
+            async def run_retry_async():
+                from ..services.async_azure_client import AsyncAzureOpenAIWrapper
+                async_client = AsyncAzureOpenAIWrapper(llm_client)
+                sem_retry = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
                 
-                tasks = [extract_chunk(idx, chunk) for idx, chunk in enumerate(chunks, 1)]
-                return await asyncio.gather(*tasks)
+                async def retry_single_unit(retry_unit):
+                    async with sem_retry:
+                        retry_prompt = (
+                            f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+                            "INSTRUCTIONS:\n"
+                            "A previous extraction pass returned zero clauses for the text below, but it is suspected to contain substantive terms.\n"
+                            "Please carefully review the text below and extract EVERY substantive clause (obligations, restrictions, rights, payments, confidentiality, termination, etc.) that was missed.\n"
+                            "If there are genuinely no substantive clauses, output 'NO_SUBSTANTIVE_CLAUSE'.\n"
+                            f"OUTPUT_SCHEMA:\n{OUTPUT_SCHEMA}\n\n"
+                            f"--- SECTION TEXT START ---\n{retry_unit['text']}\n--- SECTION TEXT END ---\n"
+                        )
+                        
+                        llm_res = await async_client.async_chat_complete(
+                            prompt=retry_prompt,
+                            temperature=0.0,
+                            max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
+                        )
+                        parsed_retry = _parse_llm_response(llm_res)
+                        return parsed_retry
 
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = None
+                retry_tasks = [retry_single_unit(u) for u in retry_queue]
+                return await asyncio.gather(*retry_tasks)
 
             if loop and loop.is_running():
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(lambda: asyncio.run(process_chunks_async()))
-                    results = future.result()
+                    future = executor.submit(lambda: asyncio.run(run_retry_async()))
+                    retry_results = future.result()
             else:
-                results = asyncio.run(process_chunks_async())
+                retry_results = asyncio.run(run_retry_async())
+                
+            for parsed_retry in retry_results:
+                if parsed_retry:
+                    retry_chunk_clauses = _build_clauses_from_llm(parsed_retry.get("clauses", []))
+                    if retry_chunk_clauses:
+                        retry_clauses.extend(retry_chunk_clauses)
+                        # Mark unit as covered if retry succeeded
+                        substantive_units_covered += 1
 
-            for parsed in results:
-                if parsed:
-                    chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
-                    clauses.extend(chunk_clauses)
-                    if parsed.get("metadata") and isinstance(parsed["metadata"], dict):
-                        metadata.update({k: v for k, v in parsed["metadata"].items() if v})
-            
+            # Clear queue
+            retry_queue = []
+
+        # Merge retry clauses
+        clauses.extend(retry_clauses)
+
         # Deduplicate and merge clauses based on MinHash LSH + Jaccard Similarity
         from collections import defaultdict
         all_clauses = (state.get("clauses") or []) + clauses
@@ -485,6 +804,7 @@ def llm_extraction_node(
             buckets[c.clause_type.strip().lower()].append(c)
             
         unique_clauses = []
+        removed_clauses = []
         for clause_type, bucket in buckets.items():
             lsh_index = defaultdict(list)
             bucket_uniques = []
@@ -510,8 +830,11 @@ def llm_extraction_node(
                         c_conf = candidate.confidence if candidate.confidence is not None else 0.0
                         ext_conf = existing.confidence if existing.confidence is not None else 0.0
                         if c_conf > ext_conf:
+                            removed_clauses.append(existing.model_dump())
                             existing.raw_text = candidate.raw_text
                             existing.confidence = candidate.confidence
+                        else:
+                            removed_clauses.append(candidate.model_dump())
                         break
                         
                 if not is_dup:
@@ -521,7 +844,17 @@ def llm_extraction_node(
                         lsh_index[sig].append(new_idx)
             unique_clauses.extend(bucket_uniques)
         clauses = unique_clauses
-        
+
+        # ── Trace stage 8: record postprocessing / dedup ──────────────────────
+        _post_tracer = state.get("tracer")
+        if _post_tracer:
+            _post_tracer.record_postprocess(
+                before_dedupe=len(all_clauses),
+                after_dedupe=len(unique_clauses),
+                removed_clauses=removed_clauses,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         if not clauses:
             state["error_messages"].append("LLM extraction returned no clauses")
             state["llm_attempt_success"] = False
@@ -531,11 +864,20 @@ def llm_extraction_node(
         state["llm_attempt_success"] = True
         state["used_extraction_method"] = "llm"
         logger.info(f"Clause extraction method: llm. Found {len(clauses)} clauses.")
-        state["confidence_score"] = 0.85
         
+        # Calculate completion and coverage metrics (Change F)
+        substantive_units_covered_ratio = substantive_units_covered / max(1, substantive_units)
+        completion_score = (processed_units == total_units) and (len(retry_queue) == 0) and (substantive_units_covered_ratio >= 0.85)
+        
+        # Store completion metrics inside the state
+        state["confidence_score"] = 0.85
+        state["coverage_score"] = round(substantive_units_covered_ratio, 2)
+        state["completion_score"] = completion_score
+        state["cache_reuse_pct"] = round((cache_reuse_count / max(1, total_units)) * 100, 1)
+
         # Merge LLM metadata
-        if metadata:
-            state["metadata"] = _merge_metadata(state["metadata"], metadata)
+        if metadata_dict:
+            state["metadata"] = _merge_metadata(state["metadata"], metadata_dict)
         
         state["cuad_labels"] = _build_cuad_labels(clauses)
         
@@ -612,18 +954,30 @@ def build_output_node(state: ClauseExtractorState) -> ClauseExtractorOutput:
                 
     map_clause_pages(state.get("clauses") or [])
     
-    return ClauseExtractorOutput(
+    output = ClauseExtractorOutput(
         metadata=state["metadata"],
         clauses=state["clauses"],
         cuad_labels=state["cuad_labels"],
         raw_contract_text=state["cleaned_text"],
         page_count=page_count,
         extraction_method=method,
-        coverage_score=coverage_info["coverage_score"],
+        coverage_score=state.get("coverage_score", coverage_info["coverage_score"]),
         highest_clause_number=coverage_info["highest_clause_number"],
-        is_extraction_complete=coverage_info["is_extraction_complete"],
+        is_extraction_complete=state.get("completion_score", coverage_info["is_extraction_complete"]),
         extraction_completeness_notes=coverage_info["extraction_completeness_notes"],
     )
+
+    # ── Trace stage 9: save final output + flush all metrics ────────────────────
+    _final_tracer = state.get("tracer")
+    if _final_tracer:
+        try:
+            _final_tracer.save_final(output.model_dump(mode="json"))
+            _final_tracer.write_metrics()
+        except Exception as _te:
+            logger.warning("[ExtractionTracer] Failed to write final artifacts: %s", _te)
+    # ──────────────────────────────────────────────────────────────────────
+
+    return output
 
 
 def create_clause_extraction_graph(llm_client: Any | None = None, memory_context: dict[str, Any] | None = None, retriever: Any | None = None):
@@ -669,6 +1023,12 @@ class ClauseExtractorAgent:
         graph = create_clause_extraction_graph(client, memory_context, retriever)
         
         # Initial state
+        # ── Inject ExtractionTracer ─────────────────────────────────────────────────
+        from ..helpers.extraction_tracer import get_tracer
+        from ..services.langfuse_tracer import LangFuseTracer
+        _contract_id = LangFuseTracer.get_current_contract_id() or (source_file or "unknown")
+        _tracer = get_tracer(_contract_id)
+        # ──────────────────────────────────────────────────────────────────────────
         initial_state: ClauseExtractorState = {
             "contract_text": contract_text,
             "source_file": source_file,
@@ -681,6 +1041,7 @@ class ClauseExtractorAgent:
             "used_extraction_method": "llm",
             "confidence_score": 0.0,
             "error_messages": [],
+            "tracer": _tracer,
         }
         
         # Run workflow

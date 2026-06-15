@@ -328,6 +328,36 @@ class ContractReviewService:
         """
         contract_text = self._resolve_contract_text(contract_text, source_blob_path)
         
+        # Preprocess text before extraction (pointers, redactions, signatures, recitals, etc.)
+        from ..helpers.pdf_cleaner import preprocess_for_extraction
+        _raw_contract_text = contract_text  # keep original for tracer
+        contract_text, stats = preprocess_for_extraction(contract_text)
+        logger.info(
+            "Preprocessing removed %d chars (~%d tokens): "
+            "signature=%d, attachments=%d, recitals=%d, xrefs=%d, redactions=%d",
+            stats['total_chars_removed'],
+            stats['estimated_tokens_saved'],
+            stats['signature_block_chars'],
+            stats['attachment_placeholder_chars'],
+            stats['recitals_chars'],
+            stats['pure_xref_definitions_removed'],
+            stats['redaction_tokens_collapsed']
+        )
+
+        session_id = contract_id or str(uuid.uuid4())
+        if not contract_id:
+            contract_id = session_id
+
+        # ── Emit preprocessing snapshot to ExtractionTracer ──────────────────────
+        from ..helpers.extraction_tracer import get_tracer as _get_tracer
+        _trace_contract_id = contract_id
+        _preprocess_tracer = _get_tracer(_trace_contract_id)
+        if _preprocess_tracer.enabled:
+            _preprocess_tracer.save_raw(_raw_contract_text)
+            _preprocess_tracer.save_preprocessed(contract_text, stats)
+        # ─────────────────────────────────────────────────────────────────────────
+
+        
         # Relevance Gating Check
         if not self.is_document_contract(contract_text):
             raise ValueError(
@@ -335,9 +365,6 @@ class ContractReviewService:
                 "or legal agreement. Execution aborted to conserve API resources."
             )
 
-        session_id = contract_id or str(uuid.uuid4())
-        if not contract_id:
-            contract_id = session_id
         memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
 
         logger.info("Starting contract review process")
@@ -391,6 +418,14 @@ class ContractReviewService:
                         state.trace_url = trace_url
                     except Exception:
                         pass
+            
+            # Log Sprint 1 cost and cache metrics before returning
+            useful_clauses = len(state.clause_extraction.clauses) if state.clause_extraction and state.clause_extraction.clauses else 0
+            try:
+                self.tracer.log_pipeline_metrics(self.current_trace_id, useful_clauses)
+            except Exception as e:
+                logger.warning(f"Failed to log pipeline metrics: {e}")
+                
             self.tracer.flush()
             return state
         except Exception as e:

@@ -89,14 +89,8 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 			and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
 		]
 		clauses_to_analyze = filtered_clauses[:20]
-		clause_lines = []
-		for idx, clause in enumerate(clauses_to_analyze, 1):
-			clause_lines.append(
-				f"Clause {idx}:\n"
-				f"Type: {clause.clause_type}\n"
-				f"Text: {clause.raw_text[:config.CLAUSE_TEXT_TRUNCATION]}\n"
-			)
-		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+		from ..helpers.compression_helper import get_compressed_payload_string
+		clauses_text = get_compressed_payload_string(clauses_to_analyze) if clauses_to_analyze else "(No candidate clauses were extracted from the contract.)"
 
 		prompt = build_plain_english_writer_prompt(
 			clauses_text,

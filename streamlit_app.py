@@ -824,8 +824,10 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Render deferred session operations
     # -----------------------------------------------------------------------
+    clearing_session = False
     if st.session_state.get("clear_session_flag"):
         st.session_state["clear_session_flag"] = False
+        clearing_session = True
         _session_component(action="clear", key="session_clearer")
 
     if st.session_state.get("save_session_payload"):
@@ -835,7 +837,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Restore session from localStorage on page reload
     # -----------------------------------------------------------------------
-    if st.session_state["auth_user"] is None and not st.session_state.get("clear_session_flag"):
+    if st.session_state["auth_user"] is None and not clearing_session:
         stored_session = _session_component(action="read", key="session_reader")
         if stored_session:
             sr_token = stored_session.get("token")
@@ -975,7 +977,6 @@ def main() -> None:
                                     user_obj.get("id", ""),
                                     user_obj.get("email", ""),
                                 )
-                                st.success("Logged in successfully!")
                                 st.rerun()
                             else:
                                 st.error("Authentication failed. Please check your credentials.")

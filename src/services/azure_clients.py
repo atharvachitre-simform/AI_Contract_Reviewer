@@ -329,12 +329,15 @@ class AzureOpenAIWrapper:
                 p_tok = 0
                 c_tok = 0
                 t_tok = 0
+                cached_tok = 0
                 if getattr(self, "_last_response", None) is not None:
                     usage = getattr(self._last_response, "usage", None)
                     if usage:
                         p_tok = getattr(usage, "prompt_tokens", 0) or 0
                         c_tok = getattr(usage, "completion_tokens", 0) or 0
                         t_tok = getattr(usage, "total_tokens", p_tok + c_tok) or (p_tok + c_tok)
+                        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+                            cached_tok = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
 
                 sys_content = system_prompt or "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
                 messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
@@ -346,6 +349,7 @@ class AzureOpenAIWrapper:
                     input_tokens=p_tok,
                     output_tokens=c_tok,
                     total_tokens=t_tok,
+                    cached_tokens=cached_tok,
                     trace_id=trace_id,
                 )
         except Exception as lf_err:
