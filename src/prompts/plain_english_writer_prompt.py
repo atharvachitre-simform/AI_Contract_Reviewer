@@ -22,7 +22,6 @@ OUTPUT_SCHEMA = {
     "clause_summaries": [
         {
             "clause_type": "string",
-            "original_text": "string",
             "plain_english": "string",
             "why_it_matters": "string or null",
             "party_burden": "restrictive|obligatory|permissive|null",

@@ -16,6 +16,7 @@ from ..prompts.obligation_finder_prompt import build_obligation_finder_prompt, S
 
 logger = logging.getLogger(__name__)
 from src import config
+from .pipeline_tools import run_agent_tool_loop
 
 
 class ObligationFinderState(TypedDict):
@@ -116,7 +117,16 @@ class ObligationFinderAgent:
             return state
 
         try:
-            clauses = state["clause_extraction"].clauses or []
+            SKIP_FOR_OBLIGATIONS = {
+                "Document Name", "Parties", "Agreement Date", "Effective Date", 
+                "Governing Law", "Severability", "Counterparts"
+            }
+            raw_clauses = state["clause_extraction"].clauses or []
+            clauses = [
+                c for c in raw_clauses
+                if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_OBLIGATIONS
+                and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name", "severability", "counterparts"}
+            ]
             chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
             chunks = [clauses[i:i + chunk_size] for i in range(0, len(clauses), chunk_size)]
             
@@ -130,17 +140,26 @@ class ObligationFinderAgent:
                 sep = "CLAUSES:\n"
                 if sep in prompt:
                     system_prompt, user_prompt = prompt.split(sep, 1)
+                    system_prompt = system_prompt.replace("SYSTEM:", "").strip()
                     user_prompt = sep + user_prompt
                 else:
                     system_prompt = None
                     user_prompt = prompt
 
-                response_text = llm_client.chat_complete(
-                    user_prompt,
-                    temperature=0.0,
-                    max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS,
-                    response_format={"type": "json_object"},
+                metadata = state["clause_extraction"].metadata
+                base_date = getattr(metadata, "effective_date", None) or getattr(metadata, "agreement_date", None) or "2026-06-12"
+                contract_type = getattr(metadata, "contract_type", "NDA") or "NDA"
+
+                response_text = run_agent_tool_loop(
+                    llm_client=llm_client,
+                    prompt=user_prompt,
+                    tool_names=["date_calculator", "lookup_obligation_standards"],
+                    context={
+                        "base_date": base_date,
+                        "contract_type": contract_type
+                    },
                     system_prompt=system_prompt,
+                    max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS
                 )
                 import hashlib
                 chunk_text = "\n".join([str(c) for c in chunk])
@@ -269,7 +288,16 @@ class ObligationFinderAgent:
 
     def _get_missed_clauses(self, state: ObligationFinderState) -> list[Any]:
         """Find clauses containing obligation hints that weren't captured."""
-        clauses = state["clause_extraction"].clauses or []
+        SKIP_FOR_OBLIGATIONS = {
+            "Document Name", "Parties", "Agreement Date", "Effective Date", 
+            "Governing Law", "Severability", "Counterparts"
+        }
+        raw_clauses = state["clause_extraction"].clauses or []
+        clauses = [
+            c for c in raw_clauses
+            if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_OBLIGATIONS
+            and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name", "severability", "counterparts"}
+        ]
         obligations = state.get("obligations") or []
         missed_clauses = []
 
@@ -323,11 +351,28 @@ class ObligationFinderAgent:
             # Re-query LLM specifically for missed clauses
             prompt = build_obligation_correction_prompt(missed, state.get("obligations") or [])
             
-            response_text = llm_client.chat_complete(
-                prompt,
-                temperature=0.0,
-                max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS,
-                response_format={"type": "json_object"},
+            sep = "INSTRUCTIONS:\n"
+            if sep in prompt:
+                system_prompt, user_prompt = prompt.split(sep, 1)
+                system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+                user_prompt = sep + user_prompt
+            else:
+                system_prompt = None
+                user_prompt = prompt
+
+            metadata = state["clause_extraction"].metadata
+            base_date = getattr(metadata, "effective_date", None) or getattr(metadata, "agreement_date", None) or "2026-06-12"
+            contract_type = getattr(metadata, "contract_type", "NDA") or "NDA"
+
+            response_text = run_agent_tool_loop(
+                llm_client=llm_client,
+                prompt=user_prompt,
+                tool_names=["date_calculator", "lookup_obligation_standards"],
+                context={
+                    "base_date": base_date,
+                    "contract_type": contract_type
+                },
+                system_prompt=system_prompt
             )
             import hashlib
             missed_text = "\n".join([str(c) for c in missed])

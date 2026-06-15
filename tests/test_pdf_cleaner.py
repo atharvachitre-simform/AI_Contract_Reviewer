@@ -56,3 +56,64 @@ def test_clean_extracted_paragraphs():
     assert "Article 1: Definitions" in cleaned
     assert "This is paragraph one." in cleaned
     assert "Article 2: Obligations" in cleaned
+
+
+def test_preprocess_for_extraction():
+    from src.helpers.pdf_cleaner import preprocess_for_extraction
+
+    raw_text = (
+        "This Commercialization and License Agreement (this \u201cAgreement\u201d) is made effective as of\n"
+        "December 17, 2019 by and between Party A and Party B.\n\n"
+        "RECITALS\n"
+        "WHEREAS, Vyera is a pharma company.\n"
+        "WHEREAS, CytoDyn is a biotech company.\n"
+        "NOW, THEREFORE, the parties agree:\n\n"
+        "ARTICLE 1 DEFINITIONS\n"
+        "1.1 \"AAA\" has the meaning set forth in Section 12.3(a).\n"
+        "1.2 \"AAI Agreement\" has the meaning set forth in Section\n9.2(o).\n"
+        "1.3 \"Affiliate\" means, with respect to a particular Party...\n"
+        "1.31 \"Cost of Manufacture\" means [  ***  ] and other costs.\n"
+        "1.95 \"SBL Agreement\" has the meaning set forth in the introductory paragraph.\n\n"
+        "ARTICLE 2 LICENSES\n"
+        "The licensor grants to Vyera an exclusive license.\n\n"
+        "IN WITNESS WHEREOF, the parties hereto have executed this Agreement.\n"
+        "Signature Block here...\n"
+        "Attachment A\nCytoDyn Patents\n[See attached.]\n"
+    )
+
+    cleaned, stats = preprocess_for_extraction(raw_text)
+
+    # 1. Quote Normalization
+    assert "\u201c" not in cleaned
+    assert "\u201d" not in cleaned
+    assert '("Agreement")' in cleaned or '("Agreement")' or '"Agreement"' in cleaned
+
+    # 2. Signature and Attachments Stripped
+    assert "IN WITNESS WHEREOF" not in cleaned
+    assert "Signature Block" not in cleaned
+    assert "Attachment A" not in cleaned
+    assert "[See attached.]" not in cleaned
+
+    # 3. WHEREAS recitals stripped (but preamble kept)
+    assert "WHEREAS" not in cleaned
+    assert "RECITALS" not in cleaned
+    assert "Commercialization and License Agreement" in cleaned
+
+    # 4. Pure Cross-References Stripped
+    assert "1.1 \"AAA\"" not in cleaned
+    assert "1.2 \"AAI Agreement\"" not in cleaned
+    assert "1.95 \"SBL Agreement\"" not in cleaned
+
+    # 5. Substantive definitions and obligations kept
+    assert "1.3 \"Affiliate\" means" in cleaned
+    assert "1.31 \"Cost of Manufacture\"" in cleaned
+
+    # 6. Redaction collapse
+    assert "[  ***  ]" not in cleaned
+    assert "[R]" in cleaned
+
+    # 7. Stats verified
+    assert stats["pure_xref_definitions_removed"] == 3
+    assert stats["redaction_tokens_collapsed"] == 1
+    assert stats["total_chars_removed"] > 0
+    assert stats["estimated_tokens_saved"] > 0

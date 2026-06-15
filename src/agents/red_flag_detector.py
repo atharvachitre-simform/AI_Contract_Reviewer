@@ -13,6 +13,7 @@ from ..prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
 
 logger = logging.getLogger(__name__)
 from src import config
+from .pipeline_tools import run_agent_tool_loop
 
 
 class RedFlagDetectorState(TypedDict):
@@ -81,7 +82,17 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 		return state
 
 	try:
-		all_clauses = state["clause_extraction"].clauses or []
+		raw_clauses = state["clause_extraction"].clauses or []
+		SKIP_FOR_RED_FLAGS = {
+			"Document Name", "Parties", "Agreement Date", "Effective Date", 
+			"Governing Law"
+		}
+		all_clauses = [
+            c for c in raw_clauses
+            if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_RED_FLAGS
+            and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
+            and getattr(c, "clause_tag", "") not in {"definition", "placeholder"}
+        ]
 		chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
 
 		# Divide into chunks
@@ -93,32 +104,29 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 
 		for chunk_idx, chunk in enumerate(chunks):
 			logger.info(f"Processing red flag detector chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
-			clause_lines = []
-			for clause in chunk:
-				clause_lines.append(
-					f"Clause {global_idx + 1}:\n"
-					f"Type: {clause.clause_type}\n"
-					# 3000 chars: gives full operative legal language to the model.
-					# The previous 800-char limit was cutting indemnification/liability/
-					# termination clauses in half, hiding the risk-triggering language.
-					f"Text: {clause.raw_text[:3000]}\n"
-				)
-				global_idx += 1
-			clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+			from ..helpers.compression_helper import get_compressed_payload_string
+			clauses_text = get_compressed_payload_string(chunk) if chunk else "(No candidate clauses were extracted from the contract.)"
+			global_idx += len(chunk)
 
 			prompt = build_red_flag_detector_prompt(clauses_text, state.get("perspective"))
 			sep = "CONTRACT CLAUSES TO ANALYZE:\n"
 			if sep in prompt:
 				system_prompt, user_prompt = prompt.split(sep, 1)
+				system_prompt = system_prompt.replace("SYSTEM:", "").strip()
 				user_prompt = sep + user_prompt
 			else:
 				system_prompt = None
 				user_prompt = prompt
-			response_text = llm_client.chat_complete(
-				user_prompt,
-				temperature=0.0,
-				max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS,
+
+			response_text = run_agent_tool_loop(
+				llm_client=llm_client,
+				prompt=user_prompt,
+				tool_names=[],
+				context={
+					"raw_contract_text": clauses_text,
+				},
 				system_prompt=system_prompt,
+				max_tokens=config.RED_FLAG_DETECTOR_MAX_TOKENS
 			)
 
 			# --- Diagnostic: log raw response and finish_reason ---

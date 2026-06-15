@@ -44,5 +44,14 @@ logs/
 contract-reviewer.tar
 *.tar
 
+# Local debug and run traces
+scratch/
+artifacts/
+
+# Deployment & Utility Scripts
+scripts/
+deploy_secure.sh
+Makefile
+
 
 

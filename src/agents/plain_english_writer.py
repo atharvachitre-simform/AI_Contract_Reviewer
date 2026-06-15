@@ -13,6 +13,7 @@ from ..prompts.plain_english_writer_prompt import build_plain_english_writer_pro
 
 logger = logging.getLogger(__name__)
 from src import config
+from .pipeline_tools import run_agent_tool_loop
 
 
 class PlainEnglishWriterState(TypedDict):
@@ -77,15 +78,19 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 					res.extend(get_all_clauses(c.subclauses))
 			return res
 
-		clauses_to_analyze = get_all_clauses(state["clause_extraction"].clauses)[:20]
-		clause_lines = []
-		for idx, clause in enumerate(clauses_to_analyze, 1):
-			clause_lines.append(
-				f"Clause {idx}:\n"
-				f"Type: {clause.clause_type}\n"
-				f"Text: {clause.raw_text[:800]}\n"
-			)
-		clauses_text = "\n".join(clause_lines) if clause_lines else "(No candidate clauses were extracted from the contract.)"
+		# Filter out purely administrative metadata clauses before summarizing
+		SKIP_FOR_SUMMARY = {
+			"Document Name", "Parties", "Agreement Date", "Effective Date", "Governing Law"
+		}
+		raw_clauses = get_all_clauses(state["clause_extraction"].clauses)
+		filtered_clauses = [
+			c for c in raw_clauses
+			if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_SUMMARY
+			and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
+		]
+		clauses_to_analyze = filtered_clauses[:20]
+		from ..helpers.compression_helper import get_compressed_payload_string
+		clauses_text = get_compressed_payload_string(clauses_to_analyze) if clauses_to_analyze else "(No candidate clauses were extracted from the contract.)"
 
 		prompt = build_plain_english_writer_prompt(
 			clauses_text,
@@ -96,15 +101,18 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 		sep = "CONTRACT CLAUSES TO ANALYZE:\n"
 		if sep in prompt:
 			system_prompt, user_prompt = prompt.split(sep, 1)
+			system_prompt = system_prompt.replace("SYSTEM:", "").strip()
 			user_prompt = sep + user_prompt
 		else:
 			system_prompt = None
 			user_prompt = prompt
-		response_text = llm_client.chat_complete(
-			user_prompt,
-			temperature=0.0,
-			max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS,
+		response_text = run_agent_tool_loop(
+			llm_client=llm_client,
+			prompt=user_prompt,
+			tool_names=[],
+			context={},
 			system_prompt=system_prompt,
+			max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS
 		)
 
 		parsed = _parse_plain_english_response(response_text)
@@ -115,14 +123,19 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 
 		state["executive_summary"] = str(parsed.get("executive_summary") or "").strip()
 
+		# Build a lookup for original clause text to map it back without LLM overhead
+		type_to_text = {c.clause_type.strip().lower(): c.raw_text for c in clauses_to_analyze}
+
 		clause_summaries = []
 		for item in parsed.get("clause_summaries", []):
 			if not isinstance(item, dict):
 				continue
+			ctype = str(item.get("clause_type") or "Clause")
+			orig_text = type_to_text.get(ctype.strip().lower(), "")
 			clause_summaries.append(
 				PlainEnglishClause(
-					clause_type=str(item.get("clause_type") or "Clause"),
-					original_text=str(item.get("original_text") or ""),
+					clause_type=ctype,
+					original_text=orig_text,
 					plain_english=str(item.get("plain_english") or ""),
 					why_it_matters=str(item.get("why_it_matters") or "") or None,
 					party_burden=str(item.get("party_burden") or "") or None,

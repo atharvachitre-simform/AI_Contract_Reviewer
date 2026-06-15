@@ -134,6 +134,11 @@ Return only valid JSON with this exact structure:
   "clause_risk_map": {{"<clause_type>": <float score>}}
 }}
 
+{reference_section}
+
+CONTRACT CLAUSES TO ANALYZE:
+{clauses_text}
+
 Begin analysis now and return only valid JSON. No markdown fences (do not wrap in ```json), no extra explanation.
 """
 

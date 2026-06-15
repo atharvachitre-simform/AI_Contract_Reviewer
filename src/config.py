@@ -6,7 +6,7 @@ import os
 # Maximum number of clauses to send to the risk scorer LLM
 MAX_CLAUSES_TO_ANALYZE = int(os.getenv("RISK_SCORER_MAX_CLAUSES", "50"))
 # Maximum characters of a single clause text allowed in the prompt (reduces truncation risk)
-CLAUSE_TEXT_TRUNCATION = int(os.getenv("RISK_SCORER_TEXT_TRUNCATION", "700"))
+CLAUSE_TEXT_TRUNCATION = int(os.getenv("AGENT_CLAUSE_TRUNCATION", "1200"))
 # Thresholds for overall risk score classification
 RISK_THRESHOLD_HIGH = float(os.getenv("RISK_THRESHOLD_HIGH", "0.6"))
 RISK_THRESHOLD_MEDIUM = float(os.getenv("RISK_THRESHOLD_MEDIUM", "0.3"))
@@ -63,10 +63,21 @@ PAGE_IMAGE_DPI = int(os.getenv("PAGE_IMAGE_DPI", "300"))
 STORE_PAGE_IMAGES = os.getenv("STORE_PAGE_IMAGES", "true").lower() == "true"
 
 # --- Map-Reduce Chunk Size ---
-AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "40"))
+AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "200"))
+ 
+# --- Clause Extractor Chunk Size ---
+# Default set to 15000 (about 3,500 tokens) to trigger page-boundary group chunking
+CLAUSE_EXTRACTOR_CHUNK_SIZE = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "15000"))
+CLAUSE_EXTRACTOR_CHUNK_OVERLAP = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "3000"))
+CLAUSE_EXTRACTOR_MAX_CONCURRENCY = int(os.getenv("CLAUSE_EXTRACTOR_MAX_CONCURRENCY", "4"))
+AZURE_TPM_LIMIT = int(os.getenv("AZURE_TPM_LIMIT", "120000"))
+AZURE_RPM_LIMIT = int(os.getenv("AZURE_RPM_LIMIT", "600"))
 
 # --- Groq Configuration ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()# --- File Upload Limits ---
 MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "50"))
 
+# --- Extraction Trace Mode ---
+# When true, every pipeline stage is snapshotted to artifacts/extraction_runs/<contract_id>/
+TRACE_EXTRACTION = os.getenv("TRACE_EXTRACTION", "false").lower() in ("1", "true", "yes")

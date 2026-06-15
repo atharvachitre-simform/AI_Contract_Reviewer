@@ -84,3 +84,7 @@ data
 contract-reviewer.tar
 *.tar
 
+# Local debug and run traces
+scratch/
+artifacts/
+

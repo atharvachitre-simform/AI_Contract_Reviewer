@@ -23,6 +23,7 @@ from ..prompts.report_assembler_prompt import build_report_assembler_prompt
 
 logger = logging.getLogger(__name__)
 from src import config
+from .pipeline_tools import run_agent_tool_loop
 
 
 class ReportAssemblerState(TypedDict):
@@ -210,15 +211,23 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 		sep = "AGENT INPUTS:\n"
 		if sep in prompt:
 			system_prompt, user_prompt = prompt.split(sep, 1)
+			system_prompt = system_prompt.replace("SYSTEM:", "").strip()
 			user_prompt = sep + user_prompt
 		else:
 			system_prompt = None
 			user_prompt = prompt
-		response_text = llm_client.chat_complete(
-			user_prompt,
-			temperature=0.0,
-			max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS,
+
+		contract_type = getattr(state["clause_extraction"].metadata, "contract_type", "NDA") or "NDA"
+
+		response_text = run_agent_tool_loop(
+			llm_client=llm_client,
+			prompt=user_prompt,
+			tool_names=[],
+			context={
+				"contract_type": contract_type,
+			},
 			system_prompt=system_prompt,
+			max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS
 		)
 
 		parsed = _parse_report_response(response_text)

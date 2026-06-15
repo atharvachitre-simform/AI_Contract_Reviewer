@@ -143,3 +143,103 @@ def clean_extracted_paragraphs(paragraphs: list[str]) -> list[str]:
         cleaned.append(p)
         
     return cleaned
+
+
+# ── Preprocessing Regular Expressions for Clause Extraction ───────────────────
+
+# Matches pure cross-reference definitions like:
+# 1.67 "AAA" has the meaning set forth in Section 12.3(a).
+# Handles multi-line wraps in section references.
+_PURE_XREF_DEF = re.compile(
+    r'^\s*\d+\.\d+(?:\.\d+)?\s+"[^"]+"\s+has the meaning set forth in\s+'
+    r'(?:Section\s+[\d\.]+(?:\([a-z]\))?|the introductory paragraph|\[R\])'
+    r'[^\.]*\.\s*$',
+    re.MULTILINE,
+)
+
+# Collapses verbose redactions [ *** ] to [R] to save token space.
+_REDACTED_VERBOSE = re.compile(r'\[\s*\*{2,3}\s*\]')
+
+# Strips placeholder pages at the end of documents.
+_ATTACHMENT_PLACEHOLDER = re.compile(
+    r'(?:^|\n)Attachment\s+[A-Z]\s*\n[^\n]+\n\[See attached\.\]\s*',
+    re.MULTILINE,
+)
+
+# Truncates signature blocks (everything after IN WITNESS WHEREOF).
+_SIGNATURE_BLOCK = re.compile(
+    r'\bIN WITNESS WHEREOF\b.*$',
+    re.DOTALL,
+)
+
+# Strips narrative recitals while preserving the preamble paragraph.
+_RECIALS_WHEREAS = re.compile(
+    r'(?:^|\n{2,})RECITALS\s*\n(?:WHEREAS[^\n]*\n?)+(?:NOW,\s*THEREFORE[^\n]*\n)?',
+    re.MULTILINE,
+)
+
+# Strips exhibit/filing header lines.
+_EXHIBIT_HEADER = re.compile(
+    r'^Exhibit\s+\d+\.\d+\s*\n.*?(?=\n[A-Z]{3,})',
+    re.MULTILINE | re.DOTALL,
+)
+
+_MULTI_BLANK = re.compile(r'\n{3,}')
+_TRAILING_SPACES = re.compile(r'[ \t]+\n')
+
+
+def preprocess_for_extraction(text: str) -> tuple[str, dict]:
+    """Clean raw contract text before it reaches the ClauseExtractorAgent.
+    
+    Normalizes quotes and applies structured regex cleansers in sequence
+    to optimize context window usage and focus content on operative clauses.
+    """
+    original_len = len(text)
+    stats = {}
+
+    # Normalize curly quotes to straight quotes first
+    text = text.replace('\u201c', '"').replace('\u201d', '"')
+    text = text.replace('\u2018', "'").replace('\u2019', "'")
+
+    # 1. Truncate signature block (run first to anchor end of operative text)
+    text, n = _SIGNATURE_BLOCK.subn('', text)
+    stats['signature_block_chars'] = original_len - len(text)
+
+    # 2. Strip attachment placeholders
+    before = len(text)
+    text, n = _ATTACHMENT_PLACEHOLDER.subn('\n', text)
+    stats['attachment_placeholder_chars'] = before - len(text)
+
+    # 3. Strip exhibit/filing headers
+    before = len(text)
+    text, _ = _EXHIBIT_HEADER.subn('', text, count=1)
+    stats['exhibit_header_chars'] = before - len(text)
+
+    # 4. Strip background recitals
+    before = len(text)
+    text, _ = _RECIALS_WHEREAS.subn('', text)
+    stats['recitals_chars'] = before - len(text)
+
+    # 5. Collapse verbose redaction tags (run before xref stripping so [R] references are normalised)
+    before = len(text)
+    text, n = _REDACTED_VERBOSE.subn('[R]', text)
+    stats['redaction_tokens_collapsed'] = n
+    stats['redaction_chars'] = before - len(text)
+
+    # 6. Strip pure cross-reference definitions
+    before = len(text)
+    text, n = _PURE_XREF_DEF.subn('', text)
+    stats['pure_xref_definitions_removed'] = n
+    stats['pure_xref_chars'] = before - len(text)
+
+    # 7. Normalize blank lines and trailing spaces
+    text = _MULTI_BLANK.sub('\n\n', text)
+    text = _TRAILING_SPACES.sub('\n', text)
+    text = text.strip()
+
+    stats['original_chars'] = original_len
+    stats['final_chars'] = len(text)
+    stats['total_chars_removed'] = original_len - len(text)
+    stats['estimated_tokens_saved'] = stats['total_chars_removed'] // 4
+
+    return text, stats

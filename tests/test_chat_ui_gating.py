@@ -16,6 +16,24 @@ def test_question_relevancy_gating_negative():
     with patch("src.services.azure_clients.AzureOpenAIWrapper.chat_complete", return_value="NO"):
         assert service.is_question_relevant("Tell me a chocolate cake recipe.") is False
 
+def test_heuristic_relevance_gating_fast_pass():
+    """Verify that heuristic checks instantly approve relevant or contract‑focused queries locally."""
+    service = ContractChatService(contract_id="general")
+    
+    # These contain review-oriented keywords or legal terms, so they must be approved heuristically
+    assert service.is_question_relevant("what was the biggest red flag?") is True
+    assert service.is_question_relevant("what are the risks in our contract?") is True
+    assert service.is_question_relevant("please summarize the indemnity clause") is True
+
+def test_heuristic_relevance_gating_fast_reject():
+    """Verify that heuristic checks instantly block off-topic queries locally."""
+    service = ContractChatService(contract_id="general")
+    
+    # These match off-topic patterns, so they must be blocked heuristically
+    assert service.is_question_relevant("how to bake a chocolate cake") is False
+    assert service.is_question_relevant("what is the weather today?") is False
+    assert service.is_question_relevant("write a python script to parse logs") is False
+
 def test_gating_fallback_to_groq_on_429():
     """Verify that if relevance check gets 429 rate limited, it triggers Groq fallback routing."""
     service = ContractChatService(contract_id="general")
@@ -47,7 +65,7 @@ def test_gating_fallback_to_groq_on_429():
         with patch("src.services.azure_clients.AzureClientFactory.get_openai_client", return_value=wrapper), \
              patch("tenacity.wait_exponential", return_value=lambda *args, **kwargs: 0):
             
-            assert service.is_question_relevant("Is liability limited?") is True
+            assert service.is_question_relevant("Is this standard?") is True
             
         mock_groq_client.chat.completions.create.assert_called_once()
         args, kwargs = mock_groq_client.chat.completions.create.call_args
@@ -72,6 +90,8 @@ def test_sources_persisted_in_history():
     service._load_history = mock_load
     
     mock_wrapper = MagicMock()
+    mock_wrapper.openai_client = None
+    mock_wrapper.groq_client = None
     mock_wrapper.is_configured.return_value = True
     mock_wrapper.chat_complete.return_value = "The liability is limited to $1M."
     

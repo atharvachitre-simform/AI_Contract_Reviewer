@@ -4,10 +4,10 @@ from src import config
 def test_config_defaults():
     # Test that default values are correctly loaded
     assert config.MAX_CLAUSES_TO_ANALYZE == 50
-    assert config.CLAUSE_TEXT_TRUNCATION == 700
+    assert config.CLAUSE_TEXT_TRUNCATION == 1200
     assert config.RISK_THRESHOLD_HIGH == 0.6
     assert config.RISK_THRESHOLD_MEDIUM == 0.3
-    assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 12000
+    assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 16000
     assert config.OBLIGATION_FINDER_MAX_TOKENS == 6000
     assert config.RED_FLAG_DETECTOR_MAX_TOKENS == 8000
     assert config.RISK_SCORER_MAX_TOKENS == 6000
@@ -25,7 +25,7 @@ def test_config_defaults():
 def test_config_env_overrides(monkeypatch):
     # Test that env overrides work correctly when config is loaded
     monkeypatch.setenv("RISK_SCORER_MAX_CLAUSES", "25")
-    monkeypatch.setenv("RISK_SCORER_TEXT_TRUNCATION", "500")
+    monkeypatch.setenv("AGENT_CLAUSE_TRUNCATION", "500")
     monkeypatch.setenv("RISK_THRESHOLD_HIGH", "0.8")
     monkeypatch.setenv("OBLIGATION_FINDER_MAX_TOKENS", "1500")
     monkeypatch.setenv("RETRY_MULTIPLIER", "2.5")
@@ -42,7 +42,7 @@ def test_config_env_overrides(monkeypatch):
     finally:
         # Reload again with clean environment to restore defaults
         monkeypatch.delenv("RISK_SCORER_MAX_CLAUSES", raising=False)
-        monkeypatch.delenv("RISK_SCORER_TEXT_TRUNCATION", raising=False)
+        monkeypatch.delenv("AGENT_CLAUSE_TRUNCATION", raising=False)
         monkeypatch.delenv("RISK_THRESHOLD_HIGH", raising=False)
         monkeypatch.delenv("OBLIGATION_FINDER_MAX_TOKENS", raising=False)
         monkeypatch.delenv("RETRY_MULTIPLIER", raising=False)
