@@ -651,16 +651,21 @@ def render_chat_tab(contract_id: str) -> None:
             else:
                 for s_idx, src in enumerate(sources, 1):
                     clause_type = src.get("clause_type", "General")
-                    page = src.get("source_page")
+                    raw_page = src.get("source_page")
+                    try:
+                        page = int(float(str(raw_page))) if raw_page else None
+                    except (ValueError, TypeError):
+                        page = None
+                        
                     page_str = f"Page {page}" if page else ""
                     snippet = src.get("text", "")
                     
                     title = f"📄 Ref {s_idx}: {clause_type} {page_str}".strip()
                     with st.expander(title, expanded=True):
                         st.write(snippet)
-                        if page and contract_id != "general" and pages_dir.exists():
+                        if page is not None and contract_id != "general" and pages_dir.exists():
                             import hashlib
-                            clause_hash = hashlib.md5(snippet.strip().encode("utf-8")).hexdigest()
+                            clause_hash = src.get("clause_hash") or hashlib.md5(snippet.strip().encode("utf-8")).hexdigest()
                             crop_path = pages_dir / f"clause_{clause_hash}.png"
                             
                             # Extract and format confidence score if present
@@ -690,14 +695,20 @@ def render_chat_tab(contract_id: str) -> None:
                                         conf_color = "#e74c3c"
                                     conf_badge_html = f'<div style="margin-top: 5px; margin-bottom: 10px;"><span style="background-color: {conf_color}22; color: {conf_color}; border: 1px solid {conf_color}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{str(confidence).upper()} Confidence Score</span></div>'
 
+                            import base64
+                            
                             if crop_path.exists():
-                                st.image(str(crop_path), caption=f"Page {page} - Clause Crop{conf_suffix}", use_container_width=True)
+                                b64 = base64.b64encode(crop_path.read_bytes()).decode()
+                                caption_text = f"Page {page} - Clause Crop{conf_suffix}"
+                                st.markdown(f'<img src="data:image/png;base64,{b64}" style="width:100%; border-radius: 4px;" alt="{caption_text}" /><p style="text-align:center; font-size:12px; color:#888;">{caption_text}</p>', unsafe_allow_html=True)
                                 if conf_badge_html:
                                     st.markdown(conf_badge_html, unsafe_allow_html=True)
                             else:
                                 page_path = pages_dir / f"page_{page}.png"
                                 if page_path.exists():
-                                    st.image(str(page_path), caption=f"Page {page}{conf_suffix}", use_container_width=True)
+                                    b64 = base64.b64encode(page_path.read_bytes()).decode()
+                                    caption_text = f"Page {page}{conf_suffix}"
+                                    st.markdown(f'<img src="data:image/png;base64,{b64}" style="width:100%; border-radius: 4px;" alt="{caption_text}" /><p style="text-align:center; font-size:12px; color:#888;">{caption_text}</p>', unsafe_allow_html=True)
                                     if conf_badge_html:
                                         st.markdown(conf_badge_html, unsafe_allow_html=True)
 

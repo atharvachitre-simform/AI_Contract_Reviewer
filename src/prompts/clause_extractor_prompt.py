@@ -49,7 +49,7 @@ PROMPT_GUIDELINES = (
     "- If no substantive clauses are found in this text, output 'NO_SUBSTANTIVE_CLAUSE' under the ## Clauses heading and nothing else.\n"
     "- Do not treat subclauses as independent clauses.\n"
     "- Any primary section, substantive clause, or major heading (e.g., Section 1, Clause A, or unnumbered headings like 'Indemnification', 'Governing Law') should be classified as primary clauses marked with '### [Clause Type]'.\n"
-    "- Sub-sections and list items (e.g., 1.1, 1.2, (a), (b), (i), (ii)) must be preserved as children of their parent clause marked with '#### Subclause: [Clause Type]'.\n"
+    "- CRITICAL: You MUST independently extract ALL nested sub-sections and list items (e.g., 1.1, 1.2, (a), (b), (i), (ii)) as children of their parent clause marked with '#### Subclause: [Clause Type]'. Do NOT group, skip, or summarize them. Failure to extract every single subclause is a critical error.\n"
     "- Treat introductory contract language, party definitions, effective dates, recitals, and WHEREAS statements as PREAMBLE or RECITAL sections, not contractual clauses.\n"
     "- Do NOT extract pure glossary entries (e.g., 'Business Day means any day other than Saturday...') as standalone clauses. However, if a paragraph labelled as a definition also contains an operative obligation — any sentence with SHALL, MUST, WILL NOT, IS REQUIRED TO, IS PROHIBITED FROM, or IS ENTITLED TO — extract that obligation as a clause using the obligation's category, not a definition category. The definition framing is irrelevant; the obligation controls.\n"
     "- Do NOT extract redacted financial placeholders or empty brackets.\n"

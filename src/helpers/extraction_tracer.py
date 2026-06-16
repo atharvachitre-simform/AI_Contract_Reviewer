@@ -191,6 +191,7 @@ class ExtractionTracer:
                 "token_count_est": est_tokens,
                 "start_offset": cumulative_offset,
                 "end_offset": cumulative_offset + char_count,
+                "text": chunk
             }
             chunk_meta.append(meta)
             self._chunk_metrics.append(meta)
