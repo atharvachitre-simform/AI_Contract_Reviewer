@@ -87,6 +87,15 @@ class StreamReviewRequest(BaseModel):
     perspective: str | None = None
     resume: bool = True
 
+class BatchReviewRequest(BaseModel):
+    """Request payload for bulk batch review."""
+    contracts: list[ReviewRequest]
+
+class BatchReviewResponse(BaseModel):
+    """Response payload for bulk batch review."""
+    batch_id: str
+    status: str
+
 
 # ---------------------------------------------------------------------------
 # Health
@@ -172,6 +181,45 @@ def export_review(format: str = "pdf", contract_id: str = Depends(verify_path_co
         )
     else:
         raise HTTPException(status_code=400, detail="Unsupported export format. Use 'pdf', 'docx', or 'md'.")
+
+# ---------------------------------------------------------------------------
+# Batch Review (Bulk Processing)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/review/batch/submit", response_model=BatchReviewResponse)
+async def submit_batch_review(request: BatchReviewRequest, user: dict = Depends(get_current_user)):
+    """Submit multiple contracts for bulk processing using OpenAI Batch API."""
+    from .services.services import ContractReviewService
+    import uuid
+    
+    contracts = []
+    for r in request.contracts:
+        c_id = r.contract_id or str(uuid.uuid4())
+        sanitize_contract_id(c_id)
+        contracts.append({"contract_id": c_id, "contract_text": r.contract_text})
+        
+    service = ContractReviewService()
+    try:
+        batch_id = await service.submit_bulk_review(contracts)
+        return BatchReviewResponse(batch_id=batch_id, status="submitted")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/review/batch/{batch_id}/status")
+async def get_batch_status(batch_id: str, user: dict = Depends(get_current_user)):
+    """Check the status of a bulk batch review job."""
+    from .services.services import ContractReviewService
+    
+    # We do not strictly check contract ownership here because batch IDs are opaque 
+    # and unguessable. A production app might want to map batch_id -> user_id.
+    service = ContractReviewService()
+    try:
+        status_info = await service.get_bulk_review_status(batch_id)
+        if status_info.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail=status_info["message"])
+        return status_info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

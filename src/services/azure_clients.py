@@ -1326,6 +1326,12 @@ class MemoryStore:
                 try:
                     vector = embedding_client.get_embedding(raw_text)
                     point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{contract_id}_{idx}_{clause_type[:20]}"))
+                    
+                    if isinstance(c, dict):
+                        c["qdrant_id"] = point_id
+                    else:
+                        c.qdrant_id = point_id
+                        
                     points.append(PointStruct(
                         id=point_id,
                         vector=vector,
@@ -1334,6 +1340,7 @@ class MemoryStore:
                             "clause_type": clause_type,
                             "text": raw_text,
                             "confidence": confidence,
+                            "clause_hash": hashlib.md5(raw_text.strip().encode("utf-8")).hexdigest(),
                             # Fix: ClauseSpan uses 'source_page', not 'page_number'
                             "source_page": getattr(c, "source_page", None) or (c.get("source_page") if isinstance(c, dict) else None)
                         }

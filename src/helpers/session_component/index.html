@@ -13,6 +13,11 @@
                 type: "streamlit:componentReady",
                 apiVersion: 1
             }, "*");
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:setFrameHeight",
+                height: 0
+            }, "*");
         }
 
         // Handle commands/arguments received from Streamlit (Python)

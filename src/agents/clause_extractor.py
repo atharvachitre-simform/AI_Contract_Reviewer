@@ -623,79 +623,116 @@ def llm_extraction_node(
                     # Budgeting (Change B)
                     target_clauses = max(3, min(20, unit["token_count"] // 120))
                     
-                    logger.info(
-                        f"Extracting clauses from unit {idx}/{len(units)} "
-                        f"(size: {len(unit['text'])} chars, path: '{unit['section']}', target_clauses: {target_clauses})"
-                    )
+                    from ..services.semantic_cache import SemanticCache
+                    semantic_cache = SemanticCache()
+                    tenant_id = memory_context.get("tenant_id") if memory_context else None
+                    parsed = semantic_cache.check_cache(unit["text"], threshold=0.98, tenant_id=tenant_id)
                     
-                    prompt = build_clause_extractor_prompt(
-                        unit["text"],
-                        source_file=state["source_file"],
-                        memory_context=memory_context,
-                        reference_clauses=state["reference_clauses"],
-                        section_hint=unit["section"],
-                        target_clauses=target_clauses,
-                        context_header=unit["context_header"]
-                    )
-                    
-                    sep = "INSTRUCTIONS:\n"
-                    if sep in prompt:
-                        system_prompt, user_prompt = prompt.split(sep, 1)
-                        system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-                        user_prompt = sep + user_prompt
-                    else:
-                        system_prompt = None
-                        user_prompt = prompt
-
                     instruction_tokens = 1530
                     contract_tokens = unit["token_count"]
-                    retrieval_tokens = len(str(state["reference_clauses"])) // 4 if state["reference_clauses"] else 0
+                    retrieval_tokens = len(str(state.get("reference_clauses", ""))) // 4 if state.get("reference_clauses") else 0
                     total_tokens = instruction_tokens + contract_tokens + retrieval_tokens
 
-                    # Trace stage 6: record prompt
-                    if _tracer:
-                        _tracer.record_prompt(
-                            chunk_idx=idx,
-                            prompt_text=prompt,
-                            system_tokens=instruction_tokens,
-                            task_tokens=80,
-                            rag_tokens=retrieval_tokens,
-                            chunk_tokens=contract_tokens,
+                    if parsed:
+                        logger.info(f"Semantic Cache HIT for unit {idx}/{len(units)}")
+                        llm_response = json.dumps(parsed)
+                        
+                        # Trace stage 6: record prompt (cache hit)
+                        if _tracer:
+                            _tracer.record_prompt(
+                                chunk_idx=idx,
+                                prompt_text="[SEMANTIC CACHE HIT] No full prompt generated.",
+                                system_tokens=instruction_tokens,
+                                task_tokens=80,
+                                rag_tokens=retrieval_tokens,
+                                chunk_tokens=contract_tokens,
+                            )
+                            
+                        # Log to LangFuse as cached generation
+                        from ..services.langfuse_tracer import LangFuseTracer
+                        lf_tracer = LangFuseTracer()
+                        lf_tracer.log_generation(
+                            name="clause_extractor",
+                            model="semantic_cache",
+                            input_messages=[{"role": "user", "content": f"Cache check for unit {idx}"}],
+                            output=llm_response,
+                            input_tokens=total_tokens,
+                            output_tokens=len(llm_response) // 4,
+                            cached_tokens=total_tokens,
+                            total_tokens=total_tokens + (len(llm_response) // 4),
                         )
+                    else:
+                        logger.info(
+                            f"Extracting clauses from unit {idx}/{len(units)} "
+                            f"(size: {len(unit['text'])} chars, path: '{unit['section']}', target_clauses: {target_clauses})"
+                        )
+                        
+                        prompt = build_clause_extractor_prompt(
+                            unit["text"],
+                            source_file=state["source_file"],
+                            memory_context=memory_context,
+                            reference_clauses=state["reference_clauses"],
+                            section_hint=unit["section"],
+                            target_clauses=target_clauses,
+                            context_header=unit["context_header"]
+                        )
+                        
+                        sep = "INSTRUCTIONS:\n"
+                        if sep in prompt:
+                            system_prompt, user_prompt = prompt.split(sep, 1)
+                            system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+                            user_prompt = sep + user_prompt
+                        else:
+                            system_prompt = None
+                            user_prompt = prompt
 
-                    from ..services.async_azure_client import AsyncAzureOpenAIWrapper
-                    async_client = AsyncAzureOpenAIWrapper(llm_client)
-                    
-                    llm_response = await async_client.async_chat_complete(
-                        prompt=user_prompt,
-                        temperature=0.0,
-                        max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
-                        system_prompt=system_prompt,
-                    )
-                    
-                    # Log finish reason
-                    import hashlib
-                    chunk_hash = hashlib.sha256(unit["text"].encode("utf-8")).hexdigest()
-                    logger.debug(
-                        f"[CLAUSE_EXTRACTOR_RAW] unit {idx} response "
-                        f"[CONTRACT TEXT: {len(unit['text'])} chars, hash: {chunk_hash[:8]}]"
-                    )
-                    _log_clause_finish_reason(llm_client, chunk_label=f"unit {idx}/{len(units)}")
+                        # Trace stage 6: record prompt
+                        if _tracer:
+                            _tracer.record_prompt(
+                                chunk_idx=idx,
+                                prompt_text=prompt,
+                                system_tokens=instruction_tokens,
+                                task_tokens=80,
+                                rag_tokens=retrieval_tokens,
+                                chunk_tokens=contract_tokens,
+                            )
 
-                    parsed = _parse_llm_response(llm_response)
-                    
-                    # Validation/Retry Layer (basic fallback retry)
-                    is_valid = parsed and parsed.get("clauses") and all(c.get("raw_text") for c in parsed.get("clauses", []))
-                    if not is_valid and "NO_SUBSTANTIVE_CLAUSE" not in (llm_response or ""):
-                        logger.warning(f"Unit {idx} yielded zero clauses or missing raw_text. Retrying with strict markdown reminder...")
-                        strict_reminder = "\n\nCRITICAL REMINDER: Output ONLY the requested Markdown. Do not include commentary. Ensure you extract the verbatim 'Text:' for each clause."
+                        from ..services.async_azure_client import AsyncAzureOpenAIWrapper
+                        async_client = AsyncAzureOpenAIWrapper(llm_client)
+                        
                         llm_response = await async_client.async_chat_complete(
-                            prompt=user_prompt + strict_reminder,
+                            prompt=user_prompt,
                             temperature=0.0,
                             max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
                             system_prompt=system_prompt,
                         )
+
+                        # Log finish reason
+                        import hashlib
+                        chunk_hash = hashlib.sha256(unit["text"].encode("utf-8")).hexdigest()
+                        logger.debug(
+                            f"[CLAUSE_EXTRACTOR_RAW] unit {idx} response "
+                            f"[CONTRACT TEXT: {len(unit['text'])} chars, hash: {chunk_hash[:8]}]"
+                        )
+                        _log_clause_finish_reason(llm_client, chunk_label=f"unit {idx}/{len(units)}")
+
                         parsed = _parse_llm_response(llm_response)
+
+                        # Validation/Retry Layer (basic fallback retry)
+                        is_valid = parsed and parsed.get("clauses") and all(c.get("raw_text") for c in parsed.get("clauses", []))
+                        if not is_valid and "NO_SUBSTANTIVE_CLAUSE" not in (llm_response or ""):
+                            logger.warning(f"Unit {idx} yielded zero clauses or missing raw_text. Retrying with strict markdown reminder...")
+                            strict_reminder = "\n\nCRITICAL REMINDER: Output ONLY the requested Markdown. Do not include commentary. Ensure you extract the verbatim 'Text:' for each clause."
+                            llm_response = await async_client.async_chat_complete(
+                                prompt=user_prompt + strict_reminder,
+                                temperature=0.0,
+                                max_tokens=config.CLAUSE_EXTRACTOR_MAX_TOKENS,
+                                system_prompt=system_prompt,
+                            )
+                            parsed = _parse_llm_response(llm_response)
+                        
+                        if parsed:
+                            semantic_cache.save_to_cache(unit["text"], parsed, tenant_id=tenant_id)
 
                     unit_clauses_extracted = len(parsed.get("clauses", [])) if parsed else 0
                     
@@ -864,6 +901,7 @@ def llm_extraction_node(
                         lsh_index[sig].append(new_idx)
             unique_clauses.extend(bucket_uniques)
         clauses = unique_clauses
+        state["clauses"] = clauses
 
         # ── Trace stage 8: record postprocessing / dedup ──────────────────────
         _post_tracer = state.get("tracer")

@@ -109,7 +109,127 @@ class ContractReviewService:
             if results.clause_extraction and results.clause_extraction.clauses:
                 self.memory.index_clauses_in_qdrant(contract_id, results.clause_extraction.clauses)
 
-    def extract_clauses(self, contract_text: str) -> dict[str, Any]:
+    async def submit_bulk_review(self, contracts: list[dict[str, str]]) -> str:
+        """
+        Submits multiple contracts for bulk extraction via OpenAI Batch API.
+        `contracts` should be a list of dicts with 'contract_id' and 'contract_text'.
+        """
+        from .batch_processor import BatchProcessor
+        from .redis_client import AsyncRedisClient
+        
+        processor = BatchProcessor(self.azure)
+        jsonl_path = processor.compile_extraction_batch(contracts)
+        
+        batch_id = processor.submit_batch(jsonl_path)
+        
+        # Save mapping of batch_id -> contract details in Redis
+        redis = AsyncRedisClient()
+        mapping_data = {
+            "contracts": contracts,
+            "status": "submitted"
+        }
+        await redis.setex(f"batch:{batch_id}", 24 * 3600, json.dumps(mapping_data))
+        
+        return batch_id
+
+    async def get_bulk_review_status(self, batch_id: str) -> dict[str, Any]:
+        """Gets the status of a bulk review and processes it if completed."""
+        from .batch_processor import BatchProcessor
+        from .redis_client import AsyncRedisClient
+        
+        redis = AsyncRedisClient()
+        mapping_str = await redis.get(f"batch:{batch_id}")
+        if not mapping_str:
+            return {"status": "not_found", "message": f"Batch {batch_id} not found."}
+            
+        mapping_data = json.loads(mapping_str)
+        if mapping_data.get("status") == "completed":
+            return {"status": "completed", "message": "Batch already processed."}
+            
+        processor = BatchProcessor(self.azure)
+        status_info = processor.check_status(batch_id)
+        
+        if status_info["status"] == "completed":
+            # Map of contract_id -> text for parsing
+            contracts_map = {c["contract_id"]: c["contract_text"] for c in mapping_data["contracts"]}
+            results = processor.process_completed_batch(batch_id, contracts_map)
+            
+            # Now run the rest of the pipeline synchronously for each
+            # To avoid blocking the event loop too much, we could use asyncio.to_thread
+            import asyncio
+            from ..workflows.workflow import ContractReviewWorkflow
+            
+            async def process_downstream(c_id: str, extracted_data):
+                def _run_workflow():
+                    wf = ContractReviewWorkflow()
+                    c_text = contracts_map.get(c_id, "")
+                    # We pass the pre-computed clause_extraction via memory_context or as a kwarg?
+                    # The workflow currently calls `extract_clauses`. We need to bypass it.
+                    # Wait, ContractReviewWorkflow.run calls `extract_clauses` unconditionally.
+                    # We'll just run the downstream agents manually here to build the ContractReviewState
+                    # similar to what ContractReviewWorkflow does, or we can just call the service methods.
+                    
+                    state = ContractReviewState(
+                        contract_id=c_id,
+                        contract_text=c_text,
+                        clause_extraction=extracted_data,
+                        status=ProcessingStatus.RUNNING,
+                    )
+                    
+                    # 1. Run parallel agents
+                    # Since we are in an async function, we can just run them synchronously in a thread pool
+                    from concurrent.futures import ThreadPoolExecutor
+                    import contextvars
+                    ctx_obl = contextvars.copy_context()
+                    ctx_red = contextvars.copy_context()
+                    
+                    obl_client = self.azure.get_openai_client_for_agent("obligation_finder")
+                    red_client = self.azure.get_openai_client_for_agent("red_flag_detector")
+                    risk_client = self.azure.get_openai_client_for_agent("risk_scorer")
+                    plain_client = self.azure.get_openai_client_for_agent("plain_english_writer")
+                    assembler_client = self.azure.get_openai_client_for_agent("report_assembler")
+                    
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        obl_fut = executor.submit(lambda: ctx_obl.run(find_obligations, extracted_data, obl_client))
+                        red_fut = executor.submit(lambda: ctx_red.run(detect_red_flags, extracted_data, red_client))
+                        
+                        state.obligation_finding = obl_fut.result()
+                        state.red_flag_detection = red_fut.result()
+                    
+                    state.risk_scoring = score_risks(extracted_data, risk_client)
+                    
+                    risks_text = "\n".join([f"- {issue.clause_type}: {issue.issue}" for issue in state.risk_scoring.issues])
+                    red_flags_text = "\n".join([f"- {flag.pattern_name}: {flag.description}" for flag in state.red_flag_detection.red_flags])
+                    
+                    state.plain_english = generate_plain_english(
+                        extracted_data, plain_client, risks_text=risks_text, red_flags_text=red_flags_text
+                    )
+                    
+                    state.final_report = assemble_report(
+                        clause_extraction=extracted_data,
+                        risk_scoring=state.risk_scoring,
+                        red_flags=state.red_flag_detection,
+                        plain_english=state.plain_english,
+                        llm_client=assembler_client
+                    )
+                    
+                    state.status = ProcessingStatus.COMPLETED
+                    self.save_checkpoint(c_id, state)
+                    self._save_memory(c_id, c_id, state)
+                    return state
+
+                return await asyncio.to_thread(_run_workflow)
+            
+            # Process all contracts in parallel
+            tasks = [process_downstream(c_id, extracted_data) for c_id, extracted_data in results.items()]
+            await asyncio.gather(*tasks)
+            
+            mapping_data["status"] = "completed"
+            await redis.setex(f"batch:{batch_id}", 24 * 3600, json.dumps(mapping_data))
+            
+        return status_info
+
+    def extract_clauses(self, contract_text: str, user_id: str | None = None) -> dict[str, Any]:
         """Extract key clauses from contract text.
         
         Args:
@@ -120,7 +240,10 @@ class ContractReviewService:
         """
         logger.info(f"Extracting clauses from contract ({len(contract_text)} chars)")
         self._trace("extract_clauses", "Extract clauses from contract text.", {"text_length": len(contract_text)}, "started")
-        result = extract_clauses(contract_text)
+        
+        memory_context = {"tenant_id": user_id} if user_id else None
+        result = extract_clauses(contract_text, memory_context=memory_context)
+        
         self._trace("extract_clauses", "Completed clause extraction.", {"clause_count": len(result.clauses)}, "completed")
         return result.model_dump()
 
@@ -366,6 +489,8 @@ class ContractReviewService:
             )
 
         memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
+        if user_id:
+            memory_context["tenant_id"] = user_id
 
         logger.info("Starting contract review process")
         # Open a user-scoped pipeline trace — stores user_id, contract_id,
