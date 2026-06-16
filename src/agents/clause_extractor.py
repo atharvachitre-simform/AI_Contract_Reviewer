@@ -309,8 +309,21 @@ def _split_by_sections(text: str) -> list[str]:
 
 
 
-def classify_extraction_unit(text: str) -> str:
+def classify_extraction_unit(text: str) -> tuple[str, float]:
     text_lower = text.lower()
+    
+    # Calculate relevance score based on keyword density
+    legal_keywords = {
+        "shall", "must", "payment", "royalty", "termination", 
+        "indemnify", "confidential", "audit", "notice", "obligation", 
+        "restriction", "liability", "warranty", "breach", "covenant",
+        "jurisdiction", "governing law", "intellectual property", "license",
+        "fee", "invoice", "taxes", "assignment", "waiver", "severability"
+    }
+    words = set(re.findall(r"\w+", text_lower))
+    matched_keywords = legal_keywords.intersection(words)
+    relevance_score = min(1.0, len(matched_keywords) / 5.0)
+
     is_definition = False
     if "means" in text_lower or "has the meaning" in text_lower:
         if re.search(r'(?i)"[^"]+"\s+means', text) or re.search(r"(?i)'[^']+'\s+means", text) or "has the meaning set forth" in text_lower:
@@ -323,10 +336,10 @@ def classify_extraction_unit(text: str) -> str:
             r"\bundertakes?\s+to\b"
         ]
         if any(re.search(pat, text_lower) for pat in duty_patterns):
-            return "OPERATIVE_DEFINITION"
+            return "OPERATIVE_DEFINITION", relevance_score
         else:
-            return "PURE_DEFINITION"
-    return "SUBSTANTIVE"
+            return "PURE_DEFINITION", 0.0
+    return "SUBSTANTIVE", relevance_score
 
 
 def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[dict]:
@@ -590,9 +603,16 @@ def llm_extraction_node(
                 nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
                 
                 # Check definition pre-classification (Change C)
-                classif = classify_extraction_unit(unit["text"])
+                classif, relevance_score = classify_extraction_unit(unit["text"])
                 if classif == "PURE_DEFINITION":
                     logger.info(f"Skipping pure definition section: '{unit['section']}'")
+                    processed_units += 1
+                    cache_reuse_count += 1
+                    return None
+                    
+                MIN_RELEVANCE_THRESHOLD = 0.3
+                if relevance_score < MIN_RELEVANCE_THRESHOLD and not contains_risk_trigger_terms(unit["text"]):
+                    logger.info(f"Skipping low-relevance boilerplate section: '{unit['section']}' (score: {relevance_score})")
                     processed_units += 1
                     cache_reuse_count += 1
                     return None

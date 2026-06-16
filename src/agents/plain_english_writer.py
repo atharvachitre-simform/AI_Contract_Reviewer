@@ -88,7 +88,18 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 			if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_SUMMARY
 			and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
 		]
-		clauses_to_analyze = filtered_clauses[:20]
+		risks_text_lower = state.get("risks_text", "").lower()
+		red_flags_text_lower = state.get("red_flags_text", "").lower()
+
+		clauses_to_analyze = []
+		for c in filtered_clauses:
+			ctype = str(getattr(c, "clause_type", "") or "").strip().lower()
+			if ctype and (ctype in risks_text_lower or ctype in red_flags_text_lower):
+				clauses_to_analyze.append(c)
+		
+		# Fallback if no specific risks found, just process substantive clauses
+		if not clauses_to_analyze:
+			clauses_to_analyze = filtered_clauses
 		from ..helpers.compression_helper import get_compressed_payload_string
 		clauses_text = get_compressed_payload_string(clauses_to_analyze) if clauses_to_analyze else "(No candidate clauses were extracted from the contract.)"
 
@@ -159,7 +170,7 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 	if not state["llm_attempt_success"] or not state["clause_summaries"]:
 		clauses = state["clause_extraction"].clauses
 		if clauses:
-			summarized_types = [c.clause_type for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]]
+			summarized_types = [c.clause_type for c in clauses]
 			state["executive_summary"] = (
 				"This contract contains key clauses including: " + ", ".join(summarized_types) + ". "
 				"The following sections provide a detailed breakdown of these extracted clauses."
@@ -172,9 +183,9 @@ def validate_summaries_node(state: PlainEnglishWriterState) -> PlainEnglishWrite
 					why_it_matters="Extracted from the contract text.",
 					party_burden="obligatory"
 				)
-				for c in clauses[:config.PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT]
+				for c in clauses
 			]
-			state["key_points"] = [f"Extracted {c.clause_type}: {c.raw_text[:120]}..." for c in clauses[:3]]
+			state["key_points"] = [f"Extracted {c.clause_type}: {c.raw_text[:120]}..." for c in clauses]
 			state["plain_english_risk_notes"] = ["Manual verification of the extracted clauses is recommended to ensure full compliance."]
 		else:
 			state["executive_summary"] = "No candidate clauses were extracted or Plain English summary generation failed."
@@ -222,8 +233,8 @@ class PlainEnglishWriterAgent:
 		return PlainEnglishWriterOutput(
 			executive_summary=final_state["executive_summary"],
 			clause_summaries=final_state["clause_summaries"],
-			key_points=final_state["key_points"][:12],
-			plain_english_risk_notes=final_state["plain_english_risk_notes"][:10],
+			key_points=final_state["key_points"],
+			plain_english_risk_notes=final_state["plain_english_risk_notes"],
 		)
 
 

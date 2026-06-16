@@ -65,20 +65,20 @@ graph TD
 * **Rationale**: Identifying active party agreements ("who does what, and by when") is a structured information extraction task. `GPT-4o-mini` is highly cost-effective and provides **fast JSON schema parsing** for straightforward task-oriented extractions from the already isolated clauses.
 
 ### 4. Red Flag Detector
-* **Model**: `GPT-4o` *(Upgraded from GPT-4o-mini)*
-* **Rationale**: Initially tested with `GPT-4o-mini`, but the lightweight model proved too conservative—often failing to infer silent omissions or subtle liability loops. Upgrading to `GPT-4o` provides the **deep logical reasoning and negative space inference** necessary to catch what the contract *does not say* (e.g., missing mutual indemnifications).
+* **Model**: `GPT-4o-mini` *(Optimized back from GPT-4o in Sprint 2)*
+* **Rationale**: Initially tested with `GPT-4o-mini` and upgraded to `GPT-4o` for deep logical negative-space inference. It was subsequently optimized back to `GPT-4o-mini` in Sprint 2 for cost-efficiency, utilizing structured JSON payload compression to maintain robust legal check recall at fraction of the cost.
 
 ### 5. Risk Scorer
-* **Model**: `GPT-4o`
-* **Rationale**: This agent compares extracted clauses against regulatory benchmarks retrieved via RAG (Azure AI Search/Qdrant) and scores the risk of the terms from 0.0 to 1.0. This require **top-tier comparative reasoning and mathematical consistency** to ensure risk rationale matches the computed severity.
+* **Model**: `GPT-4o-mini` *(Optimized from GPT-4o in Sprint 2)*
+* **Rationale**: Compares extracted clauses against guidelines retrieved via RAG. Optimized to `GPT-4o-mini` in Sprint 2, it leverages compressed payload representations and RAG standards to produce consistent scoring rationals at minimal token cost.
 
 ### 6. Plain English Writer
 * **Model**: `GPT-4o-mini`
 * **Rationale**: Translating legal terminology into natural, accessible summaries is a language generation task where lightweight models shine. `GPT-4o-mini` provides **high-speed translation** without consuming large token budgets.
 
 ### 7. Report Assembler
-* **Model**: `GPT-4o`
-* **Rationale**: The assembler synthesizes outputs from all preceding agents, resolves conflicting scores, notes missing clauses, and outputs the final verdict. Doing this coherently requires **complex semantic synthesis** to make the final report unified and clear.
+* **Model**: `GPT-4o-mini` *(Optimized from GPT-4o in Sprint 2)*
+* **Rationale**: Synthesizes preceding agent outputs, resolves conflicting scores, and logs warnings. Using `GPT-4o-mini` keeps the final verification pass cost-effective while maintaining unified report formatting.
 
 ---
 
