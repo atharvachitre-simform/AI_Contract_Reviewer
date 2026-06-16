@@ -173,24 +173,30 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 
 	try:
 		clauses_list = []
-		for idx, clause in enumerate(state["clause_extraction"].clauses[:config.REPORT_ASSEMBLER_CLAUSES_LIMIT], 1):
+		for idx, clause in enumerate(state["clause_extraction"].clauses, 1):
 			clauses_list.append(f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}")
 		clauses_summary = "\n".join(clauses_list) if clauses_list else "(No clauses provided)"
 
 		risks_list = [f"Overall Risk Level: {state['risk_scoring'].overall_risk_level.value}", f"Overall Risk Score: {state['risk_scoring'].overall_risk_score}"]
-		for idx, issue in enumerate(state["risk_scoring"].issues[:10], 1):
-			risks_list.append(f"- Issue {idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}")
+		risk_idx = 1
+		for issue in state["risk_scoring"].issues:
+			if issue.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
+				risks_list.append(f"- Issue {risk_idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}")
+				risk_idx += 1
 		risks_summary = "\n".join(risks_list)
 
 		red_flags_list = [f"High Severity Flags Count: {state['red_flags'].high_severity_count}"]
-		for idx, flag in enumerate(state["red_flags"].red_flags[:10], 1):
-			red_flags_list.append(f"- Red Flag {idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}")
+		rf_idx = 1
+		for flag in state["red_flags"].red_flags:
+			if flag.severity in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
+				red_flags_list.append(f"- Red Flag {rf_idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}")
+				rf_idx += 1
 		red_flags_summary = "\n".join(red_flags_list)
 
 		plain_english_list = [f"Executive Summary: {state['plain_english'].executive_summary}"]
-		for idx, pt in enumerate(state["plain_english"].key_points[:8], 1):
+		for idx, pt in enumerate(state["plain_english"].key_points, 1):
 			plain_english_list.append(f"- Key Point {idx}: {pt}")
-		for idx, note in enumerate(state["plain_english"].plain_english_risk_notes[:8], 1):
+		for idx, note in enumerate(state["plain_english"].plain_english_risk_notes, 1):
 			plain_english_list.append(f"- Risk Note {idx}: {note}")
 		plain_english_summary = "\n".join(plain_english_list)
 

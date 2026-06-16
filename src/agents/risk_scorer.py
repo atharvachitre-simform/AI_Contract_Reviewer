@@ -27,6 +27,7 @@ class RiskScorerState(TypedDict):
     clause_risk_map: dict[str, float]
     memory_context: dict[str, Any] | None
     perspective: str | None
+    clauses_analyzed: int
 
 
 class RiskScorerAgent:
@@ -195,8 +196,8 @@ class RiskScorerAgent:
                 and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
                 and getattr(c, "clause_tag", "") not in {"definition", "placeholder"}
             ]
-            clauses_to_analyze = filtered_clauses[: self.MAX_CLAUSES_TO_ANALYZE]
-            chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
+            clauses_to_analyze = filtered_clauses
+            chunk_size = self.MAX_CLAUSES_TO_ANALYZE
             
             # Divide into chunks
             chunks = [clauses_to_analyze[i:i + chunk_size] for i in range(0, len(clauses_to_analyze), chunk_size)]
@@ -316,11 +317,15 @@ class RiskScorerAgent:
                         )
                     )
 
-            logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")
-            state["llm_risks"] = llm_risks
+                if llm_risks:
+                    current_score = sum(issue.risk_score for issue in llm_risks) / len(llm_risks)
+                    if current_score >= config.RISK_THRESHOLD_HIGH:
+                        logger.info(f"Early exit: Reached high risk confidence threshold ({current_score:.2f}) after chunk {chunk_idx + 1}.")
+                        break
 
             logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")
             state["llm_risks"] = llm_risks
+            state["clauses_analyzed"] = global_idx
         except Exception as err:
             logger.error(f"LLM risk analysis failed: {err}", exc_info=True)
             state["llm_risks"] = []
@@ -365,6 +370,7 @@ class RiskScorerAgent:
             "clause_risk_map": {},
             "memory_context": memory_context,
             "perspective": perspective,
+            "clauses_analyzed": 0,
         }
 
         # Create and run graph
@@ -376,13 +382,7 @@ class RiskScorerAgent:
         
         # Calculate truncation details
         total_clauses = len(clause_extraction.clauses) if clause_extraction and clause_extraction.clauses else 0
-        clauses_analyzed = min(total_clauses, self.MAX_CLAUSES_TO_ANALYZE)
-        truncation_warning = None
-        if total_clauses > self.MAX_CLAUSES_TO_ANALYZE:
-            truncation_warning = (
-                f"Warning: Only the first {self.MAX_CLAUSES_TO_ANALYZE} out of {total_clauses} extracted clauses "
-                "were analyzed for risks. Some risks in later clauses may have been truncated."
-            )
+        clauses_analyzed = final_state.get("clauses_analyzed", 0)
             
         return RiskScorerOutput(
             overall_risk_level=final_state["overall_risk_level"],
@@ -392,7 +392,7 @@ class RiskScorerAgent:
             clause_risk_map=final_state["clause_risk_map"],
             clauses_analyzed=clauses_analyzed,
             total_clauses=total_clauses,
-            truncation_warning=truncation_warning,
+            truncation_warning=None,
         )
 
 
