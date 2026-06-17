@@ -17,6 +17,7 @@ from .langfuse_tracer import LangFuseTracer
 from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
 import asyncio
 from .redis_client import AsyncRedisClient
+from .db_store import SQLiteChatStore
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,9 @@ class ContractChatService:
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.local_history_path = self.local_dir / f"{self.session_id}_history.json"
         self.local_summary_path = self.local_dir / f"{self.session_id}_summary.txt"
+
+        # SQLite DB Store
+        self.sqlite_store = SQLiteChatStore()
 
         # Async Redis client
         self.async_redis = AsyncRedisClient()
@@ -95,20 +99,19 @@ class ContractChatService:
                     history = [json.loads(turn) for turn in saved_turns]
                 return summary, history
             except Exception as e:
-                logger.warning(f"Failed to read chat history from Redis: {e}. Checking local files.")
+                logger.warning(f"Failed to read chat history from Redis: {e}. Checking database.")
 
-        # Fallback to local files
-        if self.local_summary_path.exists():
-            summary = self.local_summary_path.read_text(encoding="utf-8").strip()
-        if self.local_history_path.exists():
-            try:
-                history = json.loads(self.local_history_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        # Fallback to SQLite DB
+        try:
+            summary = self.sqlite_store.load_chat_summary(self.user_id, self.contract_id, self.session_id)
+            history = self.sqlite_store.load_chat_history(self.user_id, self.contract_id, self.session_id)
+        except Exception as e:
+            logger.error(f"Failed to load history from SQLite: {e}")
+            
         return summary, history
 
     async def _save_history(self, summary: str, history: list[dict[str, Any]]) -> None:
-        """Save conversation summary and verbatim message history to Redis and local files."""
+        """Save conversation summary and verbatim message history to Redis and SQLite database."""
         # 1. Save to Redis
         if await self._is_redis_available():
             try:
@@ -124,12 +127,26 @@ class ContractChatService:
             except Exception as e:
                 logger.warning(f"Failed to write chat history to Redis: {e}")
 
-        # 2. Save to Local files
+        # 2. Save to SQLite database
         try:
-            self.local_summary_path.write_text(summary, encoding="utf-8")
-            self.local_history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+            # Rebuild session history (clear first to prevent duplicates)
+            self.sqlite_store.clear_session_history(self.user_id, self.contract_id, self.session_id)
+            
+            # Write summary
+            self.sqlite_store.save_chat_summary(self.user_id, self.contract_id, self.session_id, summary)
+            
+            for turn in history:
+                sources = turn.get("sources", None)
+                self.sqlite_store.save_chat_turn(
+                    user_id=self.user_id,
+                    contract_id=self.contract_id,
+                    session_id=self.session_id,
+                    role=turn["role"],
+                    content=turn["content"],
+                    sources=sources
+                )
         except Exception as e:
-            logger.error(f"Failed to save chat history locally: {e}")
+            logger.error(f"Failed to save chat history to SQLite: {e}")
 
     def _summarize_turns(self, summary: str, turns_to_summarize: list[dict[str, str]]) -> str:
         """Summarize conversation turns to merge into the running summary buffer."""
