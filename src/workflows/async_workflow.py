@@ -256,13 +256,15 @@ class AsyncContractReviewWorkflow:
         filtered_extraction = filter_boilerplate_clauses(state.clause_extraction)
 
         # ------------------------------------------------------------------
-        # Steps 2+3: Obligation Finder & Red Flag Detector (parallel)
+        # Steps 2+3+4: Obligation Finder, Red Flag Detector & Risk Scorer (parallel)
         # ------------------------------------------------------------------
         obligation_step = "obligation_finding"
         red_flag_step = "red_flag_detection"
+        risk_step = "risk_scoring"
 
         obligation_skipped = obligation_step in completed
         red_flag_skipped = red_flag_step in completed
+        risk_skipped = risk_step in completed
 
         if obligation_skipped:
             data = await checkpointer.load(obligation_step)
@@ -282,6 +284,15 @@ class AsyncContractReviewWorkflow:
             else:
                 red_flag_skipped = False
 
+        if risk_skipped:
+            data = await checkpointer.load(risk_step)
+            if data:
+                from ..models import RiskScorerOutput
+                state.risk_scoring = RiskScorerOutput(**data) if isinstance(data, dict) else data
+                yield {"step": risk_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
+            else:
+                risk_skipped = False
+
         tasks_to_run = []
         if not obligation_skipped:
             yield {"step": obligation_step, "status": "started", "detail": {}}
@@ -293,48 +304,36 @@ class AsyncContractReviewWorkflow:
             tasks_to_run.append(("red_flag", self._run_in_executor(
                 detect_red_flags, filtered_extraction, red_flag_llm_client, perspective
             )))
+        if not risk_skipped:
+            yield {"step": risk_step, "status": "started", "detail": {}}
+            tasks_to_run.append(("risk", self._run_in_executor(
+                score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective
+            )))
 
         if tasks_to_run:
             results = await asyncio.gather(*[t for _, t in tasks_to_run], return_exceptions=True)
             for (label, _), result in zip(tasks_to_run, results):
                 if isinstance(result, Exception):
-                    step_name = obligation_step if label == "obligation" else red_flag_step
+                    if label == "obligation":
+                        step_name = obligation_step
+                    elif label == "red_flag":
+                        step_name = red_flag_step
+                    else:
+                        step_name = risk_step
                     logger.error(f"Async workflow: step '{step_name}' failed: {result}", exc_info=result)
                     yield {"step": step_name, "status": "error", "detail": {"error": str(result)}}
                 elif label == "obligation":
                     state.obligation_finding = result
                     await checkpointer.save(obligation_step, result)
                     yield {"step": obligation_step, "status": "completed", "detail": {"obligations": len(result.obligations)}}
-                else:
+                elif label == "red_flag":
                     state.red_flag_detection = result
                     await checkpointer.save(red_flag_step, result)
                     yield {"step": red_flag_step, "status": "completed", "detail": {"red_flags": len(result.red_flags)}}
-
-        # ------------------------------------------------------------------
-        # Step 4: Risk Scoring
-        # ------------------------------------------------------------------
-        step = "risk_scoring"
-        if step in completed:
-            data = await checkpointer.load(step)
-            if data:
-                from ..models import RiskScorerOutput
-                state.risk_scoring = RiskScorerOutput(**data) if isinstance(data, dict) else data
-                yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
-            else:
-                completed.discard(step)
-
-        if step not in completed:
-            yield {"step": step, "status": "started", "detail": {}}
-            try:
-                risk_scoring = await self._run_in_executor(
-                    score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective
-                )
-                state.risk_scoring = risk_scoring
-                await checkpointer.save(step, risk_scoring)
-                yield {"step": step, "status": "completed", "detail": {"issues": len(risk_scoring.issues)}}
-            except Exception as e:
-                logger.error(f"Async workflow: step '{step}' failed: {e}", exc_info=True)
-                yield {"step": step, "status": "error", "detail": {"error": str(e)}}
+                elif label == "risk":
+                    state.risk_scoring = result
+                    await checkpointer.save(risk_step, result)
+                    yield {"step": risk_step, "status": "completed", "detail": {"issues": len(result.issues)}}
 
         # ------------------------------------------------------------------
         # Step 5: Plain English Writer

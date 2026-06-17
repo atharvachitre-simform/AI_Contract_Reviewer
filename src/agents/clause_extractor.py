@@ -772,7 +772,7 @@ def llm_extraction_node(
                     return parsed
                     
             tasks = [extract_unit(idx, unit) for idx, unit in enumerate(units, 1)]
-            return await asyncio.gather(*tasks)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
         # Event loop dispatcher
         try:
@@ -790,6 +790,10 @@ def llm_extraction_node(
 
         # Collect first pass outputs
         for parsed in results:
+            if isinstance(parsed, Exception):
+                logger.error(f"Chunk extraction failed with error: {parsed}")
+                state["error_messages"].append(f"Chunk LLM error: {str(parsed)}")
+                continue
             if parsed:
                 chunk_clauses = _build_clauses_from_llm(parsed.get("clauses", []))
                 clauses.extend(chunk_clauses)
@@ -827,7 +831,7 @@ def llm_extraction_node(
                         return parsed_retry
 
                 retry_tasks = [retry_single_unit(u) for u in retry_queue]
-                return await asyncio.gather(*retry_tasks)
+                return await asyncio.gather(*retry_tasks, return_exceptions=True)
 
             if loop and loop.is_running():
                 import concurrent.futures
@@ -838,6 +842,10 @@ def llm_extraction_node(
                 retry_results = asyncio.run(run_retry_async())
                 
             for parsed_retry in retry_results:
+                if isinstance(parsed_retry, Exception):
+                    logger.error(f"Retry chunk extraction failed with error: {parsed_retry}")
+                    state["error_messages"].append(f"Retry chunk LLM error: {str(parsed_retry)}")
+                    continue
                 if parsed_retry:
                     retry_chunk_clauses = _build_clauses_from_llm(parsed_retry.get("clauses", []))
                     if retry_chunk_clauses:

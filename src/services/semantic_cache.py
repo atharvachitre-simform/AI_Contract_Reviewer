@@ -2,7 +2,7 @@ import logging
 import uuid
 import json
 from typing import Any
-from ..config import config
+from src import config
 from .azure_clients import AzureClientFactory
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,13 @@ class SemanticCache:
                     ]
                 )
             
-            results = client.search(
+            results = client.query_points(
                 collection_name=self.collection_name,
-                query_vector=vector,
+                query=vector,
                 limit=1,
                 score_threshold=threshold,
                 query_filter=query_filter
-            )
+            ).points
             
             if results and len(results) > 0:
                 hit = results[0]
