@@ -196,7 +196,7 @@ class RiskScorerAgent:
                 and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
                 and getattr(c, "clause_tag", "") not in {"definition", "placeholder"}
             ]
-            clauses_to_analyze = filtered_clauses
+            clauses_to_analyze = filtered_clauses[:self.MAX_CLAUSES_TO_ANALYZE]
             chunk_size = self.MAX_CLAUSES_TO_ANALYZE
             
             # Divide into chunks
@@ -379,10 +379,13 @@ class RiskScorerAgent:
 
         # Build output using LLM results
         issues = final_state["llm_risks"] or []
-        
         # Calculate truncation details
         total_clauses = len(clause_extraction.clauses) if clause_extraction and clause_extraction.clauses else 0
         clauses_analyzed = final_state.get("clauses_analyzed", 0)
+        
+        truncation_warning = None
+        if total_clauses > clauses_analyzed:
+            truncation_warning = f"Only the first {clauses_analyzed} out of {total_clauses} clauses were analyzed due to token limits."
             
         return RiskScorerOutput(
             overall_risk_level=final_state["overall_risk_level"],
@@ -392,7 +395,7 @@ class RiskScorerAgent:
             clause_risk_map=final_state["clause_risk_map"],
             clauses_analyzed=clauses_analyzed,
             total_clauses=total_clauses,
-            truncation_warning=None,
+            truncation_warning=truncation_warning,
         )
 
 

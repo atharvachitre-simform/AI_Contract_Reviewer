@@ -35,6 +35,8 @@ dependencies = [
     "jaraco-context>=6.1.0",
     "wheel>=0.46.2",
     "azure-keyvault-secrets>=4.11.0",
+    "pymongo>=4.0",
+    "dnspython>=2.0",
 ]
 
 [dependency-groups]

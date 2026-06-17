@@ -50,6 +50,10 @@ class RedisCheckpointer:
         self.ttl = ttl or config.REDIS_TTL_SECONDS
         self._redis = AsyncRedisClient()
 
+        # MongoDB store
+        from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
+        self._mongo = MongoCheckpointerStore()
+
         # Local fallback directory
         self._local_dir = Path("logs/checkpoints") / contract_id
         self._local_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +103,14 @@ class RedisCheckpointer:
             except Exception as e:
                 logger.warning(f"Checkpointer: Redis write failed for step '{step}': {e}")
 
+        # Write to MongoDB session-wise
+        if self._mongo.is_connected():
+            try:
+                state_data = json.loads(blob)
+                self._mongo.save_checkpoint(self.contract_id, step, state_data)
+            except Exception as e:
+                logger.warning(f"Checkpointer: MongoDB write failed for step '{step}': {e}")
+
         # Always write local fallback
         try:
             self._local_path(step).write_text(blob, encoding="utf-8")
@@ -135,6 +147,15 @@ class RedisCheckpointer:
             except Exception as e:
                 logger.warning(f"Checkpointer: Redis read failed for step '{step}': {e}")
 
+        # Try MongoDB next
+        if self._mongo.is_connected():
+            try:
+                data = self._mongo.load_checkpoint(self.contract_id, step)
+                if data is not None:
+                    return data
+            except Exception as e:
+                logger.warning(f"Checkpointer: MongoDB read failed for step '{step}': {e}")
+
         # Fallback to local file
         path = self._local_path(step)
         if path.exists():
@@ -160,6 +181,13 @@ class RedisCheckpointer:
                     local.unlink()
                 except Exception as e:
                     logger.warning(f"Checkpointer: local delete failed for step '{s}': {e}")
+
+        # Delete from MongoDB
+        if self._mongo.is_connected():
+            try:
+                self._mongo.delete_checkpoints(self.contract_id, step)
+            except Exception as e:
+                logger.warning(f"Checkpointer: MongoDB delete failed: {e}")
 
     async def completed_steps(self) -> list[str]:
         """Return ordered list of steps that have been checkpointed."""
