@@ -7,7 +7,12 @@ import asyncio
 import httpx
 from typing import Any, Dict, List
 from .azure_clients import AzureOpenAIWrapper, config, logger
-from tenacity import AsyncRetrying, retry_if_exception, wait_exponential, stop_after_attempt
+from tenacity import retry, retry_if_exception, wait_exponential, stop_after_attempt
+
+def should_retry_httpx(e: Exception) -> bool:
+    if isinstance(e, httpx.HTTPStatusError):
+        return e.response.status_code in (429, 500, 502, 503, 504)
+    return isinstance(e, (httpx.RequestError, httpx.TimeoutException))
 
 class AsyncAzureOpenAIWrapper:
     """Asynchronous wrapper around :class:`AzureOpenAIWrapper`.
@@ -47,6 +52,11 @@ class AsyncAzureOpenAIWrapper:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, wrapper)
 
+    @retry(
+        retry=retry_if_exception(should_retry_httpx),
+        wait=wait_exponential(multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT),
+        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS)
+    )
     async def async_chat_complete(
         self,
         prompt: str,
@@ -132,6 +142,11 @@ class AsyncAzureOpenAIWrapper:
             system_prompt,
         )
 
+    @retry(
+        retry=retry_if_exception(should_retry_httpx),
+        wait=wait_exponential(multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT),
+        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS)
+    )
     async def async_chat_complete_multimodal(
         self,
         messages: List[Dict[str, Any]],

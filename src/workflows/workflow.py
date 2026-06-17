@@ -125,7 +125,7 @@ class ContractReviewWorkflow:
 		from ..helpers.contract_analysis import filter_boilerplate_clauses
 		filtered_extraction = filter_boilerplate_clauses(clause_extraction)
 
-		# 1. Run Obligation Finder & Red Flag Detector in parallel first
+		# 1. Run Obligation Finder, Red Flag Detector, and Risk Scorer in parallel
 		# Pass trace_id and identity context into each worker thread via initializer 
 		# so Langfuse can attribute all parallel agent token usage to the correct trace/user.
 		uid = LangFuseTracer.get_current_user_id()
@@ -141,10 +141,12 @@ class ContractReviewWorkflow:
 		import contextvars
 		ctx_obl = contextvars.copy_context()
 		ctx_red = contextvars.copy_context()
+		ctx_risk = contextvars.copy_context()
 
-		with ThreadPoolExecutor(max_workers=2, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
+		with ThreadPoolExecutor(max_workers=3, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
 			obligation_future = executor.submit(lambda: ctx_obl.run(find_obligations, filtered_extraction, obligation_llm_client, memory_context, perspective))
 			red_flag_future = executor.submit(lambda: ctx_red.run(detect_red_flags, filtered_extraction, red_flag_llm_client, perspective))
+			risk_future = executor.submit(lambda: ctx_risk.run(score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective))
 
 			state.obligation_finding = obligation_future.result()
 			state.api_trace.append({
@@ -176,21 +178,20 @@ class ContractReviewWorkflow:
 				trace_id=trace_id,
 			)
 
-		# 2. Run Risk Scorer sequentially, consuming retriever (Azure AI Search)
-		state.risk_scoring = score_risks(filtered_extraction, risk_llm_client, retriever, memory_context, perspective)
-		state.api_trace.append({
-			"step": "risk_scoring",
-			"agent": "Risk Scorer",
-			"description": "Score clauses and identify negotiation priorities.",
-			"status": "completed",
-		})
-		self._trace(
-			"risk_scoring",
-			"Completed risk scoring.",
-			{"issues": len(state.risk_scoring.issues), "overall_risk": str(state.risk_scoring.overall_risk_level)},
-			"completed",
-			trace_id=trace_id,
-		)
+			state.risk_scoring = risk_future.result()
+			state.api_trace.append({
+				"step": "risk_scoring",
+				"agent": "Risk Scorer",
+				"description": "Score clauses and identify negotiation priorities.",
+				"status": "completed",
+			})
+			self._trace(
+				"risk_scoring",
+				"Completed risk scoring.",
+				{"issues": len(state.risk_scoring.issues), "overall_risk": str(state.risk_scoring.overall_risk_level)},
+				"completed",
+				trace_id=trace_id,
+			)
 
 		# 3. Format risks and red flags texts to pass as context to the Plain English Writer
 		risks_text = "\n".join([f"- {issue.clause_type} ({issue.risk_level.value}): {issue.issue}" for issue in state.risk_scoring.issues])

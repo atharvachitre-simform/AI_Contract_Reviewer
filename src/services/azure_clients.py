@@ -269,16 +269,16 @@ class AzureOpenAIWrapper:
         """Send chat completion with content-filtering detection, sanitization, and fallback resilience."""
         try:
             res = ""
+            raw_response = None
             try:
-                self._last_response = None
-                res = self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
+                res, raw_response = self._execute_chat_complete(prompt, temperature, max_tokens, response_format, system_prompt)
             except Exception as e:
                 if is_content_filter_error(e):
                     logger.warning("Azure OpenAI content filter triggered. Attempting prompt sanitization & retry...")
                     sanitized_prompt = sanitize_prompt_for_content_filter(prompt)
                     sanitized_system = sanitize_prompt_for_content_filter(system_prompt) if system_prompt else None
                     try:
-                        res = self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
+                        res, raw_response = self._execute_chat_complete(sanitized_prompt, temperature, max_tokens, response_format, sanitized_system)
                     except Exception as retry_err:
                         if is_content_filter_error(retry_err):
                             logger.error("Sanitized prompt still triggered Azure content policy. Attempting Groq fallback...")
@@ -298,25 +298,20 @@ class AzureOpenAIWrapper:
                                             response_format=response_format,
                                             system_prompt=system_prompt
                                         )
-                                        self._last_response = getattr(fallback_wrapper, "_last_response", None)
                                         logger.info("Successfully recovered from content filter error using Groq fallback.")
                                     else:
                                         raise RuntimeError("Groq fallback client not configured")
                                 except Exception as groq_err:
                                     logger.error(f"Groq fallback failed: {groq_err}. Generating graceful fallback response.")
-                                    if response_format is not None:
-                                        res = get_fallback_json_for_prompt(prompt)
-                                    else:
-                                        res = "Content filtered: Request blocked by Azure content policies."
-                            else:
-                                if response_format is not None:
-                                    res = get_fallback_json_for_prompt(prompt)
-                                else:
                                     res = "Content filtered: Request blocked by Azure content policies."
+                            else:
+                                res = "Content filtered: Request blocked by Azure content policies."
                         else:
                             raise
                 else:
                     raise
+            finally:
+                pass
 
             # Log to Langfuse using the v3 API via log_generation()
             # Ensure logs do not leak credential strings – add a dynamic log filter if not already present.
@@ -332,8 +327,8 @@ class AzureOpenAIWrapper:
                     c_tok = 0
                     t_tok = 0
                     cached_tok = 0
-                    if getattr(self, "_last_response", None) is not None:
-                        usage = getattr(self._last_response, "usage", None)
+                    if raw_response is not None:
+                        usage = getattr(raw_response, "usage", None)
                         if usage:
                             p_tok = getattr(usage, "prompt_tokens", 0) or 0
                             c_tok = getattr(usage, "completion_tokens", 0) or 0
@@ -394,7 +389,7 @@ class AzureOpenAIWrapper:
             return True
         return False
 
-    def _execute_chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800, response_format: dict[str, Any] | None = None, system_prompt: str | None = None) -> str:
+    def _execute_chat_complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 800, response_format: dict[str, Any] | None = None, system_prompt: str | None = None) -> tuple[str, Any]:
         if not self.is_configured():
             if OpenAIClient is None and OpenAIPackageClient is None:
                 raise RuntimeError(
@@ -471,9 +466,8 @@ class AzureOpenAIWrapper:
                 else:
                     raise
             if not getattr(response, "choices", None):
-                return ""
-            self._last_response = response
-            return response.choices[0].message.content or ""
+                return "", None
+            return response.choices[0].message.content or "", response
 
         try:
             if self.azure_client is not None:
@@ -500,9 +494,8 @@ class AzureOpenAIWrapper:
                     else:
                         raise
                 if not response.choices:
-                    return ""
-                self._last_response = response
-                return response.choices[0].message.content or ""
+                    return "", None
+                return response.choices[0].message.content or "", response
 
             if self.openai_client is not None:
                 kwargs = {}
@@ -516,8 +509,8 @@ class AzureOpenAIWrapper:
                     **kwargs
                 )
                 if not getattr(response, "choices", None):
-                    return ""
-                self._last_response = response
+                    return "", None
+                return response.choices[0].message.content or "", response
                 choice = response.choices[0]
                 message = getattr(choice, "message", None)
                 if message is not None:
@@ -557,7 +550,7 @@ class AzureOpenAIWrapper:
                     logger.warning("Azure OpenAI content filter triggered on multimodal request. Sanitizing messages and retrying...")
                     sanitized_messages = sanitize_messages_for_content_filter(messages)
                     try:
-                        res = self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
+                        res, raw_response = self._execute_chat_complete_multimodal(sanitized_messages, max_tokens, temperature)
                     except Exception as retry_err:
                         if is_content_filter_error(retry_err):
                             logger.error("Sanitized multimodal request still triggered content filter. Returning graceful fallback.")
@@ -576,8 +569,8 @@ class AzureOpenAIWrapper:
                     p_tok = 0
                     c_tok = 0
                     t_tok = 0
-                    if getattr(self, "_last_response", None) is not None:
-                        usage = getattr(self._last_response, "usage", None)
+                    if raw_response is not None:
+                        usage = getattr(raw_response, "usage", None)
                         if usage:
                             p_tok = getattr(usage, "prompt_tokens", 0) or 0
                             c_tok = getattr(usage, "completion_tokens", 0) or 0
@@ -617,7 +610,7 @@ class AzureOpenAIWrapper:
                 pass
             raise
 
-    def _execute_chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> str:
+    def _execute_chat_complete_multimodal(self, messages: list[dict[str, Any]], max_tokens: int = 1500, temperature: float = 0.0) -> tuple[str, Any]:
         if not self.is_configured():
             raise RuntimeError("Azure OpenAI client is not configured")
 
@@ -631,8 +624,7 @@ class AzureOpenAIWrapper:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            self._last_response = response
-            return response.choices[0].message.content
+            return response.choices[0].message.content, response
 
         try:
             if self.openai_client is not None:
@@ -642,8 +634,7 @@ class AzureOpenAIWrapper:
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
-                self._last_response = response
-                return response.choices[0].message.content
+                return response.choices[0].message.content, response
             elif self.azure_client is not None:
                 response = self.azure_client.get_chat_completions(
                     self.deployment_name,
@@ -651,8 +642,7 @@ class AzureOpenAIWrapper:
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
-                self._last_response = response
-                return response.choices[0].message.content
+                return response.choices[0].message.content, response
         except Exception as e:
             if self._is_rate_limit_error(e) and config.GROQ_API_KEY and not self.use_groq:
                 logger.warning(f"Rate limit hit on primary LLM during multimodal: {e}. Falling back to Groq API...")
@@ -667,8 +657,8 @@ class AzureOpenAIWrapper:
                         max_tokens=max_tokens,
                         temperature=temperature
                     )
-                    self._last_response = getattr(fallback_wrapper, "_last_response", None)
-                    return res
+                    raw_response = getattr(fallback_wrapper, "_last_response", None)
+                    return res, raw_response
             raise
 
         raise RuntimeError("No configured client supports multimodal completions.")
@@ -1129,11 +1119,11 @@ class AzureClientFactory:
         # 3. Fallback to Qdrant (if configured and query vector was successfully generated)
         if self.qdrant_client and query_vector:
             try:
-                response = self.qdrant_client.search(
+                response = self.qdrant_client.query_points(
                     collection_name=index_name,
-                    query_vector=query_vector,
+                    query=query_vector,
                     limit=top_k
-                )
+                ).points
                 qdrant_results = []
                 for hit in response:
                     doc = hit.payload or {}

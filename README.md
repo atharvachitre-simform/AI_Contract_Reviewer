@@ -21,11 +21,11 @@ It integrates state-of-the-art Azure AI services, includes a local heuristics fa
 * **Azure AI Search**
   * *Why used*: Serves as the primary enterprise hybrid search catalog. Enables cross-referencing extracted contract clauses with internal regulatory baselines and standard legal playbooks.
 * **Qdrant**
-  * *Why used*: Serves as our local semantic memory. Qdrant provides extremely fast vector indexing with advanced payload filtering, acting as our fallback storage for local deployment and semantic conversation history retrieval.
+  * *Why used*: Serves as our local semantic memory and **Semantic Cache**. Qdrant provides extremely fast vector indexing with advanced payload filtering, acting as our fallback storage for local deployment, semantic conversation history retrieval, and caching of LLM extraction chunks to save token costs.
 * **Redis**
   * *Why used*: Low-latency checkpoint storage. Redis acts as the backing store for LangGraph's binary checkpoints, allowing reviews to pause, resume, and retrieve historical conversation states instantly.
-* **LangFuse**
-  * *Why used*: Selected for audit telemetry and prompt engineering logs. Tracing multi-agent chains requires tracking precise input prompt templates, raw model completions, agent durations, and calculating combined API costs.
+* **LangFuse & Extraction Tracing**
+  * *Why used*: Selected for audit telemetry and prompt engineering logs. Tracing multi-agent chains requires tracking precise input prompt templates, raw model completions, agent durations, and calculating combined API costs. We also employ a local extraction tracer for Phase-2 recall debugging, writing step-by-step artifact dumps.
 * **PyMuPDF**
   * *Why used*: Fast local PDF text extraction fallback. Minimizes latency and API costs when parsing native, non-scanned digital PDFs, bypassing cloud endpoints when OCR is not required.
 * **DeepEval**
@@ -35,7 +35,7 @@ It integrates state-of-the-art Azure AI services, includes a local heuristics fa
 
 ## 🧠 Multi-Agent Architecture & Model Routing
 
-The contract review pipeline employs a cooperative multi-agent system. Different agents are routed to different LLMs based on task complexity, speed requirements, and cost-efficiency.
+The contract review pipeline employs a cooperative multi-agent system. Different agents are routed to different LLMs based on task complexity, speed requirements, and cost-efficiency. It also supports an offline **Batch Processing pipeline** via OpenAI's Batch API for bulk contract analysis.
 
 ```mermaid
 graph TD
@@ -79,6 +79,10 @@ graph TD
 ### 7. Report Assembler
 * **Model**: `GPT-4o-mini` *(Optimized from GPT-4o in Sprint 2)*
 * **Rationale**: Synthesizes preceding agent outputs, resolves conflicting scores, and logs warnings. Using `GPT-4o-mini` keeps the final verification pass cost-effective while maintaining unified report formatting.
+
+### 8. Chatbot Agent
+* **Model**: `GPT-4o` (Vision) / `GPT-4o-mini` (Text)
+* **Rationale**: Acting as the interactive Q&A layer, the Chatbot is a dynamic tool-using agent. It natively binds functions (`chat_tools.py`) to fetch contract metadata, visual page screenshots, and active obligations, routing questions between text and vision models based on the availability of image crops.
 
 ---
 
@@ -179,6 +183,7 @@ AI_Contract_Reviewer/
 - RiskScorerAgent
 - PlainEnglishWriterAgent
 - ReportAssemblerAgent
+- ChatbotAgent (dynamic tool-using conversational node)
 - RelevanceGater (gatekeeper)
 
 **Tools** (external services & libraries used by agents):
