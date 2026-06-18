@@ -13,11 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..agents.clause_extractor import extract_clauses
-from ..agents.obligation_finder import find_obligations
 from ..agents.plain_english_writer import generate_plain_english
-from ..agents.red_flag_detector import detect_red_flags
 from ..agents.report_assembler import assemble_report
-from ..agents.risk_scorer import score_risks
+from ..agents.unified_analyzer import run_unified_analysis
 from ..models import ContractReviewState, ProcessingStatus
 from ..services.langfuse_tracer import LangFuseTracer
 
@@ -139,16 +137,14 @@ class ContractReviewWorkflow:
 			LangFuseTracer.set_current_contract_id(c_id)
 
 		import contextvars
-		ctx_obl = contextvars.copy_context()
-		ctx_red = contextvars.copy_context()
-		ctx_risk = contextvars.copy_context()
+		ctx_unified = contextvars.copy_context()
 
-		with ThreadPoolExecutor(max_workers=3, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
-			obligation_future = executor.submit(lambda: ctx_obl.run(find_obligations, filtered_extraction, obligation_llm_client, memory_context, perspective))
-			red_flag_future = executor.submit(lambda: ctx_red.run(detect_red_flags, filtered_extraction, red_flag_llm_client, perspective))
-			risk_future = executor.submit(lambda: ctx_risk.run(score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective))
+		with ThreadPoolExecutor(max_workers=1, initializer=_worker_initializer, initargs=(trace_id, uid, sid, cid)) as executor:
+			# Use risk_llm_client for the unified pass as it was the most reasoning-heavy
+			unified_future = executor.submit(lambda: ctx_unified.run(run_unified_analysis, filtered_extraction, risk_llm_client, retriever, memory_context, perspective))
+			red_flag_output, risk_output, obligation_output = unified_future.result()
 
-			state.obligation_finding = obligation_future.result()
+			state.obligation_finding = obligation_output
 			state.api_trace.append({
 				"step": "obligation_finding",
 				"agent": "Obligation Finder",
@@ -163,7 +159,7 @@ class ContractReviewWorkflow:
 				trace_id=trace_id,
 			)
 
-			state.red_flag_detection = red_flag_future.result()
+			state.red_flag_detection = red_flag_output
 			state.api_trace.append({
 				"step": "red_flag_detection",
 				"agent": "Red Flag Detector",
@@ -178,7 +174,7 @@ class ContractReviewWorkflow:
 				trace_id=trace_id,
 			)
 
-			state.risk_scoring = risk_future.result()
+			state.risk_scoring = risk_output
 			state.api_trace.append({
 				"step": "risk_scoring",
 				"agent": "Risk Scorer",

@@ -179,8 +179,11 @@ class RiskIssue(BaseModel):
     risk_level: RiskLevel
     risk_score: float = Field(ge=0.0, le=1.0)
     issue: str
+    reasoning: str | None = None
     rationale: str | None = None
+    suggested_mitigation: str | None = None
     negotiation_suggestion: str | None = None
+    affected_parties: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     related_categories: list[CUADCategory | str] = Field(default_factory=list)
     
@@ -373,6 +376,7 @@ class ContractReviewState(BaseModel):
     trace_id: str | None = None
     trace_url: str | None = None
     perspective: str | None = None
+    metrics: dict[str, float | int] = Field(default_factory=dict)
 
 
 __all__ = [

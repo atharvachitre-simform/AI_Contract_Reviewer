@@ -53,6 +53,7 @@ class LangFuseTracer:
     _current_user_id_var = contextvars.ContextVar("current_user_id", default="anonymous")
     _current_session_id_var = contextvars.ContextVar("current_session_id", default=None)
     _current_contract_id_var = contextvars.ContextVar("current_contract_id", default=None)
+    _current_span_id_var = contextvars.ContextVar("current_span_id", default=None)
 
     _instance = None
 
@@ -67,7 +68,7 @@ class LangFuseTracer:
     # ------------------------------------------------------------------
 
     @classmethod
-    def set_current_trace_id(cls, trace_id: str | None) -> None:
+    def set_current_trace_id(cls, trace_id: str | None, session_id: str | None = None, user_id: str | None = None) -> None:
         cls._current_trace_id_var.set(trace_id)
 
     @classmethod
@@ -97,6 +98,14 @@ class LangFuseTracer:
     @classmethod
     def get_current_contract_id(cls) -> str | None:
         return cls._current_contract_id_var.get()
+
+    @classmethod
+    def set_current_span_id(cls, span_id: str | None) -> None:
+        cls._current_span_id_var.set(span_id)
+
+    @classmethod
+    def get_current_span_id(cls) -> str | None:
+        return cls._current_span_id_var.get()
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -180,10 +189,10 @@ class LangFuseTracer:
         uid = user_id or "anonymous"
 
         # Persist into thread-local so nested agents pick it up automatically
-        LangFuseTracer.set_current_trace_id(trace_id)
-        LangFuseTracer.set_current_user_id(uid)
         LangFuseTracer.set_current_session_id(contract_id)
+        LangFuseTracer.set_current_user_id(uid)
         LangFuseTracer.set_current_contract_id(contract_id)
+        LangFuseTracer.set_current_trace_id(trace_id, session_id=contract_id, user_id=uid)
 
         if self.enabled:
             try:
@@ -201,6 +210,8 @@ class LangFuseTracer:
                         "user_id": uid,
                         "session_id": contract_id,
                         "contract_id": contract_id,
+                        "document_id": contract_id,
+                        "agent_name": "unified_analyzer",
                         "source": "pipeline",
                     },
                 )
@@ -209,6 +220,74 @@ class LangFuseTracer:
                 logging.getLogger(__name__).debug(f"Langfuse pipeline trace start error: {exc}")
 
         return trace_id
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def span(self, name: str, metadata: dict[str, Any] | None = None):
+        """Create a nested span within the current trace."""
+        tid = self.get_current_trace_id()
+        if not self.enabled or not tid:
+            yield None
+            return
+
+        try:
+            uid = self.get_current_user_id() or "anonymous"
+            sid = self.get_current_session_id()
+            cid = self.get_current_contract_id()
+            
+            from langfuse.types import TraceContext
+            ctx: TraceContext = {"trace_id": tid}
+            
+            parent_id = self._current_span_id_var.get()
+            
+            span_obj = self.client.span(
+                trace_context=ctx,
+                name=name,
+                metadata={
+                    "user_id": uid,
+                    "session_id": sid,
+                    "contract_id": cid,
+                    **(metadata or {})
+                },
+                parent_observation_id=parent_id
+            )
+            token = self._current_span_id_var.set(span_obj.id)
+            try:
+                yield span_obj
+            finally:
+                span_obj.end()
+                self._current_span_id_var.reset(token)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug(f"Langfuse span error: {exc}")
+            yield None
+
+    def end_pipeline_trace(self, trace_id: str | None = None) -> None:
+        """Attach document-level rollup metrics to the root trace."""
+        tid = trace_id or self.get_current_trace_id()
+        if not self.enabled or not tid:
+            return
+            
+        inp = self.trace_input_tokens.get(tid, 0)
+        out = self.trace_output_tokens.get(tid, 0)
+        
+        try:
+            from langfuse.types import TraceContext
+            ctx: TraceContext = {"trace_id": tid}
+            self.client.create_event(
+                trace_context=ctx,
+                name="pipeline_end",
+                metadata={
+                    "total_input_tokens": inp,
+                    "total_output_tokens": out,
+                    "total_tokens": inp + out,
+                }
+            )
+            self.flush()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug(f"Langfuse pipeline trace end error: {exc}")
 
     def start_chat_trace(
         self,
@@ -239,10 +318,10 @@ class LangFuseTracer:
         uid = user_id or "anonymous"
         trace_id = self.create_trace_id(seed=f"{uid}:{session_id}:{uuid.uuid4().hex[:8]}")
 
-        LangFuseTracer.set_current_trace_id(trace_id)
-        LangFuseTracer.set_current_user_id(uid)
         LangFuseTracer.set_current_session_id(session_id)
+        LangFuseTracer.set_current_user_id(uid)
         LangFuseTracer.set_current_contract_id(contract_id)
+        LangFuseTracer.set_current_trace_id(trace_id, session_id=session_id, user_id=uid)
 
         if self.enabled:
             try:
@@ -398,20 +477,16 @@ class LangFuseTracer:
             self.trace_input_tokens[tid] += input_tokens
             self.trace_output_tokens[tid] += output_tokens
             self.trace_cached_tokens[tid] += cached_tokens
-            
-            # calculate cost
-            model_lower = model.lower()
-            if "mini" in model_lower or "llama" in model_lower or "gemini" in model_lower or "groq" in model_lower or "flash" in model_lower:
-                cost = (input_tokens - cached_tokens) * 0.15 / 1e6 + cached_tokens * 0.075 / 1e6 + output_tokens * 0.60 / 1e6
-            else:
-                cost = (input_tokens - cached_tokens) * 5.00 / 1e6 + cached_tokens * 2.50 / 1e6 + output_tokens * 15.00 / 1e6
-            self.trace_costs[tid] += cost
+            # Removed hardcoded cost pricing logic
 
         if not self.enabled or not tid:
             return
         try:
             from langfuse.types import TraceContext
             ctx: TraceContext = {"trace_id": tid}
+            
+            parent_id = self._current_span_id_var.get()
+            
             obs = self.client.start_observation(
                 trace_context=ctx,
                 as_type="generation",
@@ -429,6 +504,7 @@ class LangFuseTracer:
                     "session_id": sid,
                     "contract_id": cid,
                 },
+                parent_observation_id=parent_id
             )
             obs.end()
             # Flush immediately so the OTEL span is exported before the thread
@@ -494,4 +570,5 @@ class LangFuseTracer:
                     }
                 )
             except Exception as exc:
-                logger.debug(f"Langfuse metrics logging error: {exc}")
+                import logging
+                logging.getLogger(__name__).debug(f"Langfuse metrics error: {exc}")

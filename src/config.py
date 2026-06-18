@@ -14,13 +14,11 @@ RISK_THRESHOLD_MEDIUM = float(os.getenv("RISK_THRESHOLD_MEDIUM", "0.3"))
 # --- Agent LLM Token Limits ---
 # Clause extractor: large contracts with full verbatim raw_text + subclauses can exceed 8000 tokens.
 CLAUSE_EXTRACTOR_MAX_TOKENS = int(os.getenv("CLAUSE_EXTRACTOR_MAX_TOKENS", "12000"))
-# Obligation finder: 40 clauses × obligations JSON can reach 5000+ tokens.
-OBLIGATION_FINDER_MAX_TOKENS = int(os.getenv("OBLIGATION_FINDER_MAX_TOKENS", "6000"))
-# Red flag detector: 40 clauses × full red flag JSON (evidence, alternatives) can reach 6000+ tokens.
-# Previously 4000 — this was causing JSON truncation and silent empty results.
-RED_FLAG_DETECTOR_MAX_TOKENS = int(os.getenv("RED_FLAG_DETECTOR_MAX_TOKENS", "8000"))
-# Risk scorer: 40 clauses × issue objects with rationale + negotiation_suggestion.
-RISK_SCORER_MAX_TOKENS = int(os.getenv("RISK_SCORER_MAX_TOKENS", "6000"))
+
+# Unified Analyzer: Sequential call limits
+UNIFIED_EXTRACTION_MAX_TOKENS = int(os.getenv("UNIFIED_EXTRACTION_MAX_TOKENS", "8000"))
+UNIFIED_RISK_MAX_TOKENS = int(os.getenv("UNIFIED_RISK_MAX_TOKENS", "2000"))
+
 # Plain English writer: clause summaries + executive summary.
 PLAIN_ENGLISH_WRITER_MAX_TOKENS = int(os.getenv("PLAIN_ENGLISH_WRITER_MAX_TOKENS", "6000"))
 # Report assembler: full report with multiple sections.

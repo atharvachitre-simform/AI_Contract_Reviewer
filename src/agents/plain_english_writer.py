@@ -68,94 +68,98 @@ def llm_rewrite_node(state: PlainEnglishWriterState, llm_client: Any | None = No
 		state["error_messages"].append("LLM client not configured for PlainEnglishWriter.")
 		return state
 
+	from ..services.langfuse_tracer import LangFuseTracer
+	lf_tracer = LangFuseTracer()
+	
 	try:
-		# Gather recursively all clauses and subclauses for summary
-		def get_all_clauses(cl_list: list[Any]) -> list[Any]:
-			res = []
-			for c in cl_list:
-				res.append(c)
-				if getattr(c, "subclauses", []):
-					res.extend(get_all_clauses(c.subclauses))
-			return res
+		with lf_tracer.span("plain_english_writer"):
+			# Gather recursively all clauses and subclauses for summary
+			def get_all_clauses(cl_list: list[Any]) -> list[Any]:
+				res = []
+				for c in cl_list:
+					res.append(c)
+					if getattr(c, "subclauses", []):
+						res.extend(get_all_clauses(c.subclauses))
+				return res
 
-		# Filter out purely administrative metadata clauses before summarizing
-		SKIP_FOR_SUMMARY = {
-			"Document Name", "Parties", "Agreement Date", "Effective Date", "Governing Law"
-		}
-		raw_clauses = get_all_clauses(state["clause_extraction"].clauses)
-		filtered_clauses = [
-			c for c in raw_clauses
-			if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_SUMMARY
-			and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
-		]
-		risks_text_lower = state.get("risks_text", "").lower()
-		red_flags_text_lower = state.get("red_flags_text", "").lower()
+			# Filter out purely administrative metadata clauses before summarizing
+			SKIP_FOR_SUMMARY = {
+				"Document Name", "Parties", "Agreement Date", "Effective Date", "Governing Law"
+			}
+			raw_clauses = get_all_clauses(state["clause_extraction"].clauses)
+			filtered_clauses = [
+				c for c in raw_clauses
+				if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_SUMMARY
+				and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
+			]
+			risks_text_lower = state.get("risks_text", "").lower()
+			red_flags_text_lower = state.get("red_flags_text", "").lower()
 
-		clauses_to_analyze = []
-		for c in filtered_clauses:
-			ctype = str(getattr(c, "clause_type", "") or "").strip().lower()
-			if ctype and (ctype in risks_text_lower or ctype in red_flags_text_lower):
-				clauses_to_analyze.append(c)
-		
-		# Fallback if no specific risks found, just process substantive clauses
-		if not clauses_to_analyze:
-			clauses_to_analyze = filtered_clauses
-		from ..helpers.compression_helper import get_compressed_payload_string
-		clauses_text = get_compressed_payload_string(clauses_to_analyze) if clauses_to_analyze else "(No candidate clauses were extracted from the contract.)"
+			clauses_to_analyze = []
+			for c in filtered_clauses:
+				ctype = str(getattr(c, "clause_type", "") or "").strip().lower()
+				if ctype and (ctype in risks_text_lower or ctype in red_flags_text_lower):
+					clauses_to_analyze.append(c)
+			
+			# Fallback if no specific risks found, just process substantive clauses
+			if not clauses_to_analyze:
+				clauses_to_analyze = filtered_clauses
+			from ..helpers.compression_helper import get_compressed_payload_string
+			clauses_text = get_compressed_payload_string(clauses_to_analyze) if clauses_to_analyze else "(No candidate clauses were extracted from the contract.)"
 
-		prompt = build_plain_english_writer_prompt(
-			clauses_text,
-			risks_text=state.get("risks_text", ""),
-			red_flags_text=state.get("red_flags_text", ""),
-			perspective=state.get("perspective"),
-		)
-		sep = "CONTRACT CLAUSES TO ANALYZE:\n"
-		if sep in prompt:
-			system_prompt, user_prompt = prompt.split(sep, 1)
-			system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-			user_prompt = sep + user_prompt
-		else:
-			system_prompt = None
-			user_prompt = prompt
-		response_text = run_agent_tool_loop(
-			llm_client=llm_client,
-			prompt=user_prompt,
-			tool_names=[],
-			context={},
-			system_prompt=system_prompt,
-			max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS
-		)
-
-		parsed = _parse_plain_english_response(response_text)
-		if not parsed or not isinstance(parsed, dict):
-			state["llm_attempt_success"] = False
-			state["error_messages"].append("Failed to parse LLM response.")
-			return state
-
-		state["executive_summary"] = str(parsed.get("executive_summary") or "").strip()
-
-		# Build a lookup for original clause text to map it back without LLM overhead
-		type_to_text = {c.clause_type.strip().lower(): c.raw_text for c in clauses_to_analyze}
-
-		clause_summaries = []
-		for item in parsed.get("clause_summaries", []):
-			if not isinstance(item, dict):
-				continue
-			ctype = str(item.get("clause_type") or "Clause")
-			orig_text = type_to_text.get(ctype.strip().lower(), "")
-			clause_summaries.append(
-				PlainEnglishClause(
-					clause_type=ctype,
-					original_text=orig_text,
-					plain_english=str(item.get("plain_english") or ""),
-					why_it_matters=str(item.get("why_it_matters") or "") or None,
-					party_burden=str(item.get("party_burden") or "") or None,
-				)
+			prompt = build_plain_english_writer_prompt(
+				clauses_text,
+				risks_text=state.get("risks_text", ""),
+				red_flags_text=state.get("red_flags_text", ""),
+				perspective=state.get("perspective"),
 			)
-		state["clause_summaries"] = clause_summaries
-		state["key_points"] = [str(pt) for pt in parsed.get("key_points", []) if pt]
-		state["plain_english_risk_notes"] = [str(note) for note in parsed.get("plain_english_risk_notes", []) if note]
-		state["llm_attempt_success"] = True
+			sep = "CONTRACT CLAUSES TO ANALYZE:\n"
+			if sep in prompt:
+				system_prompt, user_prompt = prompt.split(sep, 1)
+				system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+				user_prompt = sep + user_prompt
+			else:
+				system_prompt = None
+				user_prompt = prompt
+			response_text = run_agent_tool_loop(
+				llm_client=llm_client,
+				prompt=user_prompt,
+				tool_names=[],
+				context={},
+				system_prompt=system_prompt,
+				max_tokens=config.PLAIN_ENGLISH_WRITER_MAX_TOKENS
+			)
+
+			parsed = _parse_plain_english_response(response_text)
+			if not parsed or not isinstance(parsed, dict):
+				state["llm_attempt_success"] = False
+				state["error_messages"].append("Failed to parse LLM response.")
+				return state
+
+			state["executive_summary"] = str(parsed.get("executive_summary") or "").strip()
+
+			# Build a lookup for original clause text to map it back without LLM overhead
+			type_to_text = {c.clause_type.strip().lower(): c.raw_text for c in clauses_to_analyze}
+
+			clause_summaries = []
+			for item in parsed.get("clause_summaries", []):
+				if not isinstance(item, dict):
+					continue
+				ctype = str(item.get("clause_type") or "Clause")
+				orig_text = type_to_text.get(ctype.strip().lower(), "")
+				clause_summaries.append(
+					PlainEnglishClause(
+						clause_type=ctype,
+						original_text=orig_text,
+						plain_english=str(item.get("plain_english") or ""),
+						why_it_matters=str(item.get("why_it_matters") or "") or None,
+						party_burden=str(item.get("party_burden") or "") or None,
+					)
+				)
+			state["clause_summaries"] = clause_summaries
+			state["key_points"] = [str(pt) for pt in parsed.get("key_points", []) if pt]
+			state["plain_english_risk_notes"] = [str(note) for note in parsed.get("plain_english_risk_notes", []) if note]
+			state["llm_attempt_success"] = True
 
 	except Exception as e:
 		logger.error(f"Plain English Writer LLM error: {e}", exc_info=True)

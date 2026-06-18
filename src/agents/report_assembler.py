@@ -171,117 +171,121 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
 		state["error_messages"].append("LLM client not configured for ReportAssembler.")
 		return state
 
+	from ..services.langfuse_tracer import LangFuseTracer
+	lf_tracer = LangFuseTracer()
+	
 	try:
-		clauses_list = []
-		for idx, clause in enumerate(state["clause_extraction"].clauses, 1):
-			clauses_list.append(f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}")
-		clauses_summary = "\n".join(clauses_list) if clauses_list else "(No clauses provided)"
+		with lf_tracer.span("report_assembler"):
+			clauses_list = []
+			for idx, clause in enumerate(state["clause_extraction"].clauses, 1):
+				clauses_list.append(f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}")
+			clauses_summary = "\n".join(clauses_list) if clauses_list else "(No clauses provided)"
 
-		risks_list = [f"Overall Risk Level: {state['risk_scoring'].overall_risk_level.value}", f"Overall Risk Score: {state['risk_scoring'].overall_risk_score}"]
-		risk_idx = 1
-		for issue in state["risk_scoring"].issues:
-			if issue.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
-				risks_list.append(f"- Issue {risk_idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}")
-				risk_idx += 1
-		risks_summary = "\n".join(risks_list)
+			risks_list = [f"Overall Risk Level: {state['risk_scoring'].overall_risk_level.value}", f"Overall Risk Score: {state['risk_scoring'].overall_risk_score}"]
+			risk_idx = 1
+			for issue in state["risk_scoring"].issues:
+				if issue.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
+					risks_list.append(f"- Issue {risk_idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}")
+					risk_idx += 1
+			risks_summary = "\n".join(risks_list)
 
-		red_flags_list = [f"High Severity Flags Count: {state['red_flags'].high_severity_count}"]
-		rf_idx = 1
-		for flag in state["red_flags"].red_flags:
-			if flag.severity in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
-				red_flags_list.append(f"- Red Flag {rf_idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}")
-				rf_idx += 1
-		red_flags_summary = "\n".join(red_flags_list)
+			red_flags_list = [f"High Severity Flags Count: {state['red_flags'].high_severity_count}"]
+			rf_idx = 1
+			for flag in state["red_flags"].red_flags:
+				if flag.severity in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
+					red_flags_list.append(f"- Red Flag {rf_idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}")
+					rf_idx += 1
+			red_flags_summary = "\n".join(red_flags_list)
 
-		plain_english_list = [f"Executive Summary: {state['plain_english'].executive_summary}"]
-		for idx, pt in enumerate(state["plain_english"].key_points, 1):
-			plain_english_list.append(f"- Key Point {idx}: {pt}")
-		for idx, note in enumerate(state["plain_english"].plain_english_risk_notes, 1):
-			plain_english_list.append(f"- Risk Note {idx}: {note}")
-		plain_english_summary = "\n".join(plain_english_list)
+			plain_english_list = [f"Executive Summary: {state['plain_english'].executive_summary}"]
+			for idx, pt in enumerate(state["plain_english"].key_points, 1):
+				plain_english_list.append(f"- Key Point {idx}: {pt}")
+			for idx, note in enumerate(state["plain_english"].plain_english_risk_notes, 1):
+				plain_english_list.append(f"- Risk Note {idx}: {note}")
+			plain_english_summary = "\n".join(plain_english_list)
 
-		# Add extraction completeness status context
-		is_complete = getattr(state["clause_extraction"], "is_extraction_complete", True)
-		notes = getattr(state["clause_extraction"], "extraction_completeness_notes", "Normal")
-		completeness_summary = f"Is Complete: {is_complete}\nNotes: {notes}"
+			# Add extraction completeness status context
+			is_complete = getattr(state["clause_extraction"], "is_extraction_complete", True)
+			notes = getattr(state["clause_extraction"], "extraction_completeness_notes", "Normal")
+			completeness_summary = f"Is Complete: {is_complete}\nNotes: {notes}"
 
-		prompt = build_report_assembler_prompt(
-			clauses_summary=clauses_summary,
-			risks_summary=risks_summary,
-			red_flags_summary=red_flags_summary,
-			plain_english_summary=plain_english_summary,
-			completeness_summary=completeness_summary,
-			perspective=state.get("perspective"),
-		)
-
-		sep = "AGENT INPUTS:\n"
-		if sep in prompt:
-			system_prompt, user_prompt = prompt.split(sep, 1)
-			system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-			user_prompt = sep + user_prompt
-		else:
-			system_prompt = None
-			user_prompt = prompt
-
-		contract_type = getattr(state["clause_extraction"].metadata, "contract_type", "NDA") or "NDA"
-
-		response_text = run_agent_tool_loop(
-			llm_client=llm_client,
-			prompt=user_prompt,
-			tool_names=[],
-			context={
-				"contract_type": contract_type,
-			},
-			system_prompt=system_prompt,
-			max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS
-		)
-
-		parsed = _parse_report_response(response_text)
-		if not parsed or not isinstance(parsed, dict):
-			state["llm_attempt_success"] = False
-			state["error_messages"].append("Failed to parse LLM response.")
-			return state
-
-		state["verdict"] = _normalize_verdict(parsed.get("verdict"))
-		state["overall_risk_level"] = _normalize_risk_level(parsed.get("overall_risk_level"))
-		state["report_summary"] = str(parsed.get("report_summary") or "").strip()
-
-		priorities = []
-		for item in parsed.get("negotiation_priorities", []):
-			if not isinstance(item, dict):
-				continue
-			related = item.get("related_clauses", [])
-			related_list = [str(r) for r in related] if isinstance(related, list) else [str(related)] if related else []
-			priorities.append(
-				NegotiationPriority(
-					title=str(item.get("title") or "Priority"),
-					priority=int(item.get("priority") or 1),
-					reason=str(item.get("reason") or ""),
-					recommended_action=str(item.get("recommended_action") or "") or None,
-					related_clauses=related_list,
-				)
+			prompt = build_report_assembler_prompt(
+				clauses_summary=clauses_summary,
+				risks_summary=risks_summary,
+				red_flags_summary=red_flags_summary,
+				plain_english_summary=plain_english_summary,
+				completeness_summary=completeness_summary,
+				perspective=state.get("perspective"),
 			)
-		state["negotiation_priorities"] = priorities
 
-		missing_list = []
-		for item in parsed.get("missing_clauses", []):
-			if not isinstance(item, dict):
-				continue
-			missing_list.append(
-				MissingClause(
-					category=str(item.get("category") or "Unknown Clause"),
-					reason=str(item.get("reason") or "") or None,
-					impact=str(item.get("impact") or "") or None,
-				)
+			sep = "AGENT INPUTS:\n"
+			if sep in prompt:
+				system_prompt, user_prompt = prompt.split(sep, 1)
+				system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+				user_prompt = sep + user_prompt
+			else:
+				system_prompt = None
+				user_prompt = prompt
+
+			contract_type = getattr(state["clause_extraction"].metadata, "contract_type", "NDA") or "NDA"
+
+			response_text = run_agent_tool_loop(
+				llm_client=llm_client,
+				prompt=user_prompt,
+				tool_names=[],
+				context={
+					"contract_type": contract_type,
+				},
+				system_prompt=system_prompt,
+				max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS
 			)
-		state["missing_clauses"] = missing_list
 
-		state["key_risks"] = [str(r) for r in parsed.get("key_risks", []) if r]
-		state["recommended_next_steps"] = [str(s) for s in parsed.get("recommended_next_steps", []) if s]
-		state["llm_attempt_success"] = True
+			parsed = _parse_report_response(response_text)
+			if not parsed or not isinstance(parsed, dict):
+				state["llm_attempt_success"] = False
+				state["error_messages"].append("Failed to parse LLM response.")
+				return state
 
-		# Apply missing clause validation rule override
-		state["missing_clauses"] = enforce_missing_clauses_validation(state)
+			state["verdict"] = _normalize_verdict(parsed.get("verdict"))
+			state["overall_risk_level"] = _normalize_risk_level(parsed.get("overall_risk_level"))
+			state["report_summary"] = str(parsed.get("report_summary") or "").strip()
+
+			priorities = []
+			for item in parsed.get("negotiation_priorities", []):
+				if not isinstance(item, dict):
+					continue
+				related = item.get("related_clauses", [])
+				related_list = [str(r) for r in related] if isinstance(related, list) else [str(related)] if related else []
+				priorities.append(
+					NegotiationPriority(
+						title=str(item.get("title") or "Priority"),
+						priority=int(item.get("priority") or 1),
+						reason=str(item.get("reason") or ""),
+						recommended_action=str(item.get("recommended_action") or "") or None,
+						related_clauses=related_list,
+					)
+				)
+			state["negotiation_priorities"] = priorities
+
+			missing_list = []
+			for item in parsed.get("missing_clauses", []):
+				if not isinstance(item, dict):
+					continue
+				missing_list.append(
+					MissingClause(
+						category=str(item.get("category") or "Unknown Clause"),
+						reason=str(item.get("reason") or "") or None,
+						impact=str(item.get("impact") or "") or None,
+					)
+				)
+			state["missing_clauses"] = missing_list
+
+			state["key_risks"] = [str(r) for r in parsed.get("key_risks", []) if r]
+			state["recommended_next_steps"] = [str(s) for s in parsed.get("recommended_next_steps", []) if s]
+			state["llm_attempt_success"] = True
+
+			# Apply missing clause validation rule override
+			state["missing_clauses"] = enforce_missing_clauses_validation(state)
 
 	except Exception as e:
 		logger.error(f"Report Assembler LLM error: {e}", exc_info=True)

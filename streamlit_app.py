@@ -806,6 +806,47 @@ def _clear_localstorage_session() -> None:
 # ---------------------------------------------------------------------------
 
 
+# Fallback metrics parser for old checkpoints
+def get_past_metrics_from_logs(trace_id: str) -> dict[str, float | int]:
+    """Aggregate token metrics from the local JSONL log for a past trace_id."""
+    metrics = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "cost": 0.0}
+    if not trace_id:
+        return metrics
+    try:
+        import json
+        from pathlib import Path
+        log_file = Path("logs/langfuse_events.jsonl")
+        if not log_file.exists():
+            return metrics
+            
+        with open(log_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    if record.get("trace_id") == trace_id and record.get("status") == "completed":
+                        inp = record.get("input_tokens", 0)
+                        out = record.get("output_tokens", 0)
+                        cached = record.get("cached_tokens", 0)
+                        metrics["input_tokens"] += inp
+                        metrics["output_tokens"] += out
+                        metrics["cached_tokens"] += cached
+                        
+                        model = record.get("model", "").lower()
+                        if "gpt-4o-mini" in model:
+                            metrics["cost"] += (inp * 0.15 + out * 0.60) / 1000000.0
+                        elif "gpt-4o" in model:
+                            metrics["cost"] += (inp * 5.0 + out * 15.0) / 1000000.0
+                        else:
+                            metrics["cost"] += (inp * 2.5 + out * 10.0) / 1000000.0
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        pass
+    return metrics
+
+
 def main() -> None:
     st.set_page_config(page_title="AI Contract Reviewer", layout="wide")
     st.title("AI Contract Reviewer")
@@ -1142,6 +1183,19 @@ def main() -> None:
                             from src.config import SENSITIVE_KEYWORDS
                             loaded_state = unmask_review_state(loaded_state, SENSITIVE_KEYWORDS)
                             st.session_state["review_state"] = loaded_state
+                            
+                            st.session_state["review_state"] = loaded_state
+                            
+                            metrics = getattr(loaded_state, "metrics", {})
+                            if not metrics or sum(metrics.get(k, 0) for k in ["input_tokens", "output_tokens", "cached_tokens"]) == 0:
+                                if loaded_state.trace_id:
+                                    metrics = get_past_metrics_from_logs(loaded_state.trace_id)
+                                
+                            if metrics and sum(metrics.get(k, 0) for k in ["input_tokens", "output_tokens", "cached_tokens"]) > 0:
+                                st.session_state["last_run_metrics"] = metrics
+                            else:
+                                st.session_state.pop("last_run_metrics", None)
+                                
                             st.session_state["active_view"] = "📄 Review Report"
                             st.rerun()
                         else:
@@ -1302,8 +1356,36 @@ def main() -> None:
                         tracer.flush()
         finally:
             st.session_state["pipeline_running"] = False
+            
+            # Fetch and store token metrics for display
+            from src.services.langfuse_tracer import LangFuseTracer
+            tracer = LangFuseTracer()
+            tid = None
+            if selected_model == "Full Contract Review Pipeline" and st.session_state.get("review_state"):
+                tid = getattr(st.session_state["review_state"], "trace_id", None)
+            else:
+                tid = locals().get("trace_id")
+                
+            if tid:
+                st.session_state["last_run_metrics"] = {
+                    "input_tokens": tracer.trace_input_tokens.get(tid, 0),
+                    "output_tokens": tracer.trace_output_tokens.get(tid, 0),
+                    "cached_tokens": tracer.trace_cached_tokens.get(tid, 0),
+                    "cost": tracer.trace_costs.get(tid, 0.0),
+                }
 
     # Render persisted state
+    metrics = st.session_state.get("last_run_metrics")
+    if metrics:
+        total_tokens = metrics.get('input_tokens', 0) + metrics.get('output_tokens', 0)
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📊 Last Run Metrics")
+        st.sidebar.caption(f"**Input Tokens:** {metrics['input_tokens']:,}")
+        st.sidebar.caption(f"**Output Tokens:** {metrics['output_tokens']:,}")
+        st.sidebar.caption(f"**Total Tokens:** {total_tokens:,}")
+        st.sidebar.caption(f"**Est. Cost:** ${metrics['cost']:.4f}")
+
+
     if st.session_state.get("review_state") is not None:
         render_full_review(st.session_state["review_state"])
     elif st.session_state.get("single_model_output") is not None:

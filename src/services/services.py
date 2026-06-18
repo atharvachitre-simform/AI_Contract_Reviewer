@@ -178,25 +178,24 @@ class ContractReviewService:
                     
                     # 1. Run parallel agents
                     # Since we are in an async function, we can just run them synchronously in a thread pool
-                    from concurrent.futures import ThreadPoolExecutor
-                    import contextvars
-                    ctx_obl = contextvars.copy_context()
-                    ctx_red = contextvars.copy_context()
+                    from ..agents.unified_analyzer import run_unified_analysis
                     
-                    obl_client = self.azure.get_openai_client_for_agent("obligation_finder")
-                    red_client = self.azure.get_openai_client_for_agent("red_flag_detector")
-                    risk_client = self.azure.get_openai_client_for_agent("risk_scorer")
+                    # We can use any of the clients; we'll use risk_client as the primary
+                    risk_client = self.azure.get_openai_client_for_agent("unified_analyzer")
                     plain_client = self.azure.get_openai_client_for_agent("plain_english_writer")
                     assembler_client = self.azure.get_openai_client_for_agent("report_assembler")
                     
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        obl_fut = executor.submit(lambda: ctx_obl.run(find_obligations, extracted_data, obl_client))
-                        red_fut = executor.submit(lambda: ctx_red.run(detect_red_flags, extracted_data, red_client))
+                    import contextvars
+                    ctx_unified = contextvars.copy_context()
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        unified_fut = executor.submit(lambda: ctx_unified.run(
+                            run_unified_analysis, extracted_data, risk_client, self, None, None
+                        ))
+                        red_flag_out, risk_out, obl_out = unified_fut.result()
                         
-                        state.obligation_finding = obl_fut.result()
-                        state.red_flag_detection = red_fut.result()
-                    
-                    state.risk_scoring = score_risks(extracted_data, risk_client)
+                    state.obligation_finding = obl_out
+                    state.red_flag_detection = red_flag_out
+                    state.risk_scoring = risk_out
                     
                     risks_text = "\n".join([f"- {issue.clause_type}: {issue.issue}" for issue in state.risk_scoring.issues])
                     red_flags_text = "\n".join([f"- {flag.pattern_name}: {flag.description}" for flag in state.red_flag_detection.red_flags])
@@ -267,7 +266,7 @@ class ContractReviewService:
         if clause_extraction is None:
             clause_extraction = extract_clauses(contract_text)
 
-        risk_llm_client = self.azure.get_openai_client_for_agent("risk_scorer")
+        risk_llm_client = self.azure.get_openai_client_for_agent("unified_analyzer")
         if not risk_llm_client or not risk_llm_client.is_configured():
             logger.error(
                 "Risk scorer OpenAI client is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER, OpenAI credentials, and ensure the azure-ai-openai package is installed."
@@ -517,7 +516,7 @@ class ContractReviewService:
                 source_file=source_blob_path,
                 user_id=user_id,
                 llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
-                risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
+                risk_llm_client=self.azure.get_openai_client_for_agent("unified_analyzer"),
                 obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
                 plain_llm_client=self.azure.get_openai_client_for_agent("plain_english_writer"),
                 red_flag_llm_client=self.azure.get_openai_client_for_agent("red_flag_detector"),
@@ -527,6 +526,12 @@ class ContractReviewService:
                 perspective=perspective,
             )
             state.trace_id = self.current_trace_id
+            state.metrics = {
+                "input_tokens": self.tracer.trace_input_tokens.get(state.trace_id, 0),
+                "output_tokens": self.tracer.trace_output_tokens.get(state.trace_id, 0),
+                "cached_tokens": self.tracer.trace_cached_tokens.get(state.trace_id, 0),
+                "cost": self.tracer.trace_costs.get(state.trace_id, 0.0),
+            }
             self._save_memory(contract_id, session_id, state)
             self.save_checkpoint(contract_id, state)
             self._trace(
@@ -551,7 +556,7 @@ class ContractReviewService:
             except Exception as e:
                 logger.warning(f"Failed to log pipeline metrics: {e}")
                 
-            self.tracer.flush()
+            self.tracer.end_pipeline_trace(self.current_trace_id)
             return state
         except Exception as e:
             logger.error(f"Contract review process failed: {e}")
@@ -562,7 +567,7 @@ class ContractReviewService:
                 "failed",
                 self.current_trace_id,
             )
-            self.tracer.flush()
+            self.tracer.end_pipeline_trace(self.current_trace_id)
             raise
 
     def retrieve_from_knowledge_base(self, query: str, index_name: str) -> list[dict]:

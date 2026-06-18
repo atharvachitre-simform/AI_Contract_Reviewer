@@ -46,7 +46,7 @@ OUTPUT_SCHEMA = """## Metadata
 
 PROMPT_GUIDELINES = (
     "- Extract EVERY substantive clause in this unit. A substantive clause includes: obligations, restrictions, rights, payments, approvals, governance, confidentiality, termination, indemnity, disclosures, procedures, reporting, commercial commitments.\n"
-    "- If no substantive clauses are found in this text, output 'NO_SUBSTANTIVE_CLAUSE' under the ## Clauses heading and nothing else.\n"
+    "- IMPORTANT: Only output 'NO_SUBSTANTIVE_CLAUSE' under the ## Clauses heading if the text is 100% preamble, purely definitions with no obligations, or signature blocks. If there are ANY obligations, rights, or commercial terms, you MUST extract them.\n"
     "- Do not treat subclauses as independent clauses.\n"
     "- Any primary section, substantive clause, or major heading (e.g., Section 1, Clause A, or unnumbered headings like 'Indemnification', 'Governing Law') should be classified as primary clauses marked with '### [Clause Type]'.\n"
     "- CRITICAL: You MUST independently extract ALL nested sub-sections and list items (e.g., 1.1, 1.2, (a), (b), (i), (ii)) as children of their parent clause marked with '#### Subclause: [Clause Type]'. Do NOT group, skip, or summarize them. Failure to extract every single subclause is a critical error.\n"

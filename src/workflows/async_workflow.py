@@ -190,11 +190,9 @@ class AsyncContractReviewWorkflow:
         # Import agents lazily to avoid heavy top-level import cost
         # ------------------------------------------------------------------
         from ..agents.clause_extractor import extract_clauses
-        from ..agents.obligation_finder import find_obligations
+        from ..agents.unified_analyzer import run_unified_analysis
         from ..agents.plain_english_writer import generate_plain_english
-        from ..agents.red_flag_detector import detect_red_flags
         from ..agents.report_assembler import assemble_report
-        from ..agents.risk_scorer import score_risks
         from ..models import ContractReviewState, ProcessingStatus
 
         # Initialise state
@@ -293,47 +291,43 @@ class AsyncContractReviewWorkflow:
             else:
                 risk_skipped = False
 
-        tasks_to_run = []
-        if not obligation_skipped:
-            yield {"step": obligation_step, "status": "started", "detail": {}}
-            tasks_to_run.append(("obligation", self._run_in_executor(
-                find_obligations, filtered_extraction, obligation_llm_client, memory_context, perspective
-            )))
-        if not red_flag_skipped:
-            yield {"step": red_flag_step, "status": "started", "detail": {}}
-            tasks_to_run.append(("red_flag", self._run_in_executor(
-                detect_red_flags, filtered_extraction, red_flag_llm_client, perspective
-            )))
-        if not risk_skipped:
-            yield {"step": risk_step, "status": "started", "detail": {}}
-            tasks_to_run.append(("risk", self._run_in_executor(
-                score_risks, filtered_extraction, risk_llm_client, retriever, memory_context, perspective
-            )))
+        unified_needed = not (obligation_skipped and red_flag_skipped and risk_skipped)
+        if unified_needed:
+            if not obligation_skipped:
+                yield {"step": obligation_step, "status": "started", "detail": {}}
+            if not red_flag_skipped:
+                yield {"step": red_flag_step, "status": "started", "detail": {}}
+            if not risk_skipped:
+                yield {"step": risk_step, "status": "started", "detail": {}}
 
-        if tasks_to_run:
-            results = await asyncio.gather(*[t for _, t in tasks_to_run], return_exceptions=True)
-            for (label, _), result in zip(tasks_to_run, results):
-                if isinstance(result, Exception):
-                    if label == "obligation":
-                        step_name = obligation_step
-                    elif label == "red_flag":
-                        step_name = red_flag_step
-                    else:
-                        step_name = risk_step
-                    logger.error(f"Async workflow: step '{step_name}' failed: {result}", exc_info=result)
-                    yield {"step": step_name, "status": "error", "detail": {"error": str(result)}}
-                elif label == "obligation":
-                    state.obligation_finding = result
-                    await checkpointer.save(obligation_step, result)
-                    yield {"step": obligation_step, "status": "completed", "detail": {"obligations": len(result.obligations)}}
-                elif label == "red_flag":
-                    state.red_flag_detection = result
-                    await checkpointer.save(red_flag_step, result)
-                    yield {"step": red_flag_step, "status": "completed", "detail": {"red_flags": len(result.red_flags)}}
-                elif label == "risk":
-                    state.risk_scoring = result
-                    await checkpointer.save(risk_step, result)
-                    yield {"step": risk_step, "status": "completed", "detail": {"issues": len(result.issues)}}
+            try:
+                # Use risk_llm_client since it has the highest reasoning capability
+                red_flag_output, risk_output, obligation_output = await self._run_in_executor(
+                    run_unified_analysis, filtered_extraction, risk_llm_client, retriever, memory_context, perspective
+                )
+                
+                if not obligation_skipped:
+                    state.obligation_finding = obligation_output
+                    await checkpointer.save(obligation_step, obligation_output)
+                    yield {"step": obligation_step, "status": "completed", "detail": {"obligations": len(obligation_output.obligations)}}
+                
+                if not red_flag_skipped:
+                    state.red_flag_detection = red_flag_output
+                    await checkpointer.save(red_flag_step, red_flag_output)
+                    yield {"step": red_flag_step, "status": "completed", "detail": {"red_flags": len(red_flag_output.red_flags)}}
+                
+                if not risk_skipped:
+                    state.risk_scoring = risk_output
+                    await checkpointer.save(risk_step, risk_output)
+                    yield {"step": risk_step, "status": "completed", "detail": {"issues": len(risk_output.issues)}}
+            except Exception as e:
+                logger.error(f"Async workflow: unified analysis failed: {e}", exc_info=True)
+                if not obligation_skipped:
+                    yield {"step": obligation_step, "status": "error", "detail": {"error": str(e)}}
+                if not red_flag_skipped:
+                    yield {"step": red_flag_step, "status": "error", "detail": {"error": str(e)}}
+                if not risk_skipped:
+                    yield {"step": risk_step, "status": "error", "detail": {"error": str(e)}}
 
         # ------------------------------------------------------------------
         # Step 5: Plain English Writer
