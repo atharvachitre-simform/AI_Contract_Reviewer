@@ -37,6 +37,53 @@ from langfuse._client.client import Langfuse
 import threading
 import contextvars
 
+def calculate_llm_cost(model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
+    """Calculate exact cost for LLM calls based on current pricing."""
+    model_lower = str(model).lower()
+    
+    try:
+        input_tokens = int(input_tokens) if input_tokens else 0
+    except (ValueError, TypeError):
+        input_tokens = 0
+        
+    try:
+        output_tokens = int(output_tokens) if output_tokens else 0
+    except (ValueError, TypeError):
+        output_tokens = 0
+        
+    try:
+        cached_tokens = int(cached_tokens) if cached_tokens else 0
+    except (ValueError, TypeError):
+        cached_tokens = 0
+    
+    # Azure OpenAI GPT-4o
+    if "gpt-4o" in model_lower and "mini" not in model_lower:
+        return ((input_tokens - cached_tokens) * 5.00 / 1e6) + (cached_tokens * 2.50 / 1e6) + (output_tokens * 15.00 / 1e6)
+    
+    # Azure OpenAI GPT-4o-mini
+    elif "gpt-4o-mini" in model_lower:
+        return ((input_tokens - cached_tokens) * 0.150 / 1e6) + (cached_tokens * 0.075 / 1e6) + (output_tokens * 0.600 / 1e6)
+        
+    # Azure OpenAI GPT-4 Turbo
+    elif "gpt-4-turbo" in model_lower or "gpt-4" in model_lower and "turbo" in model_lower:
+        return (input_tokens * 10.00 / 1e6) + (output_tokens * 30.00 / 1e6)
+        
+    # Groq LLaMA 3.3 70B
+    elif "llama-3.3-70b" in model_lower:
+        return (input_tokens * 0.59 / 1e6) + (output_tokens * 0.79 / 1e6)
+        
+    # Groq LLaMA 3.1 8B
+    elif "llama-3.1-8b" in model_lower or "llama3-8b" in model_lower:
+        return (input_tokens * 0.05 / 1e6) + (output_tokens * 0.08 / 1e6)
+        
+    # Groq Mixtral
+    elif "mixtral" in model_lower:
+        return (input_tokens * 0.24 / 1e6) + (output_tokens * 0.24 / 1e6)
+        
+    # Default fallback (conservative estimate like GPT-4o)
+    else:
+        return ((input_tokens - cached_tokens) * 5.00 / 1e6) + (cached_tokens * 2.50 / 1e6) + (output_tokens * 15.00 / 1e6)
+
 
 class LangFuseTracer:
     """Trace contract review steps and chat sessions to local logs and Langfuse.
@@ -399,12 +446,8 @@ class LangFuseTracer:
             self.trace_output_tokens[tid] += output_tokens
             self.trace_cached_tokens[tid] += cached_tokens
             
-            # calculate cost
-            model_lower = model.lower()
-            if "mini" in model_lower or "llama" in model_lower or "gemini" in model_lower or "groq" in model_lower or "flash" in model_lower:
-                cost = (input_tokens - cached_tokens) * 0.15 / 1e6 + cached_tokens * 0.075 / 1e6 + output_tokens * 0.60 / 1e6
-            else:
-                cost = (input_tokens - cached_tokens) * 5.00 / 1e6 + cached_tokens * 2.50 / 1e6 + output_tokens * 15.00 / 1e6
+            # calculate exact cost
+            cost = calculate_llm_cost(model, input_tokens, output_tokens, cached_tokens)
             self.trace_costs[tid] += cost
 
         if not self.enabled or not tid:
@@ -424,10 +467,12 @@ class LangFuseTracer:
                     "output": output_tokens,
                     "total": total_tokens if total_tokens else input_tokens + output_tokens,
                 },
+                cost=cost if tid else 0.0,
                 metadata={
                     "user_id": uid,
                     "session_id": sid,
                     "contract_id": cid,
+                    "cost": cost if tid else 0.0,
                 },
             )
             obs.end()
@@ -489,6 +534,9 @@ class LangFuseTracer:
                         "useful_clauses": useful_clauses
                     },
                     metadata={
+                        "total_cost": cost,
+                        "total_prompt_tokens": inp,
+                        "total_completion_tokens": out,
                         "cache_effective_input_ratio": round(ratio, 4),
                         "cost_per_useful_clause": round(cost_per_clause, 6)
                     }

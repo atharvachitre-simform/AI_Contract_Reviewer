@@ -278,11 +278,13 @@ class ContractChatService:
                             # Stricter matching: require at least 3 matching non-stop words OR > 25% overlap
                             has_strong_match = word_overlap >= 3 or (len(query_words) > 0 and (word_overlap / len(query_words)) >= 0.25)
                             if has_strong_match:
+                                import hashlib
                                 ranked_clauses.append((word_overlap, {
                                     "clause_type": c_type,
                                     "text": c_text,
                                     "source_page": c_page,
-                                    "confidence": c_confidence
+                                    "confidence": c_confidence,
+                                    "clause_hash": hashlib.md5(c_text.strip().encode("utf-8")).hexdigest()
                                 }))
                         
                         # Sort descending by word overlap
@@ -776,7 +778,7 @@ class ContractChatService:
             
             image_bytes = None
             if top_clause_text:
-                clause_hash = hashlib.md5(top_clause_text.strip().encode("utf-8")).hexdigest()
+                clause_hash = s.get("clause_hash") or hashlib.md5(top_clause_text.strip().encode("utf-8")).hexdigest()
                 crop_path = Path("logs/pages") / self.contract_id / f"clause_{clause_hash}.png"
                 if crop_path.exists():
                     try:
