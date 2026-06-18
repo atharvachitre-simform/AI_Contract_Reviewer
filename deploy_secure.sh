@@ -164,12 +164,7 @@ az containerapp update \
     --command "streamlit" \
     --args run streamlit_app.py \
     --set-env-vars \
-        "BACKEND_URL=https://$BACKEND_FQDN" \
-        "GROQ_API_KEY=secretref:groq-api-key" \
-        "QDRANT_API_KEY=secretref:qdrant-api-key" \
-        "SUPABASE_PASSWORD=secretref:supabase-password" \
-        "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID" \
-        "AZURE_KEYVAULT_URL=https://$KEYVAULT_NAME.vault.azure.net/"
+        "BACKEND_URL=https://$BACKEND_FQDN"
 
 echo "=== 9. Configuring Entra ID (EasyAuth) on Frontend (Optional) ==="
 if [ -z "$ENTRA_APP_CLIENT_ID" ] || [ -z "$ENTRA_APP_CLIENT_SECRET" ] || [ -z "$ENTRA_TENANT_ID" ]; then
