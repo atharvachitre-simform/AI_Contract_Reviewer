@@ -8,14 +8,10 @@ from src import config
 
 @pytest.fixture
 def mock_contract_env():
-    """Sets up logs/checkpoints and logs/pages directories with mock data for testing."""
+    """Sets up mock checkpoints and logs/pages directories with mock data for testing."""
     contract_id = "test_tools_contract"
     
     # 1. Setup paths
-    checkpoint_dir = Path("logs/checkpoints")
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / f"{contract_id}.json"
-    
     pages_dir = Path("logs/pages") / contract_id
     pages_dir.mkdir(parents=True, exist_ok=True)
     page_img_path = pages_dir / "page_1.png"
@@ -24,7 +20,7 @@ def mock_contract_env():
     mock_data = {
         "metadata": {
             "document_name": "Mock Agreement",
-            "parties": ["Alpha Corp", "Beta LLC"],
+            "parties": [{"name": "Alpha Corp", "role": "alpha"}, {"name": "Beta LLC", "role": "beta"}],
             "agreement_date": "2026-01-01",
             "effective_date": "2026-01-10",
             "governing_law": "Delaware"
@@ -64,14 +60,43 @@ def mock_contract_env():
         }
     }
     
-    checkpoint_path.write_text(json.dumps(mock_data, indent=2), encoding="utf-8")
+    from src.services.services import ContractReviewService
+    from src.models import ContractReviewState
+    
+    # Build metadata from dict
+    parties_list = []
+    for p in mock_data["metadata"]["parties"]:
+        parties_list.append({"name": p["name"], "role": p["role"]})
+        
+    state_obj = ContractReviewState(
+        contract_id=contract_id,
+        metadata={
+            "document_name": mock_data["metadata"]["document_name"],
+            "parties": parties_list,
+            "agreement_date": mock_data["metadata"]["agreement_date"],
+            "effective_date": mock_data["metadata"]["effective_date"],
+            "governing_law": mock_data["metadata"]["governing_law"]
+        },
+        risk_scoring={
+            "overall_risk_level": mock_data["risk_scorer"]["overall_risk_level"],
+            "overall_risk_score": mock_data["risk_scorer"]["overall_risk_score"]
+        },
+        final_report={
+            "verdict": mock_data["report_assembler"]["verdict"],
+            "report_summary": "Mock summary"
+        },
+        obligation_finding=mock_data["obligation_finder"],
+        clause_extraction=mock_data["clause_extraction"]
+    )
+    ContractReviewService().save_checkpoint(contract_id, state_obj)
     page_img_path.write_text("dummy image content", encoding="utf-8")
     
     yield contract_id
     
     # 3. Clean up
-    if checkpoint_path.exists():
-        checkpoint_path.unlink()
+    import asyncio
+    from src.checkpointing.redis_checkpointer import RedisCheckpointer
+    asyncio.run(RedisCheckpointer(contract_id=contract_id).delete())
     if pages_dir.exists():
         shutil.rmtree(pages_dir)
 

@@ -10,7 +10,7 @@ async def test_stale_checkpoint_invalidation(tmp_path):
     
     # Patch self._local_dir to point to tmp_path
     with patch("src.checkpointing.redis_checkpointer.Path") as mock_path:
-        # Mock Path to return our temp dir instead of logs/checkpoints
+        # Mock Path to return our temp dir instead of /tmp/checkpoints
         mock_path.return_value = tmp_path
         
         checkpointer = RedisCheckpointer(contract_id=contract_id)

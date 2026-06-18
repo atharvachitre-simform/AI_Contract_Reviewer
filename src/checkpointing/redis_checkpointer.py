@@ -55,7 +55,7 @@ class RedisCheckpointer:
         self._mongo = MongoCheckpointerStore()
 
         # Local fallback directory
-        self._local_dir = Path("logs/checkpoints") / contract_id
+        self._local_dir = Path("/tmp/checkpoints") / contract_id
         self._local_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------

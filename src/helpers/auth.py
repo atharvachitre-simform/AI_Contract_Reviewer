@@ -118,4 +118,8 @@ async def check_contract_ownership(
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.warning(f"Failed to enforce contract ownership check in Redis: {e}")
+        logger.error(f"Failed to enforce contract ownership check in Redis: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Authorization service temporarily unavailable"
+        )

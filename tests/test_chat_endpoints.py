@@ -98,8 +98,8 @@ def test_get_page_image_endpoint():
 def test_chat_service_fallback_to_memorystore():
     """Verify that ContractChatService falls back to checkpoints if Qdrant is disabled."""
     from src.services.chat_service import ContractChatService
-    import json
-    from pathlib import Path
+    from src.services.services import ContractReviewService
+    from src.models import ContractReviewState
 
     contract_id = "fallback-test-111"
     service = ContractChatService(contract_id=contract_id)
@@ -107,11 +107,6 @@ def test_chat_service_fallback_to_memorystore():
     # Disable Qdrant
     service.azure.qdrant_client = None
 
-    # Setup local checkpoint file
-    checkpoint_dir = Path("logs/checkpoints")
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_file = checkpoint_dir / f"{contract_id}.json"
-    
     mock_state = {
         "clause_extraction": {
             "clauses": [
@@ -121,7 +116,11 @@ def test_chat_service_fallback_to_memorystore():
         }
     }
     
-    checkpoint_file.write_text(json.dumps(mock_state), encoding="utf-8")
+    state_obj = ContractReviewState(
+        contract_id=contract_id,
+        clause_extraction=mock_state["clause_extraction"]
+    )
+    ContractReviewService().save_checkpoint(contract_id, state_obj)
 
     try:
         # Query for "Delaware"
@@ -132,7 +131,9 @@ def test_chat_service_fallback_to_memorystore():
         assert sources[0]["clause_type"] == "Governing Law"
         assert "Delaware" in sources[0]["text"]
     finally:
-        checkpoint_file.unlink(missing_ok=True)
+        import asyncio
+        from src.checkpointing.redis_checkpointer import RedisCheckpointer
+        asyncio.run(RedisCheckpointer(contract_id=contract_id).delete())
 
 
 def test_chat_unmasking():

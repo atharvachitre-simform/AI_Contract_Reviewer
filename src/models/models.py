@@ -31,6 +31,7 @@ class ReviewVerdict(str, Enum):
     REVIEW = "review"
     NEGOTIATE = "negotiate"
     REJECT = "reject"
+    NEEDS_AMENDMENT = "needs_amendment"
 
 
 class ProcessingStatus(str, Enum):
@@ -199,11 +200,14 @@ class ObligationItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     party: str | None = None
-    obligation: str
+    obligation: str | None = None
+    description: str | None = None
     due_date: str | None = None
+    deadline: str | None = None
     frequency: str | None = None
     condition: str | None = None
     obligation_type: str | None = None
+    category: str | None = None
     source_clause: str | None = None
     note: str | None = None
 

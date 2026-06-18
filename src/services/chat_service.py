@@ -245,12 +245,14 @@ class ContractChatService:
                 except Exception as e:
                     logger.error(f"Qdrant chat retrieval failed: {e}", exc_info=True)
 
-        # Fallback to local file checkpoint if Qdrant returned no results or is unavailable
+        # Fallback to checkpointer if Qdrant returned no results or is unavailable
         if not sources:
             try:
-                checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-                if checkpoint_file.exists():
-                    state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                from .services import ContractReviewService
+                service = ContractReviewService()
+                state_obj = service.load_checkpoint(self.contract_id)
+                if state_obj:
+                    state = state_obj.model_dump(mode="json")
                     if state:
                         clauses = []
                         if isinstance(state, dict) and state.get("clause_extraction"):
@@ -455,18 +457,30 @@ class ContractChatService:
                 return False
 
     def _tool_retrieve_contract_metadata(self) -> str:
-        """Retrieve contract metadata from the local pipeline checkpoint."""
+        """Retrieve contract metadata from the pipeline checkpoint."""
         try:
-            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-            if checkpoint_file.exists():
-                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            from .services import ContractReviewService
+            service = ContractReviewService()
+            state_obj = service.load_checkpoint(self.contract_id)
+            if state_obj:
+                state = state_obj.model_dump(mode="json")
                 metadata = state.get("metadata", {})
-                risk = state.get("risk_scorer", {})
-                assembler = state.get("report_assembler", {})
+                risk = state.get("risk_scoring", {})
+                assembler = state.get("final_report", {})
                 
+                raw_parties = metadata.get("parties", [])
+                parties = []
+                for p in raw_parties:
+                    if isinstance(p, dict):
+                        parties.append(p.get("name", ""))
+                    elif isinstance(p, str):
+                        parties.append(p)
+                    else:
+                        parties.append(str(p))
+
                 info = {
                     "document_name": metadata.get("document_name", "Unknown"),
-                    "parties": metadata.get("parties", []),
+                    "parties": parties,
                     "agreement_date": metadata.get("agreement_date", "Unknown"),
                     "effective_date": metadata.get("effective_date", "Unknown"),
                     "governing_law": metadata.get("governing_law", "Unknown"),
@@ -532,10 +546,12 @@ class ContractChatService:
     def _tool_list_active_obligations(self) -> str:
         """Load and return active obligations from the checkpoint."""
         try:
-            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-            if checkpoint_file.exists():
-                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-                obligation_data = state.get("obligation_finder", {})
+            from .services import ContractReviewService
+            service = ContractReviewService()
+            state_obj = service.load_checkpoint(self.contract_id)
+            if state_obj:
+                state = state_obj.model_dump(mode="json")
+                obligation_data = state.get("obligation_finding", {})
                 obligations = obligation_data.get("obligations", [])
                 
                 if obligations:
