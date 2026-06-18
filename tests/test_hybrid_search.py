@@ -44,7 +44,9 @@ def test_search_documents_qdrant_fallback():
     mock_hit = MagicMock()
     mock_hit.payload = {"content": "qdrant fallback result"}
     mock_hit.score = 0.88
-    mock_qdrant.search.return_value = [mock_hit]
+    mock_points = MagicMock()
+    mock_points.points = [mock_hit]
+    mock_qdrant.query_points.return_value = mock_points
     factory.qdrant_client = mock_qdrant
     
     # Force search client to be None or fail
@@ -56,9 +58,9 @@ def test_search_documents_qdrant_fallback():
             assert len(results) == 1
             assert results[0]["document"] == {"content": "qdrant fallback result"}
             assert results[0]["score"] == 0.88
-            mock_qdrant.search.assert_called_once_with(
+            mock_qdrant.query_points.assert_called_once_with(
                 collection_name="test-index",
-                query_vector=[0.1, 0.2, 0.3],
+                query=[0.1, 0.2, 0.3],
                 limit=5
             )
 

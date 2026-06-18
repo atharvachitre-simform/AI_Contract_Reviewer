@@ -674,56 +674,669 @@ class ContractReviewService:
                 raise ValueError("This PDF is password-protected. Please remove the password and retry.")
             raise ValueError("This PDF appears to be corrupted or invalid.")
 
-    def save_checkpoint(self, state_id: str, state: ContractReviewState) -> None:
-        """Save workflow state to Redis for checkpoint persistence.
-        
-        Args:
-            state_id: Unique identifier for the state
-            state: The ContractReviewState to save
-        """
-        logger.info(f"Saving checkpoint: {state_id}")
-        checkpoint_dir = Path("logs/checkpoints")
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        payload = state.model_dump(mode="json")
-        (checkpoint_dir / f"{state_id}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def _run_coroutine_sync(coro):
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-    def load_checkpoint(self, state_id: str) -> Optional[ContractReviewState]:
-        """Load workflow state from Redis.
+    if loop and loop.is_running():
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+class ContractReviewService:
+    """Service layer for contract review operations."""
+
+    def __init__(self):
+        """Initialize the contract review service."""
+        self.tracer = LangFuseTracer()
+        self.current_trace_id: str | None = None
+        self.azure = AzureClientFactory()
+        self.memory = MemoryStore(self.azure)
+
+    def _trace(self, step: str, description: str, payload: Any | None = None, status: str = "started", trace_id: str | None = None) -> None:
+        self.tracer.trace(
+            step=step,
+            description=description,
+            payload=payload,
+            status=status,
+            trace_id=trace_id or self.current_trace_id,
+        )
+
+    def _resolve_contract_text(self, contract_text: str, source_blob_path: str | None = None) -> str:
+        if contract_text:
+            return contract_text
+        if source_blob_path:
+            try:
+                return self.azure.extract_text_from_blob(source_blob_path)
+            except Exception as error:
+                self._trace("resolve_contract_text", "Failed to fetch blob and extract text.", {"blob_path": source_blob_path, "error": str(error)}, "failed")
+                raise
+        raise ValueError("Either contract_text or source_blob_path must be provided.")
+
+    def _resolve_memory_context(self, contract_id: str | None = None, session_id: str | None = None) -> dict[str, Any]:
+        if contract_id:
+            memory = self.memory.get_memory_summary(session_id or contract_id, long_term_key=contract_id)
+            return memory
+        if session_id:
+            memory = self.memory.get_memory_summary(session_id)
+            return memory
+        return {}
+
+    def _save_memory(self, contract_id: str | None, session_id: str, results: ContractReviewState) -> None:
+        short_term_payload = {
+            "contract_id": contract_id,
+            "trace_id": results.trace_id,
+            "perspective": results.perspective,
+            "final_report": results.final_report.model_dump(mode="json") if results.final_report else {},
+            "summary": results.final_report.report_summary if results.final_report else "",
+            "red_flags": [{"pattern_name": flag.pattern_name, "severity": flag.severity.value} for flag in results.red_flag_detection.red_flags] if results.red_flag_detection else [],
+            "key_obligations": [{"clause_type": obl.obligation_type, "obligation": obl.obligation} for obl in results.obligation_finding.obligations[:5]] if results.obligation_finding else [],
+            "overall_risk_level": results.final_report.overall_risk_level.value if results.final_report else None,
+            "negotiation_priorities": [{"title": p.title, "priority": p.priority, "reason": p.reason} for p in results.final_report.negotiation_priorities] if results.final_report else [],
+        }
+        self.memory.save_short_term_memory(session_id, short_term_payload)
+        
+        if contract_id:
+            import datetime
+            long_term_payload = {
+                "contract_id": contract_id,
+                "perspective": results.perspective,
+                "review_summary": results.final_report.report_summary if results.final_report else "",
+                "overall_risk": results.final_report.overall_risk_level.value if results.final_report else None,
+                "red_flags": [flag.pattern_name for flag in results.red_flag_detection.red_flags] if results.red_flag_detection else [],
+                "verdict": results.final_report.verdict.value if results.final_report else None,
+                "key_risks": results.final_report.key_risks if results.final_report else [],
+                "review_timestamp": datetime.datetime.utcnow().isoformat(),
+                "missing_clauses": [{"category": m.category, "reason": m.reason} for m in results.final_report.missing_clauses] if results.final_report else [],
+                "negotiation_priorities": [{"title": p.title, "priority": p.priority, "reason": p.reason} for p in results.final_report.negotiation_priorities] if results.final_report else [],
+            }
+            self.memory.save_long_term_memory(contract_id, long_term_payload)
+            
+            # Index clauses in Qdrant if configured and available
+            if results.clause_extraction and results.clause_extraction.clauses:
+                self.memory.index_clauses_in_qdrant(contract_id, results.clause_extraction.clauses)
+
+    async def submit_bulk_review(self, contracts: list[dict[str, str]]) -> str:
+        """
+        Submits multiple contracts for bulk extraction via OpenAI Batch API.
+        `contracts` should be a list of dicts with 'contract_id' and 'contract_text'.
+        """
+        from .batch_processor import BatchProcessor
+        from .redis_client import AsyncRedisClient
+        
+        processor = BatchProcessor(self.azure)
+        jsonl_path = processor.compile_extraction_batch(contracts)
+        
+        batch_id = processor.submit_batch(jsonl_path)
+        
+        # Save mapping of batch_id -> contract details in Redis
+        redis = AsyncRedisClient()
+        mapping_data = {
+            "contracts": contracts,
+            "status": "submitted"
+        }
+        await redis.setex(f"batch:{batch_id}", 24 * 3600, json.dumps(mapping_data))
+        
+        return batch_id
+
+    async def get_bulk_review_status(self, batch_id: str) -> dict[str, Any]:
+        """Gets the status of a bulk review and processes it if completed."""
+        from .batch_processor import BatchProcessor
+        from .redis_client import AsyncRedisClient
+        
+        redis = AsyncRedisClient()
+        mapping_str = await redis.get(f"batch:{batch_id}")
+        if not mapping_str:
+            return {"status": "not_found", "message": f"Batch {batch_id} not found."}
+            
+        mapping_data = json.loads(mapping_str)
+        if mapping_data.get("status") == "completed":
+            return {"status": "completed", "message": "Batch already processed."}
+            
+        processor = BatchProcessor(self.azure)
+        status_info = processor.check_status(batch_id)
+        
+        if status_info["status"] == "completed":
+            # Map of contract_id -> text for parsing
+            contracts_map = {c["contract_id"]: c["contract_text"] for c in mapping_data["contracts"]}
+            results = processor.process_completed_batch(batch_id, contracts_map)
+            
+            # Now run the rest of the pipeline synchronously for each
+            # To avoid blocking the event loop too much, we could use asyncio.to_thread
+            import asyncio
+            from ..workflows.workflow import ContractReviewWorkflow
+            
+            async def process_downstream(c_id: str, extracted_data):
+                def _run_workflow():
+                    wf = ContractReviewWorkflow()
+                    c_text = contracts_map.get(c_id, "")
+                    
+                    state = ContractReviewState(
+                        contract_id=c_id,
+                        contract_text=c_text,
+                        clause_extraction=extracted_data,
+                        status=ProcessingStatus.RUNNING,
+                    )
+                    
+                    # 1. Run parallel agents
+                    # Since we are in an async function, we can just run them synchronously in a thread pool
+                    from concurrent.futures import ThreadPoolExecutor
+                    import contextvars
+                    ctx_obl = contextvars.copy_context()
+                    ctx_red = contextvars.copy_context()
+                    
+                    obl_client = self.azure.get_openai_client_for_agent("obligation_finder")
+                    red_client = self.azure.get_openai_client_for_agent("red_flag_detector")
+                    risk_client = self.azure.get_openai_client_for_agent("risk_scorer")
+                    plain_client = self.azure.get_openai_client_for_agent("plain_english_writer")
+                    assembler_client = self.azure.get_openai_client_for_agent("report_assembler")
+                    
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        obl_fut = executor.submit(lambda: ctx_obl.run(find_obligations, extracted_data, obl_client))
+                        red_fut = executor.submit(lambda: ctx_red.run(detect_red_flags, extracted_data, red_client))
+                        
+                        state.obligation_finding = obl_fut.result()
+                        state.red_flag_detection = red_fut.result()
+                    
+                    state.risk_scoring = score_risks(extracted_data, risk_client)
+                    
+                    risks_text = "\n".join([f"- {issue.clause_type}: {issue.issue}" for issue in state.risk_scoring.issues])
+                    red_flags_text = "\n".join([f"- {flag.pattern_name}: {flag.description}" for flag in state.red_flag_detection.red_flags])
+                    
+                    state.plain_english = generate_plain_english(
+                        extracted_data, plain_client, risks_text=risks_text, red_flags_text=red_flags_text
+                    )
+                    
+                    state.final_report = assemble_report(
+                        clause_extraction=extracted_data,
+                        risk_scoring=state.risk_scoring,
+                        red_flags=state.red_flag_detection,
+                        plain_english=state.plain_english,
+                        llm_client=assembler_client
+                    )
+                    
+                    state.status = ProcessingStatus.COMPLETED
+                    self.save_checkpoint(c_id, state)
+                    self._save_memory(c_id, c_id, state)
+                    return state
+
+                return await asyncio.to_thread(_run_workflow)
+            
+            # Process all contracts in parallel
+            tasks = [process_downstream(c_id, extracted_data) for c_id, extracted_data in results.items()]
+            await asyncio.gather(*tasks)
+            
+            mapping_data["status"] = "completed"
+            await redis.setex(f"batch:{batch_id}", 24 * 3600, json.dumps(mapping_data))
+            
+        return status_info
+
+    def extract_clauses(self, contract_text: str, user_id: str | None = None) -> dict[str, Any]:
+        """Extract key clauses from contract text.
         
         Args:
-            state_id: Unique identifier for the state
+            contract_text: The full contract text to analyze
             
         Returns:
-            The ContractReviewState if found, None otherwise
+            Dictionary containing extracted clauses
         """
-        logger.info(f"Loading checkpoint: {state_id}")
-        checkpoint_file = Path("logs/checkpoints") / f"{state_id}.json"
-        if not checkpoint_file.exists():
-            return None
-        payload = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-        return ContractReviewState.model_validate(payload)
+        logger.info(f"Extracting clauses from contract ({len(contract_text)} chars)")
+        self._trace("extract_clauses", "Extract clauses from contract text.", {"text_length": len(contract_text)}, "started")
+        
+        memory_context = {"tenant_id": user_id} if user_id else None
+        result = extract_clauses(contract_text, memory_context=memory_context)
+        
+        self._trace("extract_clauses", "Completed clause extraction.", {"clause_count": len(result.clauses)}, "completed")
+        return result.model_dump()
 
-    def persist_results(self, review_id: str, results: dict) -> None:
-        """Persist review results to Supabase.
+    def score_risks(self, contract_text: str, extracted_data: dict) -> dict[str, Any]:
+        """Score financial and legal risks in the contract.
         
         Args:
-            review_id: Unique identifier for the review
-            results: The review results to persist
+            contract_text: The full contract text
+            extracted_data: Data from previous analysis steps
+            
+        Returns:
+            Dictionary containing risk scores and analysis
         """
+        logger.info("Scoring risks in contract")
+        self._trace("score_risks", "Score risk from extracted clauses.", {"source": "service"}, "started")
+        clause_extraction = extracted_data.get("clause_extraction") if extracted_data else None
+        if isinstance(clause_extraction, dict):
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
+        if clause_extraction is None and isinstance(extracted_data, dict) and "clauses" in extracted_data:
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": extracted_data}).clause_extraction
+        if clause_extraction is None:
+            clause_extraction = extract_clauses(contract_text)
+
+        risk_llm_client = self.azure.get_openai_client_for_agent("risk_scorer")
+        if not risk_llm_client or not risk_llm_client.is_configured():
+            logger.error(
+                "Risk scorer OpenAI client is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER, OpenAI credentials, and ensure the azure-ai-openai package is installed."
+            )
+            raise RuntimeError(
+                "Risk scorer OpenAI client is not configured. Verify AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and install azure-ai-openai."
+            )
+
+        result = score_risks(clause_extraction, llm_client=risk_llm_client)
+        self._trace("score_risks", "Completed risk scoring.", {"issues": len(result.issues), "overall_risk": str(result.overall_risk_level)}, "completed")
+        return result.model_dump()
+
+    def find_obligations(self, contract_text: str, extracted_data: dict) -> dict[str, Any]:
+        """Identify party obligations from the contract.
+        
+        Args:
+            contract_text: The full contract text
+            extracted_data: Data from previous analysis steps
+            
+        Returns:
+            Dictionary containing identified obligations
+        """
+        logger.info("Finding obligations in contract")
+        self._trace("find_obligations", "Identify obligations from extracted clauses.", {"source": "service"}, "started")
+        clause_extraction = extracted_data.get("clause_extraction") if extracted_data else None
+        if isinstance(clause_extraction, dict):
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
+        if clause_extraction is None:
+            clause_extraction = extract_clauses(contract_text)
+        obligation_llm_client = self.azure.get_openai_client_for_agent("obligation_finder")
+        if not obligation_llm_client or not obligation_llm_client.is_configured():
+            logger.error("Obligation Finder OpenAI client is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+            raise RuntimeError("Obligation Finder OpenAI client is not configured. Verify AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings.")
+
+        result = find_obligations(clause_extraction, llm_client=obligation_llm_client)
+        self._trace("find_obligations", "Completed obligation detection.", {"obligations": len(result.obligations)}, "completed")
+        return result.model_dump()
+
+    def detect_red_flags(self, contract_text: str, extracted_data: dict) -> dict[str, Any]:
+        """Detect unusual or problematic terms in the contract.
+        
+        Args:
+            contract_text: The full contract text
+            extracted_data: Data from previous analysis steps
+            
+        Returns:
+            Dictionary containing detected red flags
+        """
+        logger.info("Detecting red flags in contract")
+        self._trace("detect_red_flags", "Detect red flag patterns in extracted clauses.", {"source": "service"}, "started")
+        clause_extraction = extracted_data.get("clause_extraction") if extracted_data else None
+        if isinstance(clause_extraction, dict):
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
+        if clause_extraction is None:
+            clause_extraction = extract_clauses(contract_text)
+        red_flag_client = self.azure.get_openai_client_for_agent("red_flag_detector")
+        result = detect_red_flags(clause_extraction, llm_client=red_flag_client)
+        self._trace("detect_red_flags", "Completed red flag detection.", {"red_flags": len(result.red_flags)}, "completed")
+        return result.model_dump()
+
+    def generate_plain_english(self, contract_text: str, extracted_data: dict) -> dict[str, Any]:
+        """Generate plain English summary of the contract.
+        
+        Args:
+            contract_text: The full contract text
+            extracted_data: Data from previous analysis steps
+            
+        Returns:
+            Dictionary containing plain English summary
+        """
+        logger.info("Generating plain English summary")
+        self._trace("generate_plain_english", "Generate plain English contract summary.", {"source": "service"}, "started")
+        clause_extraction = extracted_data.get("clause_extraction") if extracted_data else None
+        if isinstance(clause_extraction, dict):
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
+        if clause_extraction is None:
+            clause_extraction = extract_clauses(contract_text)
+        plain_client = self.azure.get_openai_client_for_agent("plain_english_writer")
+        result = generate_plain_english(clause_extraction, llm_client=plain_client)
+        self._trace("generate_plain_english", "Completed plain English summary.", {"clauses": len(result.clause_summaries)}, "completed")
+        return result.model_dump()
+
+    def assemble_report(self, contract_text: str, analysis_results: dict) -> dict[str, Any]:
+        """Assemble final comprehensive review report.
+        
+        Args:
+            contract_text: The full contract text
+            analysis_results: Combined results from all analysis steps
+            
+        Returns:
+            Dictionary containing final report
+        """
+        logger.info("Assembling final report")
+        self._trace("assemble_report", "Assemble the final combined report.", {"source": "service"}, "started")
+        clause_extraction = analysis_results.get("clause_extraction")
+        risk_scoring = analysis_results.get("risk_scoring")
+        red_flags = analysis_results.get("red_flag_detection")
+        plain_english = analysis_results.get("plain_english")
+        if isinstance(clause_extraction, dict):
+            clause_extraction = ContractReviewState.model_validate({"clause_extraction": clause_extraction}).clause_extraction
+        if isinstance(risk_scoring, dict):
+            risk_scoring = ContractReviewState.model_validate({"risk_scoring": risk_scoring}).risk_scoring
+        if isinstance(red_flags, dict):
+            red_flags = ContractReviewState.model_validate({"red_flag_detection": red_flags}).red_flag_detection
+        if isinstance(plain_english, dict):
+            plain_english = ContractReviewState.model_validate({"plain_english": plain_english}).plain_english
+        if clause_extraction and risk_scoring and red_flags and plain_english:
+            assembler_client = self.azure.get_openai_client_for_agent("report_assembler")
+            result = assemble_report(clause_extraction, risk_scoring, red_flags, plain_english, llm_client=assembler_client)
+            self._trace("assemble_report", "Completed final report assembly.", {"verdict": str(result.verdict), "risk": str(result.overall_risk_level)}, "completed")
+            return result.model_dump()
+        raise ValueError("Incomplete analysis results for report assembly")
+
+    def is_document_contract(self, text: str) -> bool:
+        """Verify if the uploaded text is a contract or legal document."""
+        import re
+        if text is not None and "--- PAGE" in text and re.match(r"^(\s*---\s*PAGE\s*\d+\s*---\s*)*$", text):
+            raise ValueError(
+                "This PDF appears to be a scanned image document with no extractable "
+                "text. Please upload a text-based PDF or use OCR software first."
+            )
+
+        if not text or not text.strip():
+            return False
+
+        sample = text[:5000].lower()
+
+        # Strong contract indicators
+        CONTRACT_SIGNALS = [
+            "agreement", "contract", "whereas", "hereby", "herein",
+            "licensor", "licensee", "licens", "vendor", "indemnif",
+            "shall ", "party", "parties", "effective date", "term of",
+            "termination", "governing law", "jurisdiction", "covenant",
+            "representations and warranties", "intellectual property",
+            "confidential", "non-disclosure", "assignment", "sublicense",
+            "force majeure", "arbitration", "in witness whereof",
+            "executed by", "by and between", "now therefore",
+            "obligations", "exclusivity", "renewal", "liability",
+        ]
+
+        NON_CONTRACT_SIGNALS = [
+            "dear hiring manager", "to whom it may concern",
+            "curriculum vitae", "work experience", "references available",
+            "invoice number", "bill to:", "subtotal", "grand total",
+            "breaking news", "subscribe to our newsletter",
+        ]
+
+        contract_hits = sum(1 for s in CONTRACT_SIGNALS if s in sample)
+        non_contract_hits = sum(1 for s in NON_CONTRACT_SIGNALS if s in sample)
+
+        if contract_hits >= 2:
+            logger.info(f"Relevance gating: PASS (contract signals={contract_hits})")
+            return True
+        if non_contract_hits >= 3 and contract_hits == 0:
+            logger.warning(f"Relevance gating: FAIL (non-contract signals={non_contract_hits}, contract signals=0)")
+            return False
+
+        logger.info(f"Relevance gating: PASS (ambiguous — contract={contract_hits}, non-contract={non_contract_hits})")
+        return True
+
+    def process_contract(self, contract_text: str = "", contract_id: str | None = None, source_blob_path: str | None = None, perspective: str | None = None, user_id: str | None = None) -> ContractReviewState:
+        """End-to-end contract review process."""
+        contract_text = self._resolve_contract_text(contract_text, source_blob_path)
+        
+        from ..helpers.pdf_cleaner import preprocess_for_extraction
+        _raw_contract_text = contract_text
+        contract_text, stats = preprocess_for_extraction(contract_text)
+        logger.info(
+            "Preprocessing removed %d chars (~%d tokens): "
+            "signature=%d, attachments=%d, recitals=%d, xrefs=%d, redactions=%d",
+            stats['total_chars_removed'],
+            stats['estimated_tokens_saved'],
+            stats['signature_block_chars'],
+            stats['attachment_placeholder_chars'],
+            stats['recitals_chars'],
+            stats['pure_xref_definitions_removed'],
+            stats['redaction_tokens_collapsed']
+        )
+
+        session_id = contract_id or str(uuid.uuid4())
+        if not contract_id:
+            contract_id = session_id
+
+        from ..helpers.extraction_tracer import get_tracer as _get_tracer
+        _trace_contract_id = contract_id
+        _preprocess_tracer = _get_tracer(_trace_contract_id)
+        if _preprocess_tracer.enabled:
+            _preprocess_tracer.save_raw(_raw_contract_text)
+            _preprocess_tracer.save_preprocessed(contract_text, stats)
+
+        if not self.is_document_contract(contract_text):
+            raise ValueError(
+                "Document relevance gating failed: The uploaded document does not appear to be a contract "
+                "or legal agreement. Execution aborted to conserve API resources."
+            )
+
+        memory_context = self._resolve_memory_context(contract_id=contract_id, session_id=session_id)
+        if user_id:
+            memory_context["tenant_id"] = user_id
+
+        logger.info("Starting contract review process")
+        self.current_trace_id = self.tracer.start_pipeline_trace(
+            contract_id=contract_id or session_id,
+            user_id=user_id,
+            source_file=source_blob_path,
+            perspective=perspective,
+        )
+        self._trace(
+            "process_contract",
+            "Begin end-to-end contract review.",
+            {"text_length": len(contract_text), "contract_id": contract_id, "blob_path": source_blob_path, "perspective": perspective},
+            "started",
+            self.current_trace_id,
+        )
+        try:
+            from ..workflows.workflow import run_contract_review
+            state = run_contract_review(
+                contract_text,
+                trace_id=self.current_trace_id,
+                contract_id=contract_id,
+                source_file=source_blob_path,
+                user_id=user_id,
+                llm_client=self.azure.get_openai_client_for_agent("clause_extractor"),
+                risk_llm_client=self.azure.get_openai_client_for_agent("risk_scorer"),
+                obligation_llm_client=self.azure.get_openai_client_for_agent("obligation_finder"),
+                plain_llm_client=self.azure.get_openai_client_for_agent("plain_english_writer"),
+                red_flag_llm_client=self.azure.get_openai_client_for_agent("red_flag_detector"),
+                assembler_llm_client=self.azure.get_openai_client_for_agent("report_assembler"),
+                memory_context=memory_context,
+                retriever=self,
+                perspective=perspective,
+            )
+            state.trace_id = self.current_trace_id
+            self._save_memory(contract_id, session_id, state)
+            self.save_checkpoint(contract_id, state)
+            self._trace(
+                "process_contract",
+                "End-to-end contract review completed.",
+                {"status": str(state.status), "trace_id": state.trace_id},
+                "completed",
+                self.current_trace_id,
+            )
+            if self.tracer.enabled:
+                trace_url = self.tracer.get_trace_url(self.current_trace_id)
+                if trace_url:
+                    try:
+                        state.trace_url = trace_url
+                    except Exception:
+                        pass
+            
+            useful_clauses = len(state.clause_extraction.clauses) if state.clause_extraction and state.clause_extraction.clauses else 0
+            try:
+                self.tracer.log_pipeline_metrics(self.current_trace_id, useful_clauses)
+            except Exception as e:
+                logger.warning(f"Failed to log pipeline metrics: {e}")
+                
+            self.tracer.flush()
+            return state
+        except Exception as e:
+            logger.error(f"Contract review process failed: {e}")
+            self._trace(
+                "process_contract",
+                "Contract review process failed.",
+                {"error": str(e)},
+                "failed",
+                self.current_trace_id,
+            )
+            self.tracer.flush()
+            raise
+
+    def retrieve_from_knowledge_base(self, query: str, index_name: str) -> list[dict]:
+        """Retrieve relevant information from Azure AI Search knowledge base."""
+        logger.info(f"Retrieving from knowledge base - index: {index_name}, query: {query}")
+        if self.azure.search_endpoint and self.azure.search_api_key:
+            try:
+                results = self.azure.search_documents(query, index_name)
+                clean_results = [
+                    r for r in results
+                    if isinstance(r, dict) and (r.get("document") or r.get("text") or r.get("content"))
+                ]
+                return clean_results
+            except Exception as err:
+                logger.warning(f"Azure Search query failed: {err}")
+        return []
+
+    def extract_from_pdf(self, pdf_path: str) -> str:
+        """Extract text from PDF document."""
+        logger.info(f"Extracting text from PDF: {pdf_path}")
+        is_local_file = Path(pdf_path).exists()
+        can_extract_blob = bool(self.azure.blob_service_client and self.azure.container_name and pdf_path.startswith("contracts/"))
+        if self.azure.document_intelligence_client and (is_local_file or can_extract_blob):
+            try:
+                return self.azure.extract_text_from_blob(pdf_path)
+            except Exception as err:
+                logger.warning(f"Azure Document Intelligence extraction failed, falling back to local extraction: {err}")
+
+        from ..helpers.pdf_cleaner import clean_extracted_pages
+
+        try:
+            if pdf_path.startswith("http") or pdf_path.startswith("contracts/"):
+                raw_bytes = self.azure.download_blob_bytes(pdf_path)
+                if not raw_bytes.startswith(b"%PDF"):
+                    raise ValueError("The uploaded file does not appear to be a valid PDF.")
+                try:
+                    document = fitz.open(stream=raw_bytes, filetype="pdf")
+                except fitz.EmptyFileError:
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                except (fitz.FileDataError, Exception) as e:
+                    err_msg = str(e).lower()
+                    if "encrypted" in err_msg or "password" in err_msg:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                try:
+                    if len(document) == 0:
+                        raise ValueError("The uploaded PDF has no pages.")
+                    if document.is_encrypted or document.needs_pass:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    pages = [page.get_text("text") for page in document]
+                    return clean_extracted_pages(pages)
+                finally:
+                    document.close()
+            else:
+                path_obj = Path(pdf_path)
+                if not path_obj.exists() or path_obj.stat().st_size == 0:
+                     raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                with open(pdf_path, "rb") as f:
+                    header = f.read(4)
+                if header != b"%PDF":
+                    raise ValueError("The uploaded file does not appear to be a valid PDF.")
+                
+                try:
+                    doc = fitz.open(pdf_path)
+                except fitz.EmptyFileError:
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                except (fitz.FileDataError, Exception) as e:
+                    err_msg = str(e).lower()
+                    if "encrypted" in err_msg or "password" in err_msg:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    raise ValueError("This PDF appears to be corrupted or invalid.")
+                
+                try:
+                    if len(doc) == 0:
+                        raise ValueError("The uploaded PDF has no pages.")
+                    if doc.is_encrypted or doc.needs_pass:
+                        raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+                    pages = [page.get_text("text") for page in doc]
+                    return clean_extracted_pages(pages)
+                finally:
+                    doc.close()
+        except ValueError as ve:
+            raise ve
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "encrypted" in err_msg or "password" in err_msg:
+                raise ValueError("This PDF is password-protected. Please remove the password and retry.")
+            raise ValueError("This PDF appears to be corrupted or invalid.")
+
+    def save_checkpoint(self, state_id: str, state: ContractReviewState) -> None:
+        """Save workflow state to Redis/MongoDB for checkpoint persistence."""
+        logger.info(f"Saving checkpoint: {state_id}")
+        from ..checkpointing.redis_checkpointer import RedisCheckpointer
+        checkpointer = RedisCheckpointer(contract_id=state_id)
+        try:
+            async def _save():
+                await checkpointer.save("full_state", state)
+            _run_coroutine_sync(_save())
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint for state {state_id} to checkpointer: {e}")
+
+    def load_checkpoint(self, state_id: str) -> Optional[ContractReviewState]:
+        """Load workflow state from Redis/MongoDB."""
+        logger.info(f"Loading checkpoint: {state_id}")
+        from ..checkpointing.redis_checkpointer import RedisCheckpointer
+        from ..models import ContractReviewState, ProcessingStatus
+        checkpointer = RedisCheckpointer(contract_id=state_id)
+        try:
+            async def _load():
+                # 1. Try to load the full state first
+                data = await checkpointer._load_step("full_state")
+                if data:
+                    return ContractReviewState.model_validate(data)
+                
+                # 2. Reconstruct from individual steps
+                clause_extraction = await checkpointer._load_step("clause_extraction")
+                if not clause_extraction:
+                    return None
+                    
+                obligation_finding = await checkpointer._load_step("obligation_finding")
+                red_flag_detection = await checkpointer._load_step("red_flag_detection")
+                risk_scoring = await checkpointer._load_step("risk_scoring")
+                plain_english = await checkpointer._load_step("plain_english")
+                final_report = await checkpointer._load_step("final_report")
+                
+                metadata = clause_extraction.get("metadata") if isinstance(clause_extraction, dict) else getattr(clause_extraction, "metadata", {})
+                
+                return ContractReviewState(
+                    contract_id=state_id,
+                    metadata=metadata,
+                    clause_extraction=clause_extraction,
+                    obligation_finding=obligation_finding,
+                    red_flag_detection=red_flag_detection,
+                    risk_scoring=risk_scoring,
+                    plain_english=plain_english,
+                    final_report=final_report,
+                    status=ProcessingStatus.COMPLETED if final_report else ProcessingStatus.RUNNING
+                )
+            return _run_coroutine_sync(_load())
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint for state {state_id} from checkpointer: {e}")
+            return None
+
+    def persist_results(self, review_id: str, results: dict) -> None:
+        """Persist review results to Supabase."""
         logger.info(f"Persisting results to Supabase: {review_id}")
         out_dir = Path("logs/results")
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{review_id}.json").write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
 
     def batch_process_contracts(self, contracts: list[dict]) -> list[dict]:
-        """Process multiple contracts in batch.
-        
-        Args:
-            contracts: List of contract dictionaries with text and metadata
-        
-        Returns:
-            List of review results
-        """
+        """Process multiple contracts in batch."""
         results = []
         for contract in contracts:
             try:

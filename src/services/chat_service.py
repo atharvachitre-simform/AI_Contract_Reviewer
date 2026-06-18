@@ -245,12 +245,14 @@ class ContractChatService:
                 except Exception as e:
                     logger.error(f"Qdrant chat retrieval failed: {e}", exc_info=True)
 
-        # Fallback to local file checkpoint if Qdrant returned no results or is unavailable
+        # Fallback to checkpointer if Qdrant returned no results or is unavailable
         if not sources:
             try:
-                checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-                if checkpoint_file.exists():
-                    state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                from .services import ContractReviewService
+                service = ContractReviewService()
+                state_obj = service.load_checkpoint(self.contract_id)
+                if state_obj:
+                    state = state_obj.model_dump(mode="json")
                     if state:
                         clauses = []
                         if isinstance(state, dict) and state.get("clause_extraction"):
@@ -278,11 +280,13 @@ class ContractChatService:
                             # Stricter matching: require at least 3 matching non-stop words OR > 25% overlap
                             has_strong_match = word_overlap >= 3 or (len(query_words) > 0 and (word_overlap / len(query_words)) >= 0.25)
                             if has_strong_match:
+                                import hashlib
                                 ranked_clauses.append((word_overlap, {
                                     "clause_type": c_type,
                                     "text": c_text,
                                     "source_page": c_page,
-                                    "confidence": c_confidence
+                                    "confidence": c_confidence,
+                                    "clause_hash": hashlib.md5(c_text.strip().encode("utf-8")).hexdigest()
                                 }))
                         
                         # Sort descending by word overlap
@@ -453,18 +457,30 @@ class ContractChatService:
                 return False
 
     def _tool_retrieve_contract_metadata(self) -> str:
-        """Retrieve contract metadata from the local pipeline checkpoint."""
+        """Retrieve contract metadata from the pipeline checkpoint."""
         try:
-            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-            if checkpoint_file.exists():
-                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            from .services import ContractReviewService
+            service = ContractReviewService()
+            state_obj = service.load_checkpoint(self.contract_id)
+            if state_obj:
+                state = state_obj.model_dump(mode="json")
                 metadata = state.get("metadata", {})
-                risk = state.get("risk_scorer", {})
-                assembler = state.get("report_assembler", {})
+                risk = state.get("risk_scoring", {})
+                assembler = state.get("final_report", {})
                 
+                raw_parties = metadata.get("parties", [])
+                parties = []
+                for p in raw_parties:
+                    if isinstance(p, dict):
+                        parties.append(p.get("name", ""))
+                    elif isinstance(p, str):
+                        parties.append(p)
+                    else:
+                        parties.append(str(p))
+
                 info = {
                     "document_name": metadata.get("document_name", "Unknown"),
-                    "parties": metadata.get("parties", []),
+                    "parties": parties,
                     "agreement_date": metadata.get("agreement_date", "Unknown"),
                     "effective_date": metadata.get("effective_date", "Unknown"),
                     "governing_law": metadata.get("governing_law", "Unknown"),
@@ -530,10 +546,12 @@ class ContractChatService:
     def _tool_list_active_obligations(self) -> str:
         """Load and return active obligations from the checkpoint."""
         try:
-            checkpoint_file = Path("logs/checkpoints") / f"{self.contract_id}.json"
-            if checkpoint_file.exists():
-                state = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-                obligation_data = state.get("obligation_finder", {})
+            from .services import ContractReviewService
+            service = ContractReviewService()
+            state_obj = service.load_checkpoint(self.contract_id)
+            if state_obj:
+                state = state_obj.model_dump(mode="json")
+                obligation_data = state.get("obligation_finding", {})
                 obligations = obligation_data.get("obligations", [])
                 
                 if obligations:
@@ -776,7 +794,7 @@ class ContractChatService:
             
             image_bytes = None
             if top_clause_text:
-                clause_hash = hashlib.md5(top_clause_text.strip().encode("utf-8")).hexdigest()
+                clause_hash = s.get("clause_hash") or hashlib.md5(top_clause_text.strip().encode("utf-8")).hexdigest()
                 crop_path = Path("logs/pages") / self.contract_id / f"clause_{clause_hash}.png"
                 if crop_path.exists():
                     try:

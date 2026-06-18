@@ -665,7 +665,15 @@ def render_chat_tab(contract_id: str) -> None:
                         st.write(snippet)
                         if page is not None and contract_id != "general" and pages_dir.exists():
                             import hashlib
-                            clause_hash = src.get("clause_hash") or hashlib.md5(snippet.strip().encode("utf-8")).hexdigest()
+                            clause_hash = src.get("clause_hash")
+                            if not clause_hash:
+                                from src import config
+                                hash_text = snippet
+                                if getattr(config, "ENABLE_SENSITIVE_MASKING", False) and getattr(config, "SENSITIVE_KEYWORDS", []):
+                                    from src.helpers.mask import mask_sensitive_text
+                                    hash_text = mask_sensitive_text(snippet, config.SENSITIVE_KEYWORDS)
+                                clause_hash = hashlib.md5(hash_text.strip().encode("utf-8")).hexdigest()
+                            
                             crop_path = pages_dir / f"clause_{clause_hash}.png"
                             
                             # Extract and format confidence score if present
@@ -805,6 +813,48 @@ def _clear_localstorage_session() -> None:
 
 # ---------------------------------------------------------------------------
 
+
+@st.cache_data(ttl=300)
+def get_trace_cost_metrics(trace_id: str) -> dict:
+    import json
+    from pathlib import Path
+    from src.services.langfuse_tracer import calculate_llm_cost
+    log_file = Path("logs/langfuse_events.jsonl")
+    
+    metrics = {"total_cost": 0.0, "total_input": 0, "total_output": 0}
+    if not log_file.exists() or not trace_id:
+        return metrics
+        
+    try:
+        with open(log_file, "r") as f:
+            for line in f:
+                if trace_id in line and "generation:" in line:
+                    try:
+                        data = json.loads(line.strip())
+                        if data.get("trace_id") == trace_id and data.get("step", "").startswith("generation:"):
+                            inp = data.get("input_tokens", 0) or 0
+                            out = data.get("output_tokens", 0) or 0
+                            cached = data.get("cached_tokens", 0) or 0
+                            model = data.get("model", "")
+                            
+                            # safely convert
+                            try: inp = int(inp)
+                            except: inp = 0
+                            try: out = int(out)
+                            except: out = 0
+                            try: cached = int(cached)
+                            except: cached = 0
+                            
+                            cost = calculate_llm_cost(model, inp, out, cached)
+                            
+                            metrics["total_input"] += inp
+                            metrics["total_output"] += out
+                            metrics["total_cost"] += cost
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return metrics
 
 def main() -> None:
     st.set_page_config(page_title="AI Contract Reviewer", layout="wide")
@@ -1038,15 +1088,16 @@ def main() -> None:
         
         # --- 1. Load Past Reviewed Contracts Section ---
         st.header("Past Reviewed Contracts")
-        checkpoint_dir = Path("logs/checkpoints")
+        from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
+        mongo = MongoCheckpointerStore()
         past_checkpoints = []
-        if checkpoint_dir.exists():
-            import json
-            past_checkpoints = sorted(
-                list(checkpoint_dir.glob("*.json")),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
+        if mongo.is_connected() and mongo.collection is not None:
+            try:
+                # Find all checkpoints with step="full_state"
+                cursor = mongo.collection.find({"step": "full_state"}).sort("updated_at", -1)
+                past_checkpoints = list(cursor)
+            except Exception:
+                pass
             
         if past_checkpoints:
             # Query all owners in a single batch pipeline to ensure fast rendering
@@ -1064,7 +1115,7 @@ def main() -> None:
                     owners = await pipe.execute()
                     return {c_id: owner for c_id, owner in zip(c_ids, owners)}
                     
-            c_ids = [p.name.replace(".json", "") for p in past_checkpoints]
+            c_ids = [p["contract_id"] for p in past_checkpoints]
             try:
                 owners_map = asyncio.run(get_contract_owners(c_ids))
             except Exception:
@@ -1074,7 +1125,7 @@ def main() -> None:
             user_id = st.session_state["auth_user"].get("id")
             
             for p in past_checkpoints:
-                c_id = p.name.replace(".json", "")
+                c_id = p["contract_id"]
                 
                 # Enforce ownership check: skip contracts owned by other users
                 owner_id = owners_map.get(c_id)
@@ -1086,7 +1137,7 @@ def main() -> None:
                         continue
                     
                 try:
-                    checkpoint_data = json.loads(p.read_text(encoding="utf-8"))
+                    checkpoint_data = p["state_data"]
                     metadata = checkpoint_data.get("metadata", {})
                     doc_name = metadata.get("source_file") or metadata.get("document_name")
                     if doc_name and ("/" in doc_name or "\\" in doc_name):
@@ -1148,6 +1199,17 @@ def main() -> None:
                             st.error("Failed to load selected checkpoint.")
         else:
             st.info("No past reviews found for your account.")
+
+        st.divider()
+        st.header("Cost Analysis")
+        review_state = st.session_state.get("review_state")
+        if review_state and getattr(review_state, "trace_id", None):
+            metrics = get_trace_cost_metrics(review_state.trace_id)
+            st.metric("Total Estimated Cost", f"${metrics['total_cost']:.4f}")
+            st.caption(f"**Input Tokens:** {metrics['total_input']:,}")
+            st.caption(f"**Output Tokens:** {metrics['total_output']:,}")
+        else:
+            st.info("Load a contract review to see cost metrics.")
 
 
 

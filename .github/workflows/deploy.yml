@@ -83,6 +83,9 @@ jobs:
         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
         SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+        ENTRA_APP_CLIENT_ID: ${{ secrets.ENTRA_APP_CLIENT_ID }}
+        ENTRA_APP_CLIENT_SECRET: ${{ secrets.ENTRA_APP_CLIENT_SECRET }}
+        ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
       run: |
         chmod +x deploy_secure.sh
         ./deploy_secure.sh

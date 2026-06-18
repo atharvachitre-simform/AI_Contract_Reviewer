@@ -303,9 +303,15 @@ class AzureOpenAIWrapper:
                                         raise RuntimeError("Groq fallback client not configured")
                                 except Exception as groq_err:
                                     logger.error(f"Groq fallback failed: {groq_err}. Generating graceful fallback response.")
-                                    res = "Content filtered: Request blocked by Azure content policies."
+                                    if response_format and response_format.get("type") == "json_object":
+                                        res = get_fallback_json_for_prompt(prompt)
+                                    else:
+                                        res = "Content filtered: Request blocked by Azure content policies."
                             else:
-                                res = "Content filtered: Request blocked by Azure content policies."
+                                if response_format and response_format.get("type") == "json_object":
+                                    res = get_fallback_json_for_prompt(prompt)
+                                else:
+                                    res = "Content filtered: Request blocked by Azure content policies."
                         else:
                             raise
                 else:
@@ -533,7 +539,7 @@ class AzureOpenAIWrapper:
                         system_prompt=system_prompt
                     )
                     self._last_response = getattr(fallback_wrapper, "_last_response", None)
-                    return res
+                    return res, self._last_response
             raise
 
         raise RuntimeError("Azure OpenAI client is not configured")

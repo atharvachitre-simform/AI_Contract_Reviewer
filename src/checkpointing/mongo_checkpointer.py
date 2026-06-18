@@ -36,7 +36,7 @@ class MongoCheckpointerStore:
 
     def save_checkpoint(self, contract_id: str, step: str, state_data: Dict[str, Any]) -> None:
         """Upsert a step checkpoint for a contract session."""
-        if not self.collection:
+        if self.collection is None:
             return
         try:
             query = {"contract_id": contract_id, "step": step}
@@ -55,7 +55,7 @@ class MongoCheckpointerStore:
 
     def load_checkpoint(self, contract_id: str, step: str) -> Dict[str, Any] | None:
         """Load a step checkpoint for a contract session."""
-        if not self.collection:
+        if self.collection is None:
             return None
         try:
             doc = self.collection.find_one({"contract_id": contract_id, "step": step})
@@ -67,7 +67,7 @@ class MongoCheckpointerStore:
 
     def delete_checkpoints(self, contract_id: str, step: str | None = None) -> None:
         """Delete checkpoints. If step is None, deletes all steps for this contract."""
-        if not self.collection:
+        if self.collection is None:
             return
         try:
             query = {"contract_id": contract_id}
@@ -80,7 +80,7 @@ class MongoCheckpointerStore:
 
     def get_completed_steps(self, contract_id: str, all_steps: List[str]) -> List[str]:
         """Return steps that have checkpoints in MongoDB."""
-        if not self.collection:
+        if self.collection is None:
             return []
         try:
             cursor = self.collection.find({"contract_id": contract_id}, {"step": 1})
