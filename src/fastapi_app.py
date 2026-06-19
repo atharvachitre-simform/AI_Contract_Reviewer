@@ -4,13 +4,16 @@ import json
 from typing import AsyncGenerator
 
 import os
-from fastapi import FastAPI, HTTPException, Response, Form, File, UploadFile, Depends
-from fastapi.responses import StreamingResponse
+import redis.asyncio as aioredis
+from fastapi import FastAPI, HTTPException, Response, Form, File, UploadFile, Depends, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 import re
 from .controllers.controller import review_contract
 from .helpers.auth import get_current_user, check_contract_ownership, require_admin
+from src import config
+
 def sanitize_contract_id(contract_id: str) -> str:
     if not re.match(r'^[a-zA-Z0-9_\-]+$', contract_id):
         raise HTTPException(status_code=400,
@@ -54,7 +57,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# No rate limiters initialized
+# ---------------------------------------------------------------------------
+# Rate Limiting (slowapi + Redis moving-window)
+# ---------------------------------------------------------------------------
+from .middleware.rate_limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return HTTP 429 with a Retry-After header when a rate limit is breached."""
+    retry_after = getattr(exc, "retry_after", 60)
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded. Please slow down.",
+            "retry_after_seconds": retry_after,
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
 
 # Dependency to check contract ownership from path parameter
 async def verify_path_contract_access(contract_id: str, user: dict = Depends(get_current_user)):
@@ -112,18 +137,18 @@ def health():
 # ---------------------------------------------------------------------------
 
 @app.post("/review")
-def review(request: ReviewRequest, user: dict = Depends(get_current_user)):
-    """Run the contract review workflow (synchronous)."""
-    if request.contract_id is not None:
-        sanitize_contract_id(request.contract_id)
+@limiter.limit(config.RATE_LIMIT_REVIEW_STREAM)
+def review(request: Request, body: ReviewRequest, user: dict = Depends(get_current_user)):
+    """Run the contract review workflow (synchronous, legacy)."""
+    if body.contract_id is not None:
+        sanitize_contract_id(body.contract_id)
     state = review_contract(
-        request.contract_text,
-        contract_id=request.contract_id,
-        perspective=request.perspective,
+        body.contract_text,
+        contract_id=body.contract_id,
+        perspective=body.perspective,
         user_id=user.get("id"),
     )
     from .helpers.mask import unmask_review_state
-    from src import config
     state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
     return state.model_dump(mode="json")
 
@@ -133,11 +158,11 @@ def review(request: ReviewRequest, user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/review/{contract_id}")
-def get_review_state(contract_id: str = Depends(verify_path_contract_access)):
+@limiter.limit(config.RATE_LIMIT_READS)
+async def get_review_state(request: Request, contract_id: str = Depends(verify_path_contract_access)):
     """Get the full state of a past review."""
     from .services.services import ContractReviewService
     from .helpers.mask import unmask_review_state
-    from src import config
     service = ContractReviewService()
     state = service.load_checkpoint(contract_id)
     if not state:
@@ -227,23 +252,24 @@ async def get_batch_status(batch_id: str, user: dict = Depends(get_current_user)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/chat")
-async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
+@limiter.limit(config.RATE_LIMIT_CHAT)
+async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_current_user)):
     """Answer a text question using RAG grounding (async)."""
-    sanitize_contract_id(request.contract_id)
-    if request.session_id:
-        sanitize_contract_id(request.session_id)
+    sanitize_contract_id(body.contract_id)
+    if body.session_id:
+        sanitize_contract_id(body.session_id)
     
     # Enforce user ownership of contract
-    await check_contract_ownership(request.contract_id, user)
+    await check_contract_ownership(body.contract_id, user)
     
     from .services.chat_service import ContractChatService
 
     chat_service = ContractChatService(
-        contract_id=request.contract_id,
-        session_id=request.session_id,
+        contract_id=body.contract_id,
+        session_id=body.session_id,
         user_id=user.get("id"),
     )
-    return await chat_service.ask(request.question)
+    return await chat_service.ask(body.question)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +277,9 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/chat/image")
+@limiter.limit(config.RATE_LIMIT_CHAT_IMAGE)
 async def chat_image(
+    request: Request,
     contract_id: str = Form(...),
     question: str = Form(...),
     session_id: str | None = Form(None),
@@ -267,7 +295,6 @@ async def chat_image(
     
     from .services.chat_service import ContractChatService
 
-    from src import config
     file_size = getattr(file, "size", None)
     if file_size is None:
         image_bytes = await file.read()
@@ -343,8 +370,10 @@ async def _sse_event_stream(
 
 
 @app.post("/api/v1/review/stream")
+@limiter.limit(config.RATE_LIMIT_REVIEW_STREAM)
 async def review_stream(
-    request: StreamReviewRequest,
+    request: Request,
+    body: StreamReviewRequest,
     user: dict = Depends(get_current_user)
 ):
     """Run the async contract review workflow and stream progress via SSE.
@@ -354,18 +383,23 @@ async def review_stream(
         {"step": "<name>", "status": "started|completed|skipped|error", "detail": {...}}
 
     The final event has ``"done": true``.
+
+    .. note::
+        This endpoint runs the pipeline **directly in the Uvicorn event loop**
+        (legacy behaviour). For production use, prefer ``POST /api/v1/review/submit``
+        which offloads work to Celery workers and streams via the Redis relay.
     """
-    if request.contract_id is not None:
-        sanitize_contract_id(request.contract_id)
+    if body.contract_id is not None:
+        sanitize_contract_id(body.contract_id)
         # Enforce user ownership of contract
-        await check_contract_ownership(request.contract_id, user)
+        await check_contract_ownership(body.contract_id, user)
         
     return StreamingResponse(
         _sse_event_stream(
-            contract_text=request.contract_text,
-            contract_id=request.contract_id,
-            perspective=request.perspective,
-            resume=request.resume,
+            contract_text=body.contract_text,
+            contract_id=body.contract_id,
+            perspective=body.perspective,
+            resume=body.resume,
             user_id=user.get("id"),
         ),
         media_type="text/event-stream",
@@ -374,6 +408,163 @@ async def review_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Celery-backed review endpoints (preferred for production)
+# ---------------------------------------------------------------------------
+
+class SubmitReviewResponse(BaseModel):
+    """Response payload for Celery-backed review submission."""
+    task_id: str
+    contract_id: str
+    status: str = "queued"
+
+
+@app.post("/api/v1/review/submit", response_model=SubmitReviewResponse)
+@limiter.limit(config.RATE_LIMIT_REVIEW_STREAM)
+async def review_submit(
+    request: Request,
+    body: StreamReviewRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Enqueue a contract review as a Celery task and return immediately.
+
+    Returns a ``task_id`` and ``contract_id`` that can be used with:
+      - ``GET /api/v1/review/{contract_id}/stream`` — live SSE progress feed
+      - ``GET /api/v1/review/{contract_id}/task/{task_id}`` — status polling
+    """
+    import uuid
+    from .worker.tasks import run_contract_review_task
+
+    contract_id = body.contract_id or str(uuid.uuid4())
+    sanitize_contract_id(contract_id)
+    await check_contract_ownership(contract_id, user)
+
+    task = run_contract_review_task.delay(
+        contract_text=body.contract_text,
+        contract_id=contract_id,
+        user_id=user.get("id"),
+        perspective=body.perspective,
+    )
+    return SubmitReviewResponse(task_id=task.id, contract_id=contract_id)
+
+
+async def _celery_sse_relay(
+    contract_id: str,
+    last_event_id: int = 0,
+) -> AsyncGenerator[str, None]:
+    """Relay Celery worker progress events as SSE.
+
+    Race-condition-safe ordering (subscribe-first, replay-second):
+      1. Subscribe to live Pub/Sub channel FIRST.
+      2. Replay buffered events from the Redis List starting at
+         ``last_event_id`` offset (handles reconnection).
+      3. Drain the live Pub/Sub channel for new events.
+
+    This ordering ensures that any events published between steps 2 and 3
+    are captured by the subscription set up in step 1, eliminating the
+    race window that would exist if we subscribed after replaying.
+    """
+
+    list_key = f"celery:progress:{contract_id}"
+    channel_key = f"celery:progress:channel:{contract_id}"
+
+    r = aioredis.from_url(
+        config.CELERY_BROKER_URL,
+        encoding="utf-8",
+        decode_responses=True,
+    )
+    pubsub = r.pubsub()
+
+    try:
+        # Step 1: Subscribe to the live channel BEFORE reading the buffer.
+        # Any events published from this point forward will be queued in
+        # the pubsub listener, preventing the replay→subscribe race window.
+        await pubsub.subscribe(channel_key)
+
+        # Step 2: Replay buffered events from the List (for reconnection).
+        buffered = await r.lrange(list_key, last_event_id, -1)
+        event_idx = last_event_id
+        for raw in buffered:
+            yield f"id: {event_idx}\ndata: {raw}\n\n"
+            event_idx += 1
+            if '"step": "done"' in raw:
+                return  # Task already completed; no need to join live channel
+
+        # Step 3: Drain live Pub/Sub for events not yet in the buffer.
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            data = message["data"]
+            yield f"id: {event_idx}\ndata: {data}\n\n"
+            event_idx += 1
+            if '"step": "done"' in data:
+                break
+    except asyncio.CancelledError:
+        yield 'data: {"error": "stream cancelled"}\n\n'
+    except Exception as e:
+        yield f'data: {{"error": {json.dumps(str(e))}}}\n\n'
+    finally:
+        await pubsub.unsubscribe(channel_key)
+        await r.aclose()
+
+
+@app.get("/api/v1/review/{contract_id}/stream")
+@limiter.limit(config.RATE_LIMIT_READS)
+async def celery_review_stream(
+    request: Request,
+    contract_id: str = Depends(verify_path_contract_access),
+):
+    """Stream Celery worker progress events for a contract review via SSE.
+
+    Supports reconnection via the ``Last-Event-ID`` header (standard SSE
+    browser behaviour). On reconnect, the relay replays missed events from
+    the Redis List buffer before joining the live Pub/Sub channel.
+
+    Subscribe to this endpoint AFTER calling ``POST /api/v1/review/submit``.
+    """
+    last_event_id_header = request.headers.get("Last-Event-ID", "0")
+    try:
+        last_event_id = int(last_event_id_header)
+    except ValueError:
+        last_event_id = 0
+
+    return StreamingResponse(
+        _celery_sse_relay(contract_id=contract_id, last_event_id=last_event_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/v1/review/{contract_id}/task/{task_id}")
+@limiter.limit(config.RATE_LIMIT_READS)
+async def task_status(
+    request: Request,
+    task_id: str,
+    contract_id: str = Depends(verify_path_contract_access),
+):
+    """Poll the status of a Celery contract review task.
+
+    Path: ``GET /api/v1/review/{contract_id}/task/{task_id}``
+
+    Returns
+    -------
+    JSON with fields:
+      - ``status``: Celery task state (PENDING, PROGRESS, SUCCESS, FAILURE, RETRY)
+      - ``info``: Step metadata when status is PROGRESS, result when SUCCESS,
+        error message when FAILURE.
+    """
+    from celery.result import AsyncResult
+    from .worker.celery_app import celery_app as _celery_app
+
+    result = AsyncResult(task_id, app=_celery_app)
+    return {
+        "task_id": task_id,
+        "contract_id": contract_id,
+        "status": result.status,
+        "info": result.info if not isinstance(result.info, Exception) else str(result.info),
+    }
 
 
 # ---------------------------------------------------------------------------

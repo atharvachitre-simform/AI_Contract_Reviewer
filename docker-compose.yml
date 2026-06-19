@@ -92,6 +92,50 @@ services:
       timeout: 3s
       retries: 3
 
+  # ---------------------------------------------------------------------------
+  # Celery worker — offloads long-running LLM pipeline from Uvicorn event loop.
+  # Dynamic scaling:
+  #   --autoscale=MAX,MIN adjusts the internal thread pool per container based
+  #   on queue depth. Start with 2 replicas for dev; scale via:
+  #     docker-compose up --scale celery_worker=N
+  # Production upgrade: replace replicas with a KEDA ScaledObject targeting
+  #   the Redis list key "celery:broker:contract_review" for 0→N pod scaling.
+  # ---------------------------------------------------------------------------
+  celery_worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: contract-reviewer:latest
+    command: >
+      celery -A src.worker.celery_app worker
+      --loglevel=info
+      --queues=contract_review
+      --autoscale=${CELERY_WORKER_MAX_CONCURRENCY:-4},${CELERY_WORKER_MIN_CONCURRENCY:-1}
+      --pool=threads
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - QDRANT_URL=http://qdrant:6333
+    volumes:
+      - contract_reviewer_logs:/app/logs
+    networks:
+      - contract_reviewer_network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD", "celery", "-A", "src.worker.celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 volumes:
   contract_reviewer_logs:
     name: contract_reviewer_logs
