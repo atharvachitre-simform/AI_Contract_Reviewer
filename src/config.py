@@ -81,3 +81,19 @@ MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "50"))
 # --- Extraction Trace Mode ---
 # When true, every pipeline stage is snapshotted to artifacts/extraction_runs/<contract_id>/
 TRACE_EXTRACTION = os.getenv("TRACE_EXTRACTION", "false").lower() in ("1", "true", "yes")
+
+# --- Rate Limiting (slowapi) ---
+# Per-user sliding-window limits. Format: "N/period" (e.g. "5/minute", "100/hour")
+RATE_LIMIT_REVIEW_STREAM = os.getenv("RATE_LIMIT_REVIEW_STREAM", "5/minute")
+RATE_LIMIT_CHAT = os.getenv("RATE_LIMIT_CHAT", "30/minute")
+RATE_LIMIT_CHAT_IMAGE = os.getenv("RATE_LIMIT_CHAT_IMAGE", "10/minute")
+RATE_LIMIT_READS = os.getenv("RATE_LIMIT_READS", "60/minute")
+RATE_LIMIT_GLOBAL = os.getenv("RATE_LIMIT_GLOBAL", "200/minute")
+
+# --- Celery Worker ---
+CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+CELERY_RESULT_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+CELERY_WORKER_MAX_CONCURRENCY = int(os.getenv("CELERY_WORKER_MAX_CONCURRENCY", "4"))
+CELERY_WORKER_MIN_CONCURRENCY = int(os.getenv("CELERY_WORKER_MIN_CONCURRENCY", "1"))
+# TTL (seconds) for the Redis List event buffer used by the SSE relay (default: 1 hour)
+CELERY_PROGRESS_EVENT_TTL = int(os.getenv("CELERY_PROGRESS_EVENT_TTL", "3600"))

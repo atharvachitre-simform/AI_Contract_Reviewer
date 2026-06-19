@@ -1,4 +1,9 @@
 """Pytest configuration and global dependency overrides for FastAPI test client."""
+import os
+os.environ["RATE_LIMIT_REVIEW_STREAM"] = "3/minute"
+os.environ["RATE_LIMIT_CHAT"] = "5/minute"
+os.environ["RATE_LIMIT_GLOBAL"] = "10/minute"
+
 import pytest
 from fastapi.testclient import TestClient
 from src.fastapi_app import app
