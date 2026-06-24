@@ -5,9 +5,19 @@ This app exposes the available review models and a simple pipeline selection UI.
 
 import tempfile
 import time
+import os
+import re
+import base64
+import json
+import asyncio
+import hashlib
+import contextlib
+import logging
+import httpx
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.agents import (
     assemble_report,
@@ -20,6 +30,17 @@ from src.agents import (
 from src.controllers.controller import ContractReviewController
 from src.services.azure_clients import AzureClientFactory
 from src.services.services import ContractReviewService
+from src.services.chat_service import ContractChatService
+from src.helpers.auth import check_contract_ownership
+from src import config
+from src.helpers.mask import mask_sensitive_text, unmask_review_state, unmask_single_output
+from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
+from src.services.langfuse_tracer import calculate_llm_cost, LangFuseTracer
+from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
+from src.services.redis_client import AsyncRedisClient
+from src.helpers.contract_analysis import normalize_whitespace
+from src.helpers.page_renderer import render_clause_crops
+from src.config import SENSITIVE_KEYWORDS
 
 MODEL_OPTIONS = [
     "Full Contract Review Pipeline",
@@ -44,8 +65,6 @@ _session_component = components.declare_component(
 
 
 def check_supabase_auth(email, password) -> dict | None:
-    import httpx
-    import os
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
 
@@ -53,7 +72,6 @@ def check_supabase_auth(email, password) -> dict | None:
         # Dev/mock mode: no Supabase configured
         # WARNING: This bypass is intentional for local development only.
         # Set SUPABASE_URL and SUPABASE_KEY in .env before deploying to any shared environment.
-        import logging
         logging.getLogger(__name__).warning(
             "SUPABASE_URL/SUPABASE_KEY not set — running in unauthenticated dev mode. "
             "All users share the mock_user_id identity. DO NOT use this in production."
@@ -83,8 +101,6 @@ def check_supabase_auth(email, password) -> dict | None:
     return None
 
 def refresh_supabase_token(refresh_token: str) -> dict | None:
-    import httpx
-    import os
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
     if not supabase_url or not supabase_key:
@@ -112,8 +128,6 @@ def refresh_supabase_token(refresh_token: str) -> dict | None:
     return None
 
 def get_user_from_token(token: str) -> dict | None:
-    import httpx
-    import os
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
     if not supabase_url or not supabase_key:
@@ -135,8 +149,6 @@ def get_user_from_token(token: str) -> dict | None:
 
 @st.cache_data
 def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
-    import tempfile
-    from pathlib import Path
     name = file_name.lower()
     if name.endswith(".pdf"):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -537,16 +549,11 @@ def render_report_assembler(output: object) -> None:
 
 def render_chat_tab(contract_id: str) -> None:
     """Render the chatbot UI session inside a Streamlit tab."""
-    from src.services.chat_service import ContractChatService
-    import re
-
     st.subheader("💬 Interactive Contract Chat Q&A")
     
     session_id = contract_id
 
     # Register/verify contract ownership in Redis for the logged-in user
-    from src.helpers.auth import check_contract_ownership
-    import asyncio
     try:
         asyncio.run(check_contract_ownership(contract_id, st.session_state["auth_user"]))
     except Exception as e:
@@ -600,7 +607,6 @@ def render_chat_tab(contract_id: str) -> None:
             user_prompt = history[-1]["content"]
             with st.chat_message("assistant"):
                 with st.spinner("Generating answer..."):
-                    import asyncio
                     res = asyncio.run(chat_service.ask(user_prompt))
                     
                     # Append assistant response + sources to history
@@ -664,13 +670,10 @@ def render_chat_tab(contract_id: str) -> None:
                     with st.expander(title, expanded=True):
                         st.write(snippet)
                         if page is not None and contract_id != "general" and pages_dir.exists():
-                            import hashlib
                             clause_hash = src.get("clause_hash")
                             if not clause_hash:
-                                from src import config
                                 hash_text = snippet
                                 if getattr(config, "ENABLE_SENSITIVE_MASKING", False) and getattr(config, "SENSITIVE_KEYWORDS", []):
-                                    from src.helpers.mask import mask_sensitive_text
                                     hash_text = mask_sensitive_text(snippet, config.SENSITIVE_KEYWORDS)
                                 clause_hash = hashlib.md5(hash_text.strip().encode("utf-8")).hexdigest()
                             
@@ -703,8 +706,6 @@ def render_chat_tab(contract_id: str) -> None:
                                         conf_color = "#e74c3c"
                                     conf_badge_html = f'<div style="margin-top: 5px; margin-bottom: 10px;"><span style="background-color: {conf_color}22; color: {conf_color}; border: 1px solid {conf_color}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{str(confidence).upper()} Confidence Score</span></div>'
 
-                            import base64
-                            
                             if crop_path.exists():
                                 b64 = base64.b64encode(crop_path.read_bytes()).decode()
                                 caption_text = f"Page {page} - Clause Crop{conf_suffix}"
@@ -747,7 +748,6 @@ def render_full_review(state: object) -> None:
         # Export & Share Report
         st.divider()
         st.subheader("📥 Export & Share Report")
-        from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
 
         report_id = contract_id or "report"
         col_dl1, col_dl2, col_dl3 = st.columns(3)
@@ -816,9 +816,6 @@ def _clear_localstorage_session() -> None:
 
 @st.cache_data(ttl=300)
 def get_trace_cost_metrics(trace_id: str) -> dict:
-    import json
-    from pathlib import Path
-    from src.services.langfuse_tracer import calculate_llm_cost
     log_file = Path("logs/langfuse_events.jsonl")
     
     metrics = {"total_cost": 0.0, "total_input": 0, "total_output": 0}
@@ -908,8 +905,7 @@ def main() -> None:
             sr_last_activity = stored_session.get("last_activity", "")
 
             # Validate the token is still alive
-            import os as _os
-            is_mock = not _os.getenv("SUPABASE_URL")
+            is_mock = not os.getenv("SUPABASE_URL")
             if is_mock:
                 restored_user = {"id": sr_user_id or "mock_user_id", "email": sr_user_email or "dev@local"}
             else:
@@ -959,8 +955,7 @@ def main() -> None:
         # Trigger token refresh when approaching 30 minutes since last session_start
         elapsed_since_start = now - (st.session_state.get("session_start_time") or now)
         if elapsed_since_start > 20 * 60 and st.session_state.get("auth_refresh_token"):
-            import os as _os
-            if _os.getenv("SUPABASE_URL"):  # Only refresh real Supabase tokens
+            if os.getenv("SUPABASE_URL"):  # Only refresh real Supabase tokens
                 with st.spinner("Refreshing authentication session..."):
                     refresh_data = refresh_supabase_token(st.session_state["auth_refresh_token"])
                     if refresh_data:
@@ -1043,8 +1038,7 @@ def main() -> None:
                                 st.error("Authentication failed. Please check your credentials.")
 
         # Show a prominent banner in dev (mock) mode
-        import os as _os
-        if not _os.getenv("SUPABASE_URL"):
+        if not os.getenv("SUPABASE_URL"):
             st.warning(
                 "⚠️ **Dev Mode Active** — Supabase is not configured. "
                 "Authentication is bypassed and all users share the `mock_user_id` identity. "
@@ -1088,7 +1082,6 @@ def main() -> None:
         
         # --- 1. Load Past Reviewed Contracts Section ---
         st.header("Past Reviewed Contracts")
-        from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
         mongo = MongoCheckpointerStore()
         past_checkpoints = []
         if mongo.is_connected() and mongo.collection is not None:
@@ -1101,9 +1094,6 @@ def main() -> None:
             
         if past_checkpoints:
             # Query all owners in a single batch pipeline to ensure fast rendering
-            import asyncio
-            from src.services.redis_client import AsyncRedisClient
-            
             async def get_contract_owners(c_ids):
                 redis = AsyncRedisClient()
                 if not await redis.ping():
@@ -1144,8 +1134,6 @@ def main() -> None:
                         doc_name = doc_name.replace("\\", "/").rsplit("/", 1)[-1]
                         
                     # If document_name is a page header or missing, extract first substantive line of contract text
-                    import re
-                    from src.helpers.contract_analysis import normalize_whitespace
                     if not doc_name or doc_name.strip() == "--- PAGE 1 ---" or re.match(r'^---\s*PAGE\s*\d+\s*---$', str(doc_name).strip(), re.IGNORECASE):
                         contract_text_raw = checkpoint_data.get("contract_text", "")
                         if contract_text_raw:
@@ -1185,12 +1173,9 @@ def main() -> None:
                     current_id = getattr(current_review, "contract_id", None) if current_review else None
                     
                     if current_id != c_id:
-                        from src.services.services import ContractReviewService
                         service = ContractReviewService()
                         loaded_state = service.load_checkpoint(c_id)
                         if loaded_state:
-                            from src.helpers.mask import unmask_review_state
-                            from src.config import SENSITIVE_KEYWORDS
                             loaded_state = unmask_review_state(loaded_state, SENSITIVE_KEYWORDS)
                             st.session_state["review_state"] = loaded_state
                             st.session_state["active_view"] = "📄 Review Report"
@@ -1218,7 +1203,6 @@ def main() -> None:
 
     review_active = st.session_state.get("review_state") is not None or st.session_state.get("single_model_output") is not None
 
-    import contextlib
     if review_active:
         input_container = st.expander("🔍 Input Contract Text & Settings", expanded=False)
     else:
@@ -1233,7 +1217,6 @@ def main() -> None:
 
         default_text = ""
         if uploaded_file is not None:
-            from src import config
             if uploaded_file.size > config.MAX_PDF_SIZE_MB * 1024 * 1024:
                 st.error(f"File size exceeds the limit of {config.MAX_PDF_SIZE_MB}MB.")
                 st.stop()
@@ -1277,18 +1260,13 @@ def main() -> None:
                     # Derive a stable contract_id from the content hash so re-uploading
                     # the same document reuses the existing checkpoint instead of
                     # creating a duplicate entry in the Past Reviews dropdown.
-                    import hashlib as _hashlib
-                    stable_contract_id = _hashlib.sha256(contract_text.strip().encode("utf-8")).hexdigest()[:16]
+                    stable_contract_id = hashlib.sha256(contract_text.strip().encode("utf-8")).hexdigest()[:16]
                     user_id = st.session_state["auth_user"].get("id")
                     state = controller.review_contract(contract_text, contract_id=stable_contract_id, perspective=perspective, source_file=source_file, user_id=user_id)
-                    from src.helpers.mask import unmask_review_state
-                    from src.config import SENSITIVE_KEYWORDS
                     state = unmask_review_state(state, SENSITIVE_KEYWORDS)
                     st.session_state["review_state"] = state
                     
                     # Register contract ownership in Redis for the logged-in user immediately
-                    from src.helpers.auth import check_contract_ownership
-                    import asyncio
                     try:
                         asyncio.run(check_contract_ownership(state.contract_id, st.session_state["auth_user"]))
                     except Exception as e:
@@ -1296,12 +1274,10 @@ def main() -> None:
                     
                     # Render clause crops if PDF bytes exist in session state
                     if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
-                        from src.helpers.page_renderer import render_clause_crops
                         pdf_bytes = st.session_state["uploaded_pdf_bytes"]
                         if getattr(state, "clause_extraction", None) and getattr(state.clause_extraction, "clauses", None):
                             render_clause_crops(pdf_bytes, state.contract_id, state.clause_extraction.clauses, dpi=300)
                 else:
-                    from src.services.langfuse_tracer import LangFuseTracer
                     tracer = LangFuseTracer()
                     user_id = st.session_state.get("auth_user", {}).get("id")
                     trace_id = tracer.start_pipeline_trace(
@@ -1356,8 +1332,6 @@ def main() -> None:
                                 )
                     finally:
                         if st.session_state.get("single_model_output") is not None:
-                            from src.helpers.mask import unmask_single_output
-                            from src.config import SENSITIVE_KEYWORDS
                             st.session_state["single_model_output"] = unmask_single_output(
                                 st.session_state["single_model_output"], contract_text, SENSITIVE_KEYWORDS
                             )

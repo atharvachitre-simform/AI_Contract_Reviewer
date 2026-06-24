@@ -8,8 +8,10 @@ contract patterns.
 from __future__ import annotations
 
 import re
+from collections import Counter
+from copy import copy
 
-from ..models import ContractMetadata, ContractParty
+from src.models import ContractMetadata, ContractParty
 
 
 _WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
@@ -51,7 +53,6 @@ def normalize_whitespace(text: str) -> str:
             i += 1
 
     # Count frequency of each line across pages to find boilerplates
-    from collections import Counter
     line_counts = Counter()
 
     for page in pages:
@@ -174,7 +175,6 @@ def is_boilerplate_clause(clause) -> bool:
 
 def filter_boilerplate_clauses(clause_extraction):
     """Filter out boilerplate clauses from the ClauseExtractorOutput object."""
-    from copy import copy
     if not clause_extraction or not getattr(clause_extraction, "clauses", None):
         return clause_extraction
         

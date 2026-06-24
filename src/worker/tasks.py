@@ -32,9 +32,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import redis.asyncio as aioredis
 
-from .celery_app import celery_app
+from src.worker.celery_app import celery_app
 from src import config
+from src.workflows.async_workflow import AsyncContractReviewWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +88,6 @@ def run_contract_review_task(
 
     async def _run() -> None:
         """Async body — runs inside a fresh event loop created by asyncio.run()."""
-        import redis.asyncio as aioredis
-        from src.workflows.async_workflow import AsyncContractReviewWorkflow
-
         r = aioredis.from_url(
             config.CELERY_BROKER_URL,
             encoding="utf-8",

@@ -8,7 +8,6 @@ def test_config_defaults(monkeypatch):
     monkeypatch.delenv("AGENT_CLAUSE_TRUNCATION", raising=False)
     monkeypatch.delenv("RISK_THRESHOLD_HIGH", raising=False)
     monkeypatch.delenv("RISK_THRESHOLD_MEDIUM", raising=False)
-    import importlib
     importlib.reload(config)
     try:
         assert config.MAX_CLAUSES_TO_ANALYZE == 50

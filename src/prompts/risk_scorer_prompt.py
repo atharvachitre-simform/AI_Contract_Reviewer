@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 from .system_context import BUSINESS_DOMAIN_HEADER
+from ..helpers.compression_helper import compress_guideline_text
 
 
 def build_risk_scorer_prompt(
@@ -26,7 +27,6 @@ def build_risk_scorer_prompt(
     """
     reference_section = ""
     if reference_risks and isinstance(reference_risks, list):
-        from ..helpers.compression_helper import compress_guideline_text
         ref_list = []
         for ref in reference_risks[:3]:  # Limit to 3 examples
             if isinstance(ref, dict):

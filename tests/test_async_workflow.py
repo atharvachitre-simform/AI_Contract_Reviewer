@@ -3,7 +3,15 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.models import ProcessingStatus
+from src.models import (
+    ProcessingStatus,
+    ClauseExtractorOutput,
+    ObligationFinderOutput,
+    RedFlagDetectorOutput,
+    RiskScorerOutput,
+    PlainEnglishWriterOutput,
+    ReportAssemblerOutput,
+)
 from src.workflows.async_workflow import AsyncContractReviewWorkflow
 
 
@@ -11,16 +19,6 @@ def test_async_workflow_run_streaming_imports_and_flow():
     """Verify that run_streaming runs without ModuleNotFoundError on step loads."""
     async def run_test():
         workflow = AsyncContractReviewWorkflow()
-
-        # Create dummy outputs for each step matching the expected models
-        from src.models import (
-            ClauseExtractorOutput,
-            ObligationFinderOutput,
-            RedFlagDetectorOutput,
-            RiskScorerOutput,
-            PlainEnglishWriterOutput,
-            ReportAssemblerOutput,
-        )
 
         dummy_extractor_output = ClauseExtractorOutput(clauses=[])
         dummy_obligation_output = ObligationFinderOutput(obligations=[])
@@ -88,15 +86,6 @@ def test_async_workflow_resume_from_checkpoint():
     """Verify that run_streaming can resume from checkpointer load data."""
     async def run_test():
         workflow = AsyncContractReviewWorkflow()
-
-        from src.models import (
-            ClauseExtractorOutput,
-            ObligationFinderOutput,
-            RedFlagDetectorOutput,
-            RiskScorerOutput,
-            PlainEnglishWriterOutput,
-            ReportAssemblerOutput,
-        )
 
         dummy_extractor_output = ClauseExtractorOutput(clauses=[])
         dummy_obligation_output = ObligationFinderOutput(obligations=[])

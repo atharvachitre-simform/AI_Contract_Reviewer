@@ -11,15 +11,17 @@ from __future__ import annotations
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+import contextvars
 
-from ..agents.clause_extractor import extract_clauses
-from ..agents.obligation_finder import find_obligations
-from ..agents.plain_english_writer import generate_plain_english
-from ..agents.red_flag_detector import detect_red_flags
-from ..agents.report_assembler import assemble_report
-from ..agents.risk_scorer import score_risks
-from ..models import ContractReviewState, ProcessingStatus
-from ..services.langfuse_tracer import LangFuseTracer
+from src.agents.clause_extractor import extract_clauses
+from src.agents.obligation_finder import find_obligations
+from src.agents.plain_english_writer import generate_plain_english
+from src.agents.red_flag_detector import detect_red_flags
+from src.agents.report_assembler import assemble_report
+from src.agents.risk_scorer import score_risks
+from src.models import ContractReviewState, ProcessingStatus
+from src.services.langfuse_tracer import LangFuseTracer
+from src.helpers.contract_analysis import filter_boilerplate_clauses
 
 
 class ContractReviewWorkflow:
@@ -122,7 +124,6 @@ class ContractReviewWorkflow:
 					state.perspective = perspective
 					break
 
-		from ..helpers.contract_analysis import filter_boilerplate_clauses
 		filtered_extraction = filter_boilerplate_clauses(clause_extraction)
 
 		# 1. Run Obligation Finder, Red Flag Detector, and Risk Scorer in parallel
@@ -138,7 +139,6 @@ class ContractReviewWorkflow:
 			LangFuseTracer.set_current_session_id(s_id)
 			LangFuseTracer.set_current_contract_id(c_id)
 
-		import contextvars
 		ctx_obl = contextvars.copy_context()
 		ctx_red = contextvars.copy_context()
 		ctx_risk = contextvars.copy_context()

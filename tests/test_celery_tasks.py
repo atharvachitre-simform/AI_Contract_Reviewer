@@ -15,12 +15,20 @@ from __future__ import annotations
 import json
 import os
 import unittest
+import asyncio
+import inspect as inspect_module
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Must be set before importing Celery app
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("CELERY_PROGRESS_EVENT_TTL", "60")
+
+from celery.exceptions import Retry
+from src.worker.tasks import run_contract_review_task, _PROGRESS_LIST_KEY, _PROGRESS_CHANNEL_KEY
+from src.worker.celery_app import celery_app
+from src.worker.autoscaler import report_queue_depth
+from src.worker import autoscaler
 
 
 class TestRunContractReviewTask(unittest.TestCase):
@@ -42,8 +50,6 @@ class TestRunContractReviewTask(unittest.TestCase):
     @patch("src.worker.tasks.asyncio.run")
     def test_task_runs_in_eager_mode(self, mock_asyncio_run):
         """Task should execute synchronously when CELERY_TASK_ALWAYS_EAGER=True."""
-        from src.worker.tasks import run_contract_review_task
-
         mock_asyncio_run.return_value = None  # _run() coroutine returns None
 
         result = run_contract_review_task(
@@ -58,9 +64,6 @@ class TestRunContractReviewTask(unittest.TestCase):
     @patch("src.worker.tasks.asyncio.run")
     def test_task_publishes_events_to_redis(self, mock_asyncio_run):
         """Verify that the inner coroutine would publish events to both List and Pub/Sub."""
-        import asyncio
-        from src.worker.tasks import run_contract_review_task, _PROGRESS_LIST_KEY, _PROGRESS_CHANNEL_KEY
-
         events_pushed = []
         events_published = []
 
@@ -81,9 +84,6 @@ class TestRunContractReviewTask(unittest.TestCase):
     @patch("src.worker.tasks.asyncio.run", side_effect=RuntimeError("LLM unavailable"))
     def test_task_retries_on_exception(self, mock_asyncio_run):
         """Task should raise Retry on exception (up to max_retries)."""
-        from celery.exceptions import Retry
-        from src.worker.tasks import run_contract_review_task
-
         with self.assertRaises((Retry, RuntimeError)):
             run_contract_review_task(
                 contract_text="This agreement...",
@@ -92,8 +92,6 @@ class TestRunContractReviewTask(unittest.TestCase):
 
     def test_progress_key_names_are_correct(self):
         """Verify Redis key templates match what fastapi_app.py expects."""
-        from src.worker.tasks import _PROGRESS_LIST_KEY, _PROGRESS_CHANNEL_KEY
-
         list_key = _PROGRESS_LIST_KEY.format(contract_id="abc-123")
         channel_key = _PROGRESS_CHANNEL_KEY.format(contract_id="abc-123")
 
@@ -103,8 +101,6 @@ class TestRunContractReviewTask(unittest.TestCase):
 
     def test_celery_app_configuration(self):
         """Verify Celery app is configured with correct worker settings."""
-        from src.worker.celery_app import celery_app
-
         conf = celery_app.conf
         self.assertTrue(conf.task_acks_late, "task_acks_late must be True for crash-safe delivery")
         self.assertTrue(conf.task_reject_on_worker_lost, "task_reject_on_worker_lost must be True")
@@ -119,17 +115,11 @@ class TestAutoscaler(unittest.TestCase):
 
     def test_report_queue_depth_is_async(self):
         """report_queue_depth must be an async function (safe for async FastAPI context)."""
-        import inspect
-        from src.worker.autoscaler import report_queue_depth
-        self.assertTrue(inspect.iscoroutinefunction(report_queue_depth))
+        self.assertTrue(inspect_module.iscoroutinefunction(report_queue_depth))
 
     @patch("src.worker.autoscaler.celery_app")
     def test_report_uses_run_in_executor_for_inspect(self, mock_celery):
         """Inspect call must be wrapped in run_in_executor to avoid blocking the event loop."""
-        import asyncio
-        import inspect as inspect_module
-        from src.worker import autoscaler
-
         # Verify the source references run_in_executor
         source = inspect_module.getsource(autoscaler.report_queue_depth)
         self.assertIn("run_in_executor", source,

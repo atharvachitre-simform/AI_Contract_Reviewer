@@ -2,8 +2,9 @@ import logging
 import uuid
 import json
 from typing import Any
+from qdrant_client.models import Distance, VectorParams, PayloadSchemaType, Filter, FieldCondition, MatchValue, PointStruct
 from src import config
-from .azure_clients import AzureClientFactory
+from src.services.azure_clients import AzureClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,6 @@ class SemanticCache:
         if not client:
             return
             
-        from qdrant_client.models import Distance, VectorParams
         try:
             client.get_collection(self.collection_name)
         except Exception:
@@ -31,7 +31,6 @@ class SemanticCache:
                 )
                 logger.info(f"Created Qdrant collection: {self.collection_name}")
                 
-                from qdrant_client.models import PayloadSchemaType
                 client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name="tenant_id",
@@ -54,7 +53,6 @@ class SemanticCache:
         try:
             vector = embedding_client.get_embedding(text)
             
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
             query_filter = None
             if tenant_id:
                 query_filter = Filter(
@@ -98,8 +96,6 @@ class SemanticCache:
             
         try:
             vector = embedding_client.get_embedding(text)
-            from qdrant_client.models import PointStruct
-            
             point_id = str(uuid.uuid4())
             payload = {
                 "text": text,

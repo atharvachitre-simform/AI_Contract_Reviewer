@@ -1,10 +1,16 @@
 """Unit tests for FastAPI Chat and Page retrieval endpoints."""
 
+import asyncio
 import shutil
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
+
 from src.fastapi_app import app
+from src.services.chat_service import ContractChatService
+from src.services.services import ContractReviewService
+from src.models import ContractReviewState
+from src.checkpointing.redis_checkpointer import RedisCheckpointer
 
 client = TestClient(app)
 
@@ -13,7 +19,6 @@ def test_chat_text_endpoint():
     """Verify text chat endpoint parses inputs, calls ContractChatService, and returns findings."""
     with patch("src.services.chat_service.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
-        from unittest.mock import AsyncMock
         mock_instance.ask = AsyncMock(return_value={
             "answer": "This is a mock answer based on text context.",
             "sources": [{"clause_type": "Governing Law", "text": "This Agreement is governed by Delaware law.", "source_page": 2}]
@@ -42,7 +47,6 @@ def test_chat_image_endpoint():
     """Verify multimodal vision chat endpoint processes form fields and upload file."""
     with patch("src.services.chat_service.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
-        from unittest.mock import AsyncMock
         mock_instance.ask_with_image = AsyncMock(return_value={
             "answer": "This is a mock answer based on the page image.",
             "sources": [{"clause_type": "Limitation of Liability", "text": "Liability is limited to $10,000.", "source_page": 4}]
@@ -97,10 +101,6 @@ def test_get_page_image_endpoint():
 
 def test_chat_service_fallback_to_memorystore():
     """Verify that ContractChatService falls back to checkpoints if Qdrant is disabled."""
-    from src.services.chat_service import ContractChatService
-    from src.services.services import ContractReviewService
-    from src.models import ContractReviewState
-
     contract_id = "fallback-test-111"
     service = ContractChatService(contract_id=contract_id)
     
@@ -124,24 +124,17 @@ def test_chat_service_fallback_to_memorystore():
 
     try:
         # Query for "Delaware"
-        import asyncio
         sources = asyncio.run(service._retrieve_clauses("Delaware governing law", top_k=2))
         assert len(sources) > 0
         # Check that it ranks Governing Law first due to word overlap
         assert sources[0]["clause_type"] == "Governing Law"
         assert "Delaware" in sources[0]["text"]
     finally:
-        import asyncio
-        from src.checkpointing.redis_checkpointer import RedisCheckpointer
         asyncio.run(RedisCheckpointer(contract_id=contract_id).delete())
 
 
 def test_chat_unmasking():
     """Verify that chat responses containing [MASK_i] tokens are correctly unmasked using original contract text."""
-    from src.services.chat_service import ContractChatService
-    from unittest.mock import patch
-    import asyncio
-
     contract_id = "unmask-chat-test"
     chat_service = ContractChatService(contract_id=contract_id)
     

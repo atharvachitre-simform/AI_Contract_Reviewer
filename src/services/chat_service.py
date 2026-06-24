@@ -8,22 +8,25 @@ import logging
 import base64
 import uuid
 import re
+import hashlib
+import asyncio
 from pathlib import Path
 from typing import Any
+from contextlib import asynccontextmanager
 
+from fastapi import HTTPException
 from src import config
 from .azure_clients import AzureClientFactory
 from .langfuse_tracer import LangFuseTracer
 from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
-import asyncio
 from .redis_client import AsyncRedisClient
 from .db_store import SQLiteChatStore
+from ..helpers.mask import restore_masked_text
+from .services import ContractReviewService
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+from .chat_tools import TOOLS_SCHEMA
 
 logger = logging.getLogger(__name__)
-
-
-from contextlib import asynccontextmanager
-from fastapi import HTTPException
 
 class ContractChatService:
     """Service to handle document Q&A queries and context augmentation.
@@ -64,12 +67,8 @@ class ContractChatService:
 
     async def _unmask_chat_text(self, text: str) -> str:
         """Restores masked tokens in chat answers using the original contract text."""
-        from ..helpers.mask import restore_masked_text
-        from src import config
-
         original_text = ""
         try:
-            from .services import ContractReviewService
             service = ContractReviewService()
             state = service.load_checkpoint(self.contract_id)
             if state:
@@ -188,7 +187,6 @@ class ContractChatService:
             embedding_client = self.azure.get_openai_client(self.azure.embedding_deployment)
             if embedding_client:
                 try:
-                    import hashlib
                     # Check embedding cache in Redis
                     query_hash = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
                     cache_key = f"embedding_cache:{query_hash}"
@@ -213,8 +211,6 @@ class ContractChatService:
                         # Cache the query embedding in Redis for 7 days (604800 seconds)
                         if await self._is_redis_available():
                             await self.async_redis.setex(cache_key, 7 * 24 * 3600, json.dumps(query_vector))
-
-                    from qdrant_client.models import Filter, FieldCondition, MatchValue
 
                     query_filter = Filter(
                         must=[
@@ -248,7 +244,6 @@ class ContractChatService:
         # Fallback to checkpointer if Qdrant returned no results or is unavailable
         if not sources:
             try:
-                from .services import ContractReviewService
                 service = ContractReviewService()
                 state_obj = service.load_checkpoint(self.contract_id)
                 if state_obj:
@@ -280,7 +275,6 @@ class ContractChatService:
                             # Stricter matching: require at least 3 matching non-stop words OR > 25% overlap
                             has_strong_match = word_overlap >= 3 or (len(query_words) > 0 and (word_overlap / len(query_words)) >= 0.25)
                             if has_strong_match:
-                                import hashlib
                                 ranked_clauses.append((word_overlap, {
                                     "clause_type": c_type,
                                     "text": c_text,
@@ -459,7 +453,6 @@ class ContractChatService:
     def _tool_retrieve_contract_metadata(self) -> str:
         """Retrieve contract metadata from the pipeline checkpoint."""
         try:
-            from .services import ContractReviewService
             service = ContractReviewService()
             state_obj = service.load_checkpoint(self.contract_id)
             if state_obj:
@@ -546,7 +539,6 @@ class ContractChatService:
     def _tool_list_active_obligations(self) -> str:
         """Load and return active obligations from the checkpoint."""
         try:
-            from .services import ContractReviewService
             service = ContractReviewService()
             state_obj = service.load_checkpoint(self.contract_id)
             if state_obj:
@@ -648,7 +640,6 @@ class ContractChatService:
                 
                 messages.append({"role": "user", "content": question})
 
-                from .chat_tools import TOOLS_SCHEMA
                 max_tool_loops = 3
                 loop_count = 0
                 self._retrieved_sources = []
@@ -781,7 +772,6 @@ class ContractChatService:
         # 2. Static RAG Flow Fallback (Existing Logic)
         sources = await self._retrieve_clauses(question, top_k=config.CHAT_TOP_K_CLAUSES)
         if sources:
-            import hashlib
             top_source_page = None
             top_clause_text = None
             for s in sources:

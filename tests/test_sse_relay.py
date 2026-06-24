@@ -15,6 +15,9 @@ import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
+import redis.asyncio as aioredis
+from src.fastapi_app import _celery_sse_relay
+
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("SUPABASE_URL", "")
 os.environ.setdefault("SUPABASE_KEY", "")
@@ -36,8 +39,6 @@ async def _collect_sse(contract_id: str, last_event_id: int = 0, buffered_events
     live_events:
         List of Pub/Sub message dicts to yield from the live channel.
     """
-    from src.fastapi_app import _celery_sse_relay
-
     buffered_events = buffered_events or []
     live_events = live_events or []
 
@@ -102,9 +103,6 @@ class TestCelerySSERelay(unittest.TestCase):
         call_order = []
 
         async def _run():
-            from src.fastapi_app import _celery_sse_relay
-            import redis.asyncio as aioredis
-
             mock_pubsub = AsyncMock()
 
             async def _subscribe_with_tracking(channel):

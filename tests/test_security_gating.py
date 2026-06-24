@@ -1,11 +1,15 @@
 """Unit tests for FastAPI security, session gating, and Redis rate limiting."""
+import os
+import time
+import asyncio
+from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from src.fastapi_app import app, verify_path_contract_access
-from src.helpers.auth import get_current_user, check_contract_ownership
-from src.helpers.auth import get_current_user, check_contract_ownership
+from src.helpers.auth import get_current_user, check_contract_ownership, UserRole
+from src.helpers.cleanup import cleanup_old_pages
 
 @pytest.fixture
 def clean_overrides():
@@ -53,12 +57,6 @@ def test_auth_route_success_with_valid_token(mock_client_class, clean_overrides)
 
 def test_cleanup_old_pages():
     """Verify that cleanup task purges expired page assets."""
-    import os
-    from src.helpers.cleanup import cleanup_old_pages
-    import time
-    from pathlib import Path
-    import asyncio
-    
     test_dir = Path("logs/pages/test_cleanup_contract")
     test_dir.mkdir(parents=True, exist_ok=True)
     test_file = test_dir / "page_1.png"
@@ -76,7 +74,6 @@ def test_cleanup_old_pages():
 
 def test_checkpoint_delete_admin_allowed(clean_overrides):
     """Verify that an admin user can delete checkpoints."""
-    from src.helpers.auth import UserRole
     # Override get_current_user to return an admin
     async def mock_admin_user():
         return {"id": "admin_uuid", "email": "atharvachitre123@gmail.com", "role": UserRole.ADMIN}
@@ -101,7 +98,6 @@ def test_checkpoint_delete_admin_allowed(clean_overrides):
 
 def test_checkpoint_delete_reviewer_forbidden(clean_overrides):
     """Verify that a reviewer is rejected with 403 Forbidden when deleting checkpoints."""
-    from src.helpers.auth import UserRole
     # Override get_current_user to return a reviewer
     async def mock_reviewer_user():
         return {"id": "reviewer_uuid", "email": "testuser_chitre@gmail.com", "role": UserRole.REVIEWER}

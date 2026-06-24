@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from .celery_app import celery_app
+import redis.asyncio as aioredis
+from src import config
+from src.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +38,6 @@ async def report_queue_depth() -> dict:
     # --- Queue depth from Redis List ---
     queue_depth = -1
     try:
-        import redis.asyncio as aioredis
-        from src import config
 
         r = aioredis.from_url(
             config.CELERY_BROKER_URL,

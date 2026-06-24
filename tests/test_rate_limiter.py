@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import os
 import pytest
+import base64
+import json
+from unittest.mock import MagicMock
+from src.middleware.rate_limiter import get_user_id_or_ip
 
 # Force in-memory storage so tests don't require a live Redis
 os.environ.setdefault("REDIS_URL", "memory://")
@@ -38,7 +42,6 @@ def _auth_headers(user_id: str = "test-user-001") -> dict:
     The rate limiter decodes the payload without signature verification,
     so this is sufficient for key-function testing.
     """
-    import base64, json
     payload = json.dumps({"sub": user_id}).encode()
     b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
     fake_jwt = f"header.{b64}.signature"
@@ -137,7 +140,6 @@ class TestRateLimiterKeyFunction:
     """Unit-test the key extraction logic without invoking the full app."""
 
     def _make_request(self, auth_header: str | None = None, ip: str = "1.2.3.4"):
-        from unittest.mock import MagicMock
         req = MagicMock()
         req.headers = {"Authorization": auth_header} if auth_header else {}
         req.client = MagicMock()
@@ -145,8 +147,6 @@ class TestRateLimiterKeyFunction:
         return req
 
     def test_extracts_user_id_from_valid_jwt(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
-        import base64, json
         payload = json.dumps({"sub": "user-123"}).encode()
         b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
         req = self._make_request(auth_header=f"Bearer header.{b64}.sig")
@@ -154,13 +154,11 @@ class TestRateLimiterKeyFunction:
         assert key == "user:user-123"
 
     def test_falls_back_to_ip_on_missing_auth(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
         req = self._make_request(auth_header=None, ip="10.0.0.1")
         key = get_user_id_or_ip(req)
         assert key == "ip:10.0.0.1"
 
     def test_falls_back_to_ip_on_malformed_jwt(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
         req = self._make_request(auth_header="Bearer not.a.jwt!!!", ip="10.0.0.2")
         key = get_user_id_or_ip(req)
         assert key == "ip:10.0.0.2"

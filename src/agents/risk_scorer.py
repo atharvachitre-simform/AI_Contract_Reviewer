@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import hashlib
 from typing import Any
 from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from ..models import ClauseExtractorOutput, ClauseSpan, RiskIssue, RiskLevel, RiskScorerOutput
-from ..prompts.risk_scorer_prompt import build_risk_scorer_prompt
+from src import config
+from src.models import ClauseExtractorOutput, ClauseSpan, RiskIssue, RiskLevel, RiskScorerOutput
+from src.prompts.risk_scorer_prompt import build_risk_scorer_prompt
+from src.agents.pipeline_tools import run_agent_tool_loop
+from src.helpers.compression_helper import get_compressed_payload_string
 
 logger = logging.getLogger(__name__)
-from src import config
-from .pipeline_tools import run_agent_tool_loop
 
 
 class RiskScorerState(TypedDict):
@@ -117,7 +120,6 @@ class RiskScorerAgent:
                 pass
 
         # 3. Truncation recovery: salvage fully-written issue objects
-        import re
         issues = []
         for m in re.finditer(r"\{", clean):
             start = m.start()
@@ -207,7 +209,6 @@ class RiskScorerAgent:
             for chunk_idx, chunk in enumerate(chunks):
                 logger.info(f"Processing risk scorer chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
                 
-                from ..helpers.compression_helper import get_compressed_payload_string
                 clauses_text = get_compressed_payload_string(chunk)
                 global_idx += len(chunk)
 
@@ -238,7 +239,6 @@ class RiskScorerAgent:
                     max_tokens=config.RISK_SCORER_MAX_TOKENS
                 )
 
-                import hashlib
                 clauses_hash = hashlib.sha256(clauses_text.encode("utf-8")).hexdigest()
                 logger.debug(
                     f"LLM response chunk {chunk_idx + 1}: [CONTRACT TEXT: {len(clauses_text)} chars, hash: {clauses_hash[:8]}]"

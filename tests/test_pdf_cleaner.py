@@ -1,4 +1,4 @@
-from src.helpers.pdf_cleaner import is_page_number_line, clean_extracted_pages, clean_extracted_paragraphs
+from src.helpers.pdf_cleaner import is_page_number_line, clean_extracted_pages, clean_extracted_paragraphs, preprocess_for_extraction
 
 def test_is_page_number_line():
     assert is_page_number_line("Page 1") is True
@@ -59,8 +59,6 @@ def test_clean_extracted_paragraphs():
 
 
 def test_preprocess_for_extraction():
-    from src.helpers.pdf_cleaner import preprocess_for_extraction
-
     raw_text = (
         "This Commercialization and License Agreement (this \u201cAgreement\u201d) is made effective as of\n"
         "December 17, 2019 by and between Party A and Party B.\n\n"

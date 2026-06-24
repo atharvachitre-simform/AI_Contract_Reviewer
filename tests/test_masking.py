@@ -1,5 +1,5 @@
 import pytest
-from src.helpers.mask import mask_sensitive_text, restore_masked_text, unmask_review_state
+from src.helpers.mask import mask_sensitive_text, restore_masked_text, unmask_review_state, get_all_trigger_keywords
 from src.models.models import (
     ContractReviewState,
     ReportAssemblerOutput,
@@ -18,7 +18,6 @@ def test_mask_sensitive_text():
 
 def test_restore_masked_text():
     original_text = "The user plays with a playboy magazine in a playground."
-    from src.helpers.mask import get_all_trigger_keywords
     all_kws = get_all_trigger_keywords(["playboy"])
     idx = all_kws.index("playboy")
     masked_text = f"The user plays with a [MASK_{idx}] magazine in a playground."
@@ -28,7 +27,6 @@ def test_restore_masked_text():
 
 def test_restore_masked_text_multiple_keywords():
     original_text = "Check if playboy or confidential words exist."
-    from src.helpers.mask import get_all_trigger_keywords
     keywords = ["playboy", "confidential"]
     all_kws = get_all_trigger_keywords(keywords)
     idx_playboy = all_kws.index("playboy")
@@ -38,7 +36,6 @@ def test_restore_masked_text_multiple_keywords():
     assert restored == original_text
 
 def test_unmask_review_state():
-    from src.helpers.mask import get_all_trigger_keywords
     keywords = ["playboy", "confidential"]
     all_kws = get_all_trigger_keywords(keywords)
     idx_playboy = all_kws.index("playboy")

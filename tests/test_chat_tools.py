@@ -1,10 +1,14 @@
 import json
 import base64
 import shutil
+import asyncio
 from pathlib import Path
 import pytest
 from src.services.chat_service import ContractChatService
 from src import config
+from src.services.services import ContractReviewService
+from src.models import ContractReviewState
+from src.checkpointing.redis_checkpointer import RedisCheckpointer
 
 @pytest.fixture
 def mock_contract_env():
@@ -60,9 +64,6 @@ def mock_contract_env():
         }
     }
     
-    from src.services.services import ContractReviewService
-    from src.models import ContractReviewState
-    
     # Build metadata from dict
     parties_list = []
     for p in mock_data["metadata"]["parties"]:
@@ -94,8 +95,6 @@ def mock_contract_env():
     yield contract_id
     
     # 3. Clean up
-    import asyncio
-    from src.checkpointing.redis_checkpointer import RedisCheckpointer
     asyncio.run(RedisCheckpointer(contract_id=contract_id).delete())
     if pages_dir.exists():
         shutil.rmtree(pages_dir)

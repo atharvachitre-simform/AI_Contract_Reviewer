@@ -1,5 +1,6 @@
 """Unit tests for content filtering mitigation and resilience mechanisms."""
 
+import json
 from unittest.mock import MagicMock
 from openai import BadRequestError
 
@@ -66,7 +67,6 @@ def test_get_fallback_json_for_prompt():
     """Verify get_fallback_json_for_prompt generates schema-valid JSON structures."""
     # Risk scorer prompt fallback
     risk_json = get_fallback_json_for_prompt("Assess the risk and severity score.")
-    import json
     data = json.loads(risk_json)
     assert data["overall_risk_level"] == "medium"
     assert isinstance(data["issues"], list)
@@ -151,7 +151,6 @@ def test_chat_complete_repeated_content_filter_failure():
         response_format={"type": "json_object"}
     )
     
-    import json
     data = json.loads(res)
     assert data["overall_risk_level"] == "medium"
     assert isinstance(data["issues"], list)

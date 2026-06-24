@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ..models import ContractReviewState
-from ..services.services import ContractReviewService
+from src.models import ContractReviewState
+from src.services.services import ContractReviewService
 
 
 class ContractReviewController:

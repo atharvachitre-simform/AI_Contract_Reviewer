@@ -17,9 +17,11 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+import hashlib
 
 from src import config
 from src.services.redis_client import AsyncRedisClient
+from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,6 @@ class RedisCheckpointer:
         self._redis = AsyncRedisClient()
 
         # MongoDB store
-        from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
         self._mongo = MongoCheckpointerStore()
 
         # Local fallback directory
@@ -205,7 +206,6 @@ class RedisCheckpointer:
         If stored hash exists and matches, return True.
         If stored hash exists and differs, delete all checkpoints and return False.
         """
-        import hashlib
         if not contract_text:
             return True
 

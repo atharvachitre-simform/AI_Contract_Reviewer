@@ -5,18 +5,18 @@ from __future__ import annotations
 import logging
 import re
 import json
+import hashlib
 from typing import Any
 from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-
-from ..models import ClauseExtractorOutput, ObligationFinderOutput, ObligationItem
-from ..prompts.obligation_finder_prompt import build_obligation_finder_prompt, SYSTEM_INSTRUCTION, OUTPUT_SCHEMA
+from src import config
+from src.models import ClauseExtractorOutput, ObligationFinderOutput, ObligationItem
+from src.prompts.obligation_finder_prompt import build_obligation_finder_prompt, SYSTEM_INSTRUCTION, OUTPUT_SCHEMA
+from src.agents.pipeline_tools import run_agent_tool_loop
 
 logger = logging.getLogger(__name__)
-from src import config
-from .pipeline_tools import run_agent_tool_loop
 
 
 class ObligationFinderState(TypedDict):
@@ -161,7 +161,6 @@ class ObligationFinderAgent:
                     system_prompt=system_prompt,
                     max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS
                 )
-                import hashlib
                 chunk_text = "\n".join([str(c) for c in chunk])
                 chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
                 logger.debug(
@@ -374,7 +373,6 @@ class ObligationFinderAgent:
                 },
                 system_prompt=system_prompt
             )
-            import hashlib
             missed_text = "\n".join([str(c) for c in missed])
             missed_hash = hashlib.sha256(missed_text.encode("utf-8")).hexdigest()
             logger.debug(

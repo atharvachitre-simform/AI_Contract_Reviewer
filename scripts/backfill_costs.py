@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from dotenv import load_dotenv
 import sys
+from langfuse.types import TraceContext
 
 # Ensure the parent directory is in the path to import src
 repo_root = Path(__file__).resolve().parents[1]
@@ -94,7 +95,6 @@ def main():
     for tid, agg in trace_data.items():
         try:
             # We add a backfill event to the trace so it carries the metadata
-            from langfuse.types import TraceContext
             ctx: TraceContext = {"trace_id": tid}
             tracer.client.create_event(
                 trace_context=ctx,

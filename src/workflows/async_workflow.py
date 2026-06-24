@@ -23,10 +23,27 @@ import asyncio
 import logging
 import uuid
 from typing import Any, AsyncGenerator
+import contextvars
 
-from ..checkpointing.redis_checkpointer import RedisCheckpointer, PIPELINE_STEPS
-from ..models import ContractReviewState, ProcessingStatus
-from ..services.langfuse_tracer import LangFuseTracer
+from src.checkpointing.redis_checkpointer import RedisCheckpointer, PIPELINE_STEPS
+from src.models import (
+    ContractReviewState,
+    ProcessingStatus,
+    ClauseExtractorOutput,
+    ObligationFinderOutput,
+    RedFlagDetectorOutput,
+    RiskScorerOutput,
+    PlainEnglishWriterOutput,
+    ReportAssemblerOutput,
+)
+from src.services.langfuse_tracer import LangFuseTracer
+from src.agents.clause_extractor import extract_clauses
+from src.agents.obligation_finder import find_obligations
+from src.agents.plain_english_writer import generate_plain_english
+from src.agents.red_flag_detector import detect_red_flags
+from src.agents.report_assembler import assemble_report
+from src.agents.risk_scorer import score_risks
+from src.helpers.contract_analysis import filter_boilerplate_clauses
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +63,11 @@ class AsyncContractReviewWorkflow:
         loop = asyncio.get_running_loop()
         
         # Capture current tracing context
-        from ..services.langfuse_tracer import LangFuseTracer
         tid = LangFuseTracer.get_current_trace_id()
         uid = LangFuseTracer.get_current_user_id()
         sid = LangFuseTracer.get_current_session_id()
         cid = LangFuseTracer.get_current_contract_id()
 
-        import contextvars
         ctx = contextvars.copy_context()
 
         def wrapper():
@@ -118,7 +133,6 @@ class AsyncContractReviewWorkflow:
 
         # The last event always carries the full state dict
         if events and "state" in events[-1]:
-            from ..models import ContractReviewState
             return ContractReviewState(**events[-1]["state"])
 
         raise RuntimeError("Async workflow did not produce a final state event.")
@@ -186,17 +200,6 @@ class AsyncContractReviewWorkflow:
             await checkpointer.verify_or_update_hash(contract_text)
             completed = set()
 
-        # ------------------------------------------------------------------
-        # Import agents lazily to avoid heavy top-level import cost
-        # ------------------------------------------------------------------
-        from ..agents.clause_extractor import extract_clauses
-        from ..agents.obligation_finder import find_obligations
-        from ..agents.plain_english_writer import generate_plain_english
-        from ..agents.red_flag_detector import detect_red_flags
-        from ..agents.report_assembler import assemble_report
-        from ..agents.risk_scorer import score_risks
-        from ..models import ContractReviewState, ProcessingStatus
-
         # Initialise state
         state = ContractReviewState(
             contract_id=contract_id,
@@ -215,7 +218,6 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models import ClauseExtractorOutput
                 state.clause_extraction = ClauseExtractorOutput(**data) if isinstance(data, dict) else data
                 state.metadata = state.clause_extraction.metadata
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
@@ -252,7 +254,6 @@ class AsyncContractReviewWorkflow:
                     state.perspective = perspective
                     break
 
-        from ..helpers.contract_analysis import filter_boilerplate_clauses
         filtered_extraction = filter_boilerplate_clauses(state.clause_extraction)
 
         # ------------------------------------------------------------------
@@ -269,7 +270,6 @@ class AsyncContractReviewWorkflow:
         if obligation_skipped:
             data = await checkpointer.load(obligation_step)
             if data:
-                from ..models import ObligationFinderOutput
                 state.obligation_finding = ObligationFinderOutput(**data) if isinstance(data, dict) else data
                 yield {"step": obligation_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
@@ -278,7 +278,6 @@ class AsyncContractReviewWorkflow:
         if red_flag_skipped:
             data = await checkpointer.load(red_flag_step)
             if data:
-                from ..models import RedFlagDetectorOutput
                 state.red_flag_detection = RedFlagDetectorOutput(**data) if isinstance(data, dict) else data
                 yield {"step": red_flag_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
@@ -287,7 +286,6 @@ class AsyncContractReviewWorkflow:
         if risk_skipped:
             data = await checkpointer.load(risk_step)
             if data:
-                from ..models import RiskScorerOutput
                 state.risk_scoring = RiskScorerOutput(**data) if isinstance(data, dict) else data
                 yield {"step": risk_step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
@@ -342,7 +340,6 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models import PlainEnglishWriterOutput
                 state.plain_english = PlainEnglishWriterOutput(**data) if isinstance(data, dict) else data
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:
@@ -381,7 +378,6 @@ class AsyncContractReviewWorkflow:
         if step in completed:
             data = await checkpointer.load(step)
             if data:
-                from ..models import ReportAssemblerOutput
                 state.final_report = ReportAssemblerOutput(**data) if isinstance(data, dict) else data
                 yield {"step": step, "status": "skipped", "detail": {"reason": "resumed from checkpoint"}}
             else:

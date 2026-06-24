@@ -8,49 +8,38 @@ import hashlib
 import logging
 import os
 import re
+import sys
+import copy
+import time
+import uuid
+import tempfile
+import requests
 from pathlib import Path
 from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.core.credentials import AzureKeyCredential
 from src.services.keyvault import get_secret
 from azure.ai.documentintelligence import DocumentIntelligenceClient
-try:
-    from azure.ai.openai import OpenAIClient
-except ImportError:
-    OpenAIClient = None  # type: ignore
-
-try:
-    import openai as openai_package
-    from openai import OpenAI as OpenAIPackageClient
-    from openai import AzureOpenAI
-except ImportError:
-    openai_package = None
-    OpenAIPackageClient = None
-    AzureOpenAI = None
+from azure.ai.openai import OpenAIClient
+import openai as openai_package
+from openai import OpenAI as OpenAIPackageClient
+from openai import AzureOpenAI
 
 dotenv_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path)
 
-try:
-    from azure.search.documents import SearchClient
-except ImportError:  # pragma: no cover - optional runtime dependency
-    SearchClient = None  # type: ignore
-
-try:
-    from azure.storage.blob import BlobServiceClient
-except ImportError:  # pragma: no cover - optional runtime dependency
-    BlobServiceClient = None  # type: ignore
+from azure.search.documents import SearchClient
+from azure.storage.blob import BlobServiceClient
 from redis import Redis
 from fitz import open as fitz_open
 from src import config
-
-try:
-    import groq
-except ImportError:
-    groq = None
+import groq
+from qdrant_client import QdrantClient
+from azure.search.documents.models import VectorizedQuery
+from qdrant_client.models import Distance, VectorParams, PointStruct, PayloadSchemaType
 
 load_dotenv()
 
@@ -102,7 +91,6 @@ def sanitize_prompt_for_content_filter(prompt: str) -> str:
 
 def sanitize_messages_for_content_filter(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Recursively sanitize standard chat messages (including vision structure)."""
-    import copy
     new_messages = copy.deepcopy(messages)
     for msg in new_messages:
         content = msg.get("content")
@@ -149,15 +137,9 @@ def is_transient_error(exception: Exception) -> bool:
             return True
             
     # Check for general HTTP connection or timeout issues
-    try:
-        import requests
-        if isinstance(exception, (requests.exceptions.RequestException, ConnectionError, TimeoutError)):
-            logger.warning(f"Connection or timeout error encountered: {exception}. Retrying...")
-            return True
-    except ImportError:
-        if isinstance(exception, (ConnectionError, TimeoutError)):
-            logger.warning(f"Connection or timeout error encountered: {exception}. Retrying...")
-            return True
+    if isinstance(exception, (requests.exceptions.RequestException, ConnectionError, TimeoutError)):
+        logger.warning(f"Connection or timeout error encountered: {exception}. Retrying...")
+        return True
         
     return False
 
@@ -213,7 +195,6 @@ class AzureOpenAIWrapper:
                     api_version=self.api_version,
                 )
             else:
-                from azure.identity import get_bearer_token_provider, DefaultAzureCredential
                 token_provider = get_bearer_token_provider(DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default")
                 self.openai_client = AzureOpenAI(
                     azure_endpoint=self.endpoint,
@@ -698,7 +679,6 @@ class AzureClientFactory:
     _instance = None
 
     def __new__(cls, *args, **kwargs):
-        import sys
         if "pytest" in sys.modules:
             return super(AzureClientFactory, cls).__new__(cls)
         if cls._instance is None:
@@ -706,7 +686,6 @@ class AzureClientFactory:
         return cls._instance
 
     def __init__(self) -> None:
-        import sys
         is_testing = "pytest" in sys.modules
         if not is_testing and getattr(self, "_initialized", False):
             return
@@ -931,12 +910,7 @@ class AzureClientFactory:
         if not qdrant_url:
             return None
         try:
-            from qdrant_client import QdrantClient
             return QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        except ImportError:
-            # Not installed — expected in deployments that don't use Qdrant
-            logger.debug("qdrant-client is not installed; Qdrant integration is disabled.")
-            return None
         except Exception as e:
             logger.debug(f"Qdrant client initialization failed: {e}")
             return None
@@ -1064,7 +1038,6 @@ class AzureClientFactory:
         if embedding_client:
             try:
                 query_vector = embedding_client.get_embedding(query)
-                from azure.search.documents.models import VectorizedQuery
                 vector_query = VectorizedQuery(
                     vector=query_vector,
                     k_nearest_neighbors=top_k,
@@ -1181,7 +1154,6 @@ class MemoryStore:
             folder.mkdir(parents=True, exist_ok=True)
             filepath = folder / f"{session_id}.json"
             # Atomic write
-            import tempfile
             with tempfile.NamedTemporaryFile("w", dir=str(folder), delete=False, encoding="utf-8") as temp_file:
                 json.dump(payload, temp_file, ensure_ascii=False, indent=2)
                 temp_name = temp_file.name
@@ -1197,7 +1169,6 @@ class MemoryStore:
                 return None
             
             # Enforce TTL
-            import time
             mtime = os.path.getmtime(str(filepath))
             age = time.time() - mtime
             if age > config.MEMORY_SHORT_TERM_TTL_SECONDS:
@@ -1217,7 +1188,6 @@ class MemoryStore:
             folder.mkdir(parents=True, exist_ok=True)
             filepath = folder / f"{key}.json"
             # Atomic write
-            import tempfile
             with tempfile.NamedTemporaryFile("w", dir=str(folder), delete=False, encoding="utf-8") as temp_file:
                 json.dump(payload, temp_file, ensure_ascii=False, indent=2)
                 temp_name = temp_file.name
@@ -1291,8 +1261,6 @@ class MemoryStore:
         try:
             client = self.azure_factory.qdrant_client
             collection_name = config.QDRANT_COLLECTION_NAME
-            from qdrant_client.models import Distance, VectorParams, PointStruct, PayloadSchemaType
-            import uuid
             
             # Ensure collection exists
             try:

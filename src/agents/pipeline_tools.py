@@ -6,6 +6,13 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from groq import Groq
+from src import config
+from src.services.azure_clients import sanitize_prompt_for_content_filter
+from src.prompts.system_context import BUSINESS_DOMAIN_HEADER
+from src.helpers.mask import mask_sensitive_text
+from src.services.langfuse_tracer import LangFuseTracer
+
 logger = logging.getLogger(__name__)
 
 # --- Tool Schemas for Pipeline Agents ---
@@ -548,13 +555,8 @@ def run_agent_tool_loop(
         return llm_client.chat_complete(prompt, temperature=0.0, system_prompt=system_prompt, **kwargs)
 
     # Clean / sanitize prompt and system prompt for content filter
-    from ..services.azure_clients import sanitize_prompt_for_content_filter
-    from ..prompts.system_context import BUSINESS_DOMAIN_HEADER
-
     sanitized_prompt = sanitize_prompt_for_content_filter(prompt)
     if system_prompt:
-        from ..helpers.mask import mask_sensitive_text
-        from src import config
         user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
         sanitized_system = mask_sensitive_text(system_prompt, keywords=user_keywords or None, use_builtin=True)
         if "B2B legal technology platform" not in sanitized_system:
@@ -607,10 +609,8 @@ def run_agent_tool_loop(
             except Exception as e:
                 err_msg = str(e).lower()
                 is_rate_limit = "429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg or "tpm" in err_msg or getattr(e, "status_code", None) == 429
-                from src import config
                 if is_rate_limit and config.GROQ_API_KEY and not getattr(llm_client, "use_groq", False):
                     logger.warning(f"Rate limit hit in agent tool loop: {e}. Falling back to Groq API with {config.GROQ_DEFAULT_MODEL}...")
-                    from groq import Groq
                     groq_client = Groq(api_key=config.GROQ_API_KEY)
                     active_client = groq_client
                     llm_client.use_groq = True
@@ -619,7 +619,6 @@ def run_agent_tool_loop(
                     response = active_client.chat.completions.create(**kwargs)
                 else:
                     try:
-                        from ..services.langfuse_tracer import LangFuseTracer
                         tracer = LangFuseTracer()
                         trace_id = tracer.get_current_trace_id()
                         if trace_id and tracer.enabled:

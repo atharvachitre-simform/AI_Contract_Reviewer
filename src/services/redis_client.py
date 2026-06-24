@@ -4,12 +4,10 @@ Used by services (e.g., chat_service) to store chat history and summaries.
 """
 
 import os
+import asyncio
 from typing import Any, Optional
 
-try:
-    from redis.asyncio import Redis as AsyncRedis
-except ImportError:
-    AsyncRedis = None  # type: ignore
+from redis.asyncio import Redis as AsyncRedis
 
 import logging
 
@@ -28,7 +26,6 @@ class AsyncRedisClient:
         self._loop = None
 
     async def _get_client(self) -> AsyncRedis:
-        import asyncio
         current_loop = asyncio.get_running_loop()
         
         if self._client is None or self._loop is not current_loop:

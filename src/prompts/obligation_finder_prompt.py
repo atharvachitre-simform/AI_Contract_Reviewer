@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 import json
+from ..helpers.compression_helper import get_compressed_payload_string
 
 SYSTEM_INSTRUCTION = (
     "CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.\n\n"
@@ -35,7 +36,6 @@ def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[
     elif isinstance(clause_extraction, list):
         clauses = clause_extraction
 
-    from ..helpers.compression_helper import get_compressed_payload_string
     clauses_text = get_compressed_payload_string(clauses) if clauses else "(no clauses provided)"
 
     prior_context_block = ""

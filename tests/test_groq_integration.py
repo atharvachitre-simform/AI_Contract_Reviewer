@@ -1,6 +1,6 @@
 import os
 from unittest.mock import patch, MagicMock
-from src.services.azure_clients import AzureOpenAIWrapper, AzureClientFactory
+from src.services.azure_clients import AzureOpenAIWrapper, AzureClientFactory, BUSINESS_DOMAIN_HEADER
 
 def test_groq_wrapper_initialization():
     """Verify that AzureOpenAIWrapper correctly identifies Groq deployments and initializes Groq client."""
@@ -65,7 +65,6 @@ def test_groq_chat_completion_routing():
     mock_groq_client.chat.completions.create.assert_called_once()
     args, kwargs = mock_groq_client.chat.completions.create.call_args
     assert kwargs["model"] == "llama-3.3-70b-versatile"
-    from src.services.azure_clients import BUSINESS_DOMAIN_HEADER
     assert kwargs["messages"] == [
         {"role": "system", "content": BUSINESS_DOMAIN_HEADER + "Test system"},
         {"role": "user", "content": "[B2B LEGAL CONTRACT ANALYSIS PLATFORM] Test prompt"}

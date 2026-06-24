@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+import csv
 from pathlib import Path
 
 ARTIFACT_ROOT = Path("artifacts/extraction_runs")
@@ -196,7 +197,6 @@ def analyze(contract_id: str) -> None:
     csv_path = run_dir / "coverage.csv"
     print(f"\n{BOLD}[8] COVERAGE MAP — Zero-Clause Sections (top 10){RESET}")
     if csv_path.exists():
-        import csv
         zero_rows = []
         with csv_path.open(encoding="utf-8") as f:
             reader = csv.DictReader(f)

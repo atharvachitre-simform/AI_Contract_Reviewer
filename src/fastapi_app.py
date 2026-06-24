@@ -1,18 +1,36 @@
 """FastAPI application instance and route definitions."""
+import uuid
+import os
+import re
 import asyncio
 import json
+import redis.asyncio as aioredis
 from typing import AsyncGenerator
 
-import os
-import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Response, Form, File, UploadFile, Depends, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
+from celery.result import AsyncResult
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-import re
-from .controllers.controller import review_contract
-from .helpers.auth import get_current_user, check_contract_ownership, require_admin
 from src import config
+from src.controllers.controller import review_contract
+from src.helpers.auth import get_current_user, check_contract_ownership, require_admin
+from src.helpers.cleanup import start_periodic_cleanup_job
+from src.middleware.rate_limiter import limiter
+from src.helpers.mask import unmask_review_state
+from src.services.services import ContractReviewService
+from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
+from src.services.chat_service import ContractChatService
+from src.workflows.async_workflow import AsyncContractReviewWorkflow
+from src.worker.tasks import run_contract_review_task
+from src.worker.celery_app import celery_app as _celery_app
+from src.checkpointing.redis_checkpointer import RedisCheckpointer
 
 def sanitize_contract_id(contract_id: str) -> str:
     if not re.match(r'^[a-zA-Z0-9_\-]+$', contract_id):
@@ -24,12 +42,9 @@ app = FastAPI(title="Contract Reviewer")
 
 @app.on_event("startup")
 async def startup_event():
-    from .helpers.cleanup import start_periodic_cleanup_job
     asyncio.create_task(start_periodic_cleanup_job())
 
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -60,10 +75,6 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Rate Limiting (slowapi + Redis moving-window)
 # ---------------------------------------------------------------------------
-from .middleware.rate_limiter import limiter
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
 
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -148,7 +159,6 @@ def review(request: Request, body: ReviewRequest, user: dict = Depends(get_curre
         perspective=body.perspective,
         user_id=user.get("id"),
     )
-    from .helpers.mask import unmask_review_state
     state = unmask_review_state(state, config.SENSITIVE_KEYWORDS)
     return state.model_dump(mode="json")
 
@@ -161,8 +171,6 @@ def review(request: Request, body: ReviewRequest, user: dict = Depends(get_curre
 @limiter.limit(config.RATE_LIMIT_READS)
 async def get_review_state(request: Request, contract_id: str = Depends(verify_path_contract_access)):
     """Get the full state of a past review."""
-    from .services.services import ContractReviewService
-    from .helpers.mask import unmask_review_state
     service = ContractReviewService()
     state = service.load_checkpoint(contract_id)
     if not state:
@@ -174,9 +182,6 @@ async def get_review_state(request: Request, contract_id: str = Depends(verify_p
 @app.get("/api/v1/review/{contract_id}/export")
 def export_review(format: str = "pdf", contract_id: str = Depends(verify_path_contract_access)):
     """Export review results as MD, PDF, or DOCX."""
-    from .services.services import ContractReviewService
-    from .helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
-
     service = ContractReviewService()
     state = service.load_checkpoint(contract_id)
     if not state:
@@ -214,9 +219,6 @@ def export_review(format: str = "pdf", contract_id: str = Depends(verify_path_co
 @app.post("/api/v1/review/batch/submit", response_model=BatchReviewResponse)
 async def submit_batch_review(request: BatchReviewRequest, user: dict = Depends(get_current_user)):
     """Submit multiple contracts for bulk processing using OpenAI Batch API."""
-    from .services.services import ContractReviewService
-    import uuid
-    
     contracts = []
     for r in request.contracts:
         c_id = r.contract_id or str(uuid.uuid4())
@@ -233,8 +235,6 @@ async def submit_batch_review(request: BatchReviewRequest, user: dict = Depends(
 @app.get("/api/v1/review/batch/{batch_id}/status")
 async def get_batch_status(batch_id: str, user: dict = Depends(get_current_user)):
     """Check the status of a bulk batch review job."""
-    from .services.services import ContractReviewService
-    
     # We do not strictly check contract ownership here because batch IDs are opaque 
     # and unguessable. A production app might want to map batch_id -> user_id.
     service = ContractReviewService()
@@ -262,8 +262,6 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_cur
     # Enforce user ownership of contract
     await check_contract_ownership(body.contract_id, user)
     
-    from .services.chat_service import ContractChatService
-
     chat_service = ContractChatService(
         contract_id=body.contract_id,
         session_id=body.session_id,
@@ -293,15 +291,13 @@ async def chat_image(
     # Enforce user ownership of contract
     await check_contract_ownership(contract_id, user)
     
-    from .services.chat_service import ContractChatService
-
-    file_size = getattr(file, "size", None)
-    if file_size is None:
-        image_bytes = await file.read()
-        file_size = len(image_bytes)
+    contract_file_size_bytes = getattr(file, "size", None)
+    if contract_file_size_bytes is None:
+        contract_image_bytes = await file.read()
+        contract_file_size_bytes = len(contract_image_bytes)
     else:
-        image_bytes = await file.read()
-    if file_size > config.MAX_PDF_SIZE_MB * 1024 * 1024:
+        contract_image_bytes = await file.read()
+    if contract_file_size_bytes > config.MAX_PDF_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"File size exceeds the limit of {config.MAX_PDF_SIZE_MB}MB.")
         
     # Validate MIME type for security
@@ -310,7 +306,7 @@ async def chat_image(
         raise HTTPException(status_code=415, detail="Unsupported media type. Allowed types: jpeg, png, webp, pdf")
         
     chat_service = ContractChatService(contract_id=contract_id, session_id=session_id, user_id=user.get("id"))
-    return await chat_service.ask_with_image(question, image_bytes)
+    return await chat_service.ask_with_image(question, contract_image_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +316,6 @@ async def chat_image(
 @app.get("/api/v1/review/{contract_id}/page/{page_num}")
 def get_page_image(page_num: int, contract_id: str = Depends(verify_path_contract_access)):
     """Retrieve rendered PDF page PNG."""
-    import os
-    from fastapi.responses import FileResponse
-
     safe_contract_id = os.path.basename(contract_id)
     safe_page_num = os.path.basename(str(page_num))
     path = os.path.join("logs", "pages", safe_contract_id, f"page_{safe_page_num}.png")
@@ -347,8 +340,6 @@ async def _sse_event_stream(
     user_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted strings from workflow progress events."""
-    from .workflows.async_workflow import AsyncContractReviewWorkflow
-
     workflow = AsyncContractReviewWorkflow()
     try:
         async for event in workflow.run_streaming(
@@ -434,9 +425,6 @@ async def review_submit(
       - ``GET /api/v1/review/{contract_id}/stream`` — live SSE progress feed
       - ``GET /api/v1/review/{contract_id}/task/{task_id}`` — status polling
     """
-    import uuid
-    from .worker.tasks import run_contract_review_task
-
     contract_id = body.contract_id or str(uuid.uuid4())
     sanitize_contract_id(contract_id)
     await check_contract_ownership(contract_id, user)
@@ -555,9 +543,6 @@ async def task_status(
       - ``info``: Step metadata when status is PROGRESS, result when SUCCESS,
         error message when FAILURE.
     """
-    from celery.result import AsyncResult
-    from .worker.celery_app import celery_app as _celery_app
-
     result = AsyncResult(task_id, app=_celery_app)
     return {
         "task_id": task_id,
@@ -574,8 +559,6 @@ async def task_status(
 @app.get("/api/v1/review/{contract_id}/checkpoint")
 async def get_checkpoint_status(contract_id: str = Depends(verify_path_contract_access)):
     """Return which pipeline steps have been checkpointed for a contract."""
-    from .checkpointing.redis_checkpointer import RedisCheckpointer
-
     checkpointer = RedisCheckpointer(contract_id=contract_id)
     completed = await checkpointer.completed_steps()
     return {"contract_id": contract_id, "completed_steps": completed}
@@ -588,8 +571,6 @@ async def delete_checkpoint(
     admin_user: dict = Depends(require_admin)
 ):
     """Delete checkpoint(s) for a contract (all steps if step is omitted)."""
-    from .checkpointing.redis_checkpointer import RedisCheckpointer
-
     checkpointer = RedisCheckpointer(contract_id=contract_id)
     await checkpointer.delete(step)
     return {"contract_id": contract_id, "deleted": step or "all"}

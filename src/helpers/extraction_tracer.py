@@ -39,6 +39,7 @@ import csv
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -501,7 +502,6 @@ class ExtractionTracer:
 
 def get_tracer(contract_id: str | None = None, enabled: bool | None = None) -> ExtractionTracer | _NoOpTracer:
     """Return a live ExtractionTracer when TRACE_EXTRACTION is set, else a no-op."""
-    import os
     if enabled is None:
         enabled = os.getenv("TRACE_EXTRACTION", "false").lower() in ("1", "true", "yes")
     if not enabled:

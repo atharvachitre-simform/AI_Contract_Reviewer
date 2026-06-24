@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from typing import Any, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from ..models import ClauseExtractorOutput, RedFlagDetectorOutput, RedFlagItem, RiskLevel
-from ..prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
+from src import config
+from src.models import ClauseExtractorOutput, RedFlagDetectorOutput, RedFlagItem, RiskLevel
+from src.prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
+from src.agents.pipeline_tools import run_agent_tool_loop
 
 logger = logging.getLogger(__name__)
-from src import config
-from .pipeline_tools import run_agent_tool_loop
 
 
 class RedFlagDetectorState(TypedDict):
@@ -130,7 +131,6 @@ def llm_detect_node(state: RedFlagDetectorState, llm_client: Any | None = None) 
 			)
 
 			# --- Diagnostic: log raw response and finish_reason ---
-			import hashlib
 			clauses_hash = hashlib.sha256(clauses_text.encode("utf-8")).hexdigest()
 			logger.debug(
 				f"[RED_FLAG_RAW] chunk {chunk_idx + 1} response "

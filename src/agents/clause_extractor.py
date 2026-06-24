@@ -14,6 +14,9 @@ import logging
 from ..helpers.mask import mask_sensitive_text
 import os
 import re
+import hashlib
+import asyncio
+import concurrent.futures
 from collections import defaultdict
 from typing import Any, TypedDict
 
@@ -21,6 +24,8 @@ from langgraph.graph import StateGraph, END
 
 logger = logging.getLogger(__name__)
 from src import config
+from ..services.langfuse_tracer import LangFuseTracer
+from ..services.async_azure_client import AsyncAzureOpenAIWrapper
 
 from ..helpers.contract_analysis import (
     extract_metadata,
@@ -255,7 +260,6 @@ def _hash_clause_text(text: str) -> list[int]:
     words.sort()
     
     # Hash each word and take the modulo to get 5 signature features
-    import hashlib
     sigs = []
     for w in words[:5]:
         h = int(hashlib.md5(w.encode("utf-8")).hexdigest(), 16)
@@ -375,9 +379,6 @@ def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[d
 
 
 def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
-    from ..helpers.contract_analysis import normalize_whitespace
-    import hashlib
-    
     raw_sections = _split_by_sections(text)
     
     heading_pattern = re.compile(
@@ -587,11 +588,8 @@ def llm_extraction_node(
         retry_queue = []
         cache_reuse_count = 0
         
-        import asyncio
-        
         async def process_chunks_async():
             nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
-            from ..services.langfuse_tracer import LangFuseTracer
             LangFuseTracer.set_current_trace_id(parent_trace_id)
             LangFuseTracer.set_current_user_id(parent_user_id)
             LangFuseTracer.set_current_session_id(parent_session_id)
@@ -708,7 +706,6 @@ def llm_extraction_node(
                         )
 
                         # Log finish reason
-                        import hashlib
                         chunk_hash = hashlib.sha256(unit["text"].encode("utf-8")).hexdigest()
                         logger.debug(
                             f"[CLAUSE_EXTRACTOR_RAW] unit {idx} response "
@@ -781,7 +778,6 @@ def llm_extraction_node(
             loop = None
 
         if loop and loop.is_running():
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(lambda: asyncio.run(process_chunks_async()))
                 results = future.result()
@@ -806,7 +802,6 @@ def llm_extraction_node(
             logger.info(f"Starting risk-based retry for {len(retry_queue)} queued unit(s)...")
             
             async def run_retry_async():
-                from ..services.async_azure_client import AsyncAzureOpenAIWrapper
                 async_client = AsyncAzureOpenAIWrapper(llm_client)
                 sem_retry = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
                 
@@ -834,7 +829,6 @@ def llm_extraction_node(
                 return await asyncio.gather(*retry_tasks, return_exceptions=True)
 
             if loop and loop.is_running():
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(lambda: asyncio.run(run_retry_async()))
                     retry_results = future.result()
@@ -860,7 +854,6 @@ def llm_extraction_node(
         clauses.extend(retry_clauses)
 
         # Deduplicate and merge clauses based on MinHash LSH + Jaccard Similarity
-        from collections import defaultdict
         all_clauses = (state.get("clauses") or []) + clauses
         
         # Group clauses by clause_type bucket first
@@ -1276,7 +1269,6 @@ def _parse_json_fallback(response_text: str) -> dict[str, Any] | None:
 
     # 3. Fallback: resilient recovery of truncated/broken JSON
     try:
-        import re
         clauses = []
         open_indices = [m.start() for m in re.finditer(r'\{', text)]
         close_indices = [m.start() for m in re.finditer(r'\}', text)]

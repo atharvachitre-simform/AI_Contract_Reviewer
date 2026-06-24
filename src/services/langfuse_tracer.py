@@ -27,12 +27,15 @@ from __future__ import annotations
 import json
 import os
 import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from collections import defaultdict
 
 from dotenv import load_dotenv
 from langfuse._client.client import Langfuse
+from langfuse.types import TraceContext
 
 import threading
 import contextvars
@@ -166,7 +169,6 @@ class LangFuseTracer:
         self.client = self._initialize_client()
         self.enabled = bool(self.public_key and self.secret_key and self.client is not None)
         
-        from collections import defaultdict
         self.trace_cached_tokens = defaultdict(int)
         self.trace_input_tokens = defaultdict(int)
         self.trace_output_tokens = defaultdict(int)
@@ -234,7 +236,6 @@ class LangFuseTracer:
 
         if self.enabled:
             try:
-                from langfuse.types import TraceContext
                 ctx: TraceContext = {"trace_id": trace_id}
                 self.client.create_event(
                     trace_context=ctx,
@@ -252,7 +253,6 @@ class LangFuseTracer:
                     },
                 )
             except Exception as exc:
-                import logging
                 logging.getLogger(__name__).debug(f"Langfuse pipeline trace start error: {exc}")
 
         return trace_id
@@ -293,7 +293,6 @@ class LangFuseTracer:
 
         if self.enabled:
             try:
-                from langfuse.types import TraceContext
                 ctx: TraceContext = {"trace_id": trace_id}
                 self.client.create_event(
                     trace_context=ctx,
@@ -308,7 +307,6 @@ class LangFuseTracer:
                     },
                 )
             except Exception as exc:
-                import logging
                 logging.getLogger(__name__).debug(f"Langfuse chat trace start error: {exc}")
 
         return trace_id
@@ -367,7 +365,6 @@ class LangFuseTracer:
         if not self.enabled or not tid:
             return
         try:
-            from langfuse.types import TraceContext
             ctx: TraceContext = {"trace_id": tid}
             self.client.create_event(
                 trace_context=ctx,
@@ -384,7 +381,6 @@ class LangFuseTracer:
             )
         except Exception as exc:
             # Swallow silently — tracing must never break normal execution
-            import logging
             logging.getLogger(__name__).debug(f"Langfuse event error: {exc}")
 
     def log_generation(
@@ -453,7 +449,6 @@ class LangFuseTracer:
         if not self.enabled or not tid:
             return
         try:
-            from langfuse.types import TraceContext
             ctx: TraceContext = {"trace_id": tid}
             obs = self.client.start_observation(
                 trace_context=ctx,
@@ -481,7 +476,6 @@ class LangFuseTracer:
             # from short-lived executor threads.
             self.client.flush()
         except Exception as exc:
-            import logging
             logging.getLogger(__name__).debug(f"Langfuse generation error: {exc}")
 
 
@@ -495,7 +489,6 @@ class LangFuseTracer:
             try:
                 self.client.flush()
             except Exception as exc:
-                import logging
                 logging.getLogger(__name__).debug(f"Langfuse flush error: {exc}")
 
     def log_pipeline_metrics(self, trace_id: str, useful_clauses: int) -> None:
@@ -508,7 +501,6 @@ class LangFuseTracer:
         ratio = cached / max(1, inp)
         cost_per_clause = cost / max(1, useful_clauses)
         
-        import logging
         logger = logging.getLogger(__name__)
         logger.info(
             f"[Pipeline Metrics] trace_id={trace_id} | "
@@ -521,7 +513,6 @@ class LangFuseTracer:
         # Log to Langfuse as custom event
         if self.enabled:
             try:
-                from langfuse.types import TraceContext
                 ctx: TraceContext = {"trace_id": trace_id}
                 self.client.create_event(
                     trace_context=ctx,

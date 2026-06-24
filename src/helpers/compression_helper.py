@@ -1,7 +1,8 @@
 import hashlib
 import re
+import json
 from typing import Any, Dict, List
-from ..models import ClauseSpan
+from src.models import ClauseSpan
 
 def compress_clause_to_payload(clause: ClauseSpan) -> Dict[str, Any]:
     """Compress a ClauseSpan into a structured payload to minimize downstream token usage."""
@@ -64,7 +65,6 @@ def get_compressed_payload_string(clauses: List[ClauseSpan]) -> str:
         if hasattr(c, "subclauses") and c.subclauses:
             p["subclauses"] = [compress_clause_to_payload(sub) for sub in c.subclauses]
             
-    import json
     return json.dumps(payloads, indent=2)
 
 
