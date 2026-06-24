@@ -63,8 +63,12 @@ PAGE_IMAGE_DPI = int(os.getenv("PAGE_IMAGE_DPI", "300"))
 STORE_PAGE_IMAGES = os.getenv("STORE_PAGE_IMAGES", "true").lower() == "true"
 
 # --- Map-Reduce Chunk Size ---
-AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "200"))
- 
+AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "25"))
+ADMINISTRATIVE_CLAUSE_TYPES = {
+    "Document Name", "Parties", "Agreement Date", "Effective Date",
+    "Governing Law", "Severability", "Counterparts"
+}
+
 # --- Clause Extractor Chunk Size ---
 # Default set to 15000 (about 3,500 tokens) to trigger page-boundary group chunking
 CLAUSE_EXTRACTOR_CHUNK_SIZE = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "15000"))

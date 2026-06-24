@@ -31,7 +31,11 @@ class ObligationFinderState(TypedDict):
     loop_count: int
 
 
-def build_obligation_correction_prompt(clauses: list[Any], existing_obligations: list[ObligationItem]) -> str:
+def build_obligation_correction_prompt(
+    clauses: list[Any], 
+    existing_obligations: list[ObligationItem],
+    perspective: str | None = None
+) -> str:
     """Build prompt for correcting/re-extracting missing obligations."""
     clause_lines = []
     for c in clauses:
@@ -45,8 +49,13 @@ def build_obligation_correction_prompt(clauses: list[Any], existing_obligations:
         existing_lines.append(f"- {o.party or 'Anyone'}: {o.obligation} ({o.obligation_type or 'general'})")
     existing_text = "\n".join(existing_lines) if existing_lines else "(None extracted yet)"
 
+    perspective_instruction = ""
+    if perspective:
+        perspective_instruction = f"ROLE / PERSPECTIVE:\nYou are extracting obligations from the perspective of the {perspective.upper()}. Pay extra attention to obligations, deadlines, or payment conditions that apply to or protect the {perspective.upper()}.\n\n"
+
     prompt = (
         f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
+        f"{perspective_instruction}"
         "INSTRUCTIONS:\n"
         "We previously extracted the following obligations from the contract:\n"
         f"{existing_text}\n\n"
@@ -117,14 +126,10 @@ class ObligationFinderAgent:
             return state
 
         try:
-            SKIP_FOR_OBLIGATIONS = {
-                "Document Name", "Parties", "Agreement Date", "Effective Date", 
-                "Governing Law", "Severability", "Counterparts"
-            }
             raw_clauses = state["clause_extraction"].clauses or []
             clauses = [
                 c for c in raw_clauses
-                if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_OBLIGATIONS
+                if str(getattr(c, "cuad_category", "") or "").strip() not in config.ADMINISTRATIVE_CLAUSE_TYPES
                 and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name", "severability", "counterparts"}
             ]
             chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
@@ -287,14 +292,10 @@ class ObligationFinderAgent:
 
     def _get_missed_clauses(self, state: ObligationFinderState) -> list[Any]:
         """Find clauses containing obligation hints that weren't captured."""
-        SKIP_FOR_OBLIGATIONS = {
-            "Document Name", "Parties", "Agreement Date", "Effective Date", 
-            "Governing Law", "Severability", "Counterparts"
-        }
         raw_clauses = state["clause_extraction"].clauses or []
         clauses = [
             c for c in raw_clauses
-            if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_OBLIGATIONS
+            if str(getattr(c, "cuad_category", "") or "").strip() not in config.ADMINISTRATIVE_CLAUSE_TYPES
             and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name", "severability", "counterparts"}
         ]
         obligations = state.get("obligations") or []
@@ -347,63 +348,69 @@ class ObligationFinderAgent:
             return state
 
         try:
-            # Re-query LLM specifically for missed clauses
-            prompt = build_obligation_correction_prompt(missed, state.get("obligations") or [])
+            # Chunk the missed clauses list
+            chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
+            chunks = [missed[i:i + chunk_size] for i in range(0, len(missed), chunk_size)]
             
-            sep = "INSTRUCTIONS:\n"
-            if sep in prompt:
-                system_prompt, user_prompt = prompt.split(sep, 1)
-                system_prompt = system_prompt.replace("SYSTEM:", "").strip()
-                user_prompt = sep + user_prompt
-            else:
-                system_prompt = None
-                user_prompt = prompt
+            for chunk_idx, chunk in enumerate(chunks):
+                logger.info(f"Correcting obligation finder chunk {chunk_idx + 1}/{len(chunks)} (size: {len(chunk)} clauses)")
+                prompt = build_obligation_correction_prompt(chunk, state.get("obligations") or [], state.get("perspective"))
+                
+                sep = "INSTRUCTIONS:\n"
+                if sep in prompt:
+                    system_prompt, user_prompt = prompt.split(sep, 1)
+                    system_prompt = system_prompt.replace("SYSTEM:", "").strip()
+                    user_prompt = sep + user_prompt
+                else:
+                    system_prompt = None
+                    user_prompt = prompt
 
-            metadata = state["clause_extraction"].metadata
-            base_date = getattr(metadata, "effective_date", None) or getattr(metadata, "agreement_date", None) or "2026-06-12"
-            contract_type = getattr(metadata, "contract_type", "NDA") or "NDA"
+                metadata = state["clause_extraction"].metadata
+                base_date = getattr(metadata, "effective_date", None) or getattr(metadata, "agreement_date", None) or "2026-06-12"
+                contract_type = getattr(metadata, "contract_type", "NDA") or "NDA"
 
-            response_text = run_agent_tool_loop(
-                llm_client=llm_client,
-                prompt=user_prompt,
-                tool_names=["date_calculator", "lookup_obligation_standards"],
-                context={
-                    "base_date": base_date,
-                    "contract_type": contract_type
-                },
-                system_prompt=system_prompt
-            )
-            missed_text = "\n".join([str(c) for c in missed])
-            missed_hash = hashlib.sha256(missed_text.encode("utf-8")).hexdigest()
-            logger.debug(
-                f"Obligation Finder Correction LLM response: "
-                f"[CONTRACT TEXT: {len(missed_text)} chars, hash: {missed_hash[:8]}]"
-            )
-            
-            parsed = self._parse_llm_response(response_text)
-            if parsed:
-                obligations_data = []
-                if isinstance(parsed, list):
-                    obligations_data = parsed
-                elif isinstance(parsed, dict):
-                    found_key = None
-                    for k in parsed.keys():
-                        if k.lower() == "obligations":
-                            found_key = k
-                            break
-                    if found_key and isinstance(parsed[found_key], list):
-                        obligations_data = parsed[found_key]
-                    else:
-                        list_keys = [k for k, v in parsed.items() if isinstance(v, list)]
-                        if list_keys:
-                            obligations_data = parsed[list_keys[0]]
-                        elif "obligation" in parsed or "party" in parsed:
-                            obligations_data = [parsed]
+                response_text = run_agent_tool_loop(
+                    llm_client=llm_client,
+                    prompt=user_prompt,
+                    tool_names=["date_calculator", "lookup_obligation_standards"],
+                    context={
+                        "base_date": base_date,
+                        "contract_type": contract_type
+                    },
+                    system_prompt=system_prompt,
+                    max_tokens=config.OBLIGATION_FINDER_MAX_TOKENS
+                )
+                chunk_text = "\n".join([str(c) for c in chunk])
+                chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+                logger.debug(
+                    f"Obligation Finder Correction LLM response chunk {chunk_idx + 1}: "
+                    f"[CONTRACT TEXT: {len(chunk_text)} chars, hash: {chunk_hash[:8]}]"
+                )
+                
+                parsed = self._parse_llm_response(response_text)
+                if parsed:
+                    obligations_data = []
+                    if isinstance(parsed, list):
+                        obligations_data = parsed
+                    elif isinstance(parsed, dict):
+                        found_key = None
+                        for k in parsed.keys():
+                            if k.lower() == "obligations":
+                                found_key = k
+                                break
+                        if found_key and isinstance(parsed[found_key], list):
+                            obligations_data = parsed[found_key]
+                        else:
+                            list_keys = [k for k, v in parsed.items() if isinstance(v, list)]
+                            if list_keys:
+                                obligations_data = parsed[list_keys[0]]
+                            elif "obligation" in parsed or "party" in parsed:
+                                obligations_data = [parsed]
 
-                new_obligations = self._build_obligations_from_llm(obligations_data)
-                if new_obligations:
-                    logger.info(f"Correction loop added {len(new_obligations)} new obligations.")
-                    state["obligations"].extend(new_obligations)
+                    new_obligations = self._build_obligations_from_llm(obligations_data)
+                    if new_obligations:
+                        logger.info(f"Correction loop added {len(new_obligations)} new obligations.")
+                        state["obligations"].extend(new_obligations)
         except Exception as e:
             logger.warning(f"Obligation finder correction loop failed: {e}")
 

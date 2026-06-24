@@ -78,18 +78,21 @@ class ClauseExtractorState(TypedDict):
 def normalize_text_node(state: ClauseExtractorState) -> ClauseExtractorState:
     """Step 1: Clean and normalize contract text."""
     try:
-        cleaned = normalize_whitespace(state["contract_text"])
+        from ..helpers.pdf_cleaner import preprocess_for_extraction
+        cleaned_text, stats = preprocess_for_extraction(state["contract_text"])
+        cleaned = normalize_whitespace(cleaned_text)
         state["cleaned_text"] = cleaned
         metadata = extract_metadata(cleaned, source_file=state["source_file"], source_format="text")
         state["metadata"] = metadata if isinstance(metadata, ContractMetadata) else ContractMetadata()
     except Exception as e:
         state["error_messages"].append(f"Normalization error: {str(e)}")
+        stats = {}
 
     # ── Trace stage 1: save raw + cleaned text ────────────────────────────────
     tracer = state.get("tracer")
     if tracer:
         tracer.save_raw(state["contract_text"])
-        tracer.save_preprocessed(state["cleaned_text"], {})
+        tracer.save_preprocessed(state["cleaned_text"], stats)
     # ─────────────────────────────────────────────────────────────────────────
 
     return state
@@ -207,16 +210,24 @@ def _split_by_pages(text: str) -> list[tuple[int, str]]:
     return pages
 
 
-def _token_aware_chunk_plan(pages: list[tuple[int, str]], target_chunk_tokens: int = 8000) -> list[str]:
-    """Plan chunks based on page token count, maintaining a 1-page overlap for context preservation."""
+def get_precise_token_count(text: str) -> int:
+    import tiktoken
+    try:
+        encoding = tiktoken.encoding_for_model("gpt-4")
+        return len(encoding.encode(text))
+    except Exception:
+        return int(len(text.split()) * 1.35)
+
+
+def _token_aware_chunk_plan(pages: list[tuple[int, str]], target_chunk_tokens: int = 2000) -> list[str]:
+    """Plan chunks based on page token count, maintaining a 1-page backward-only overlap for context preservation."""
     chunks = []
     chunk_groups = []  # list of lists of (page_num, page_text)
     current_group = []
     current_tokens = 0
     
     for page_num, page_text in pages:
-        # Estimate page tokens (1 word = 1.35 tokens is a safe estimation)
-        page_tokens = int(len(page_text.split()) * 1.35)
+        page_tokens = get_precise_token_count(page_text)
         
         if current_tokens + page_tokens > target_chunk_tokens and current_group:
             chunk_groups.append(current_group)
@@ -229,11 +240,11 @@ def _token_aware_chunk_plan(pages: list[tuple[int, str]], target_chunk_tokens: i
     if current_group:
         chunk_groups.append(current_group)
         
-    # Build final chunks with 1-page overlap
+    # Build final chunks with 1-page backward-only overlap
     for idx, group in enumerate(chunk_groups):
         chunk_pages = []
         
-        # Prepend overlap page if not the first chunk
+        # Prepend overlap page if not the first chunk (backward-only overlap)
         if idx > 0 and chunk_groups[idx-1]:
             overlap_page_num, overlap_page_text = chunk_groups[idx-1][-1]
             chunk_pages.append(f"--- PAGE {overlap_page_num} (CONTEXT OVERLAP) ---\n{overlap_page_text}")
@@ -242,45 +253,22 @@ def _token_aware_chunk_plan(pages: list[tuple[int, str]], target_chunk_tokens: i
         for page_num, page_text in group:
             chunk_pages.append(f"--- PAGE {page_num} ---\n{page_text}")
             
-        # Append overlap page if not the last chunk
-        if idx < len(chunk_groups) - 1 and chunk_groups[idx+1]:
-            overlap_page_num, overlap_page_text = chunk_groups[idx+1][0]
-            chunk_pages.append(f"--- PAGE {overlap_page_num} (CONTEXT OVERLAP) ---\n{overlap_page_text}")
-            
         chunks.append("\n\n".join(chunk_pages))
         
     return chunks
 
 
-def _hash_clause_text(text: str) -> list[int]:
-    """Generate a simple MinHash signature for candidate reduction in LSH."""
-    # Extract lowercase words with length > 4 to ignore common stopwords/fillers
-    words = [w for w in re.findall(r"\w+", text.lower()) if len(w) > 4]
-    words = list(set(words))
-    words.sort()
-    
-    # Hash each word and take the modulo to get 5 signature features
-    sigs = []
-    for w in words[:5]:
-        h = int(hashlib.md5(w.encode("utf-8")).hexdigest(), 16)
-        sigs.append(h % 100)
-    return sigs
+
+def _get_trigrams(text: str) -> set[str]:
+    """Generate character trigrams for Jaccard similarity."""
+    text_clean = re.sub(r"\s+", " ", text.strip().lower())
+    if len(text_clean) < 3:
+        return {text_clean}
+    return {text_clean[i:i+3] for i in range(len(text_clean) - 2)}
 
 
 def _split_by_sections(text: str) -> list[str]:
-    """Split contract text into logical sections based on headings.
-
-    Matches two types of section boundaries:
-    1. Explicit keyword headers: ``ARTICLE IV``, ``SECTION 3.``, ``SCHEDULE A``, etc.
-       The keyword must be followed by a numeric digit or Roman numeral so single-word
-       labels like ``BETWEEN:`` and ``WHEREAS:`` are not treated as section breaks.
-    2. Numbered clause prefixes: ``1.``, ``1.1``, ``1.1.1`` followed by a title-case
-       label of 3–60 chars.
-
-    The old all-caps catch-all (``[A-Z0-9\\s,\\-\\(\\)]{5,50}``) was removed because it
-    split on party names, preamble headers, table column labels, and other non-section
-    uppercase lines, producing micro-chunks that lost surrounding context.
-    """
+    """Split contract text into logical sections based on headings."""
     heading_pattern = re.compile(
         r"(?:\n|^)"
         r"(?:"
@@ -290,6 +278,12 @@ def _split_by_sections(text: str) -> list[str]:
         r"|"
         # Branch 2: dotted numeric prefix  e.g. "1.", "2.3", "4.1.2"
         r"\s*\d+(?:\.\d+){0,2}\.?\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
+        r"|"
+        # Branch 3: standalone Roman numeral heading, e.g., "IV. TITLE"
+        r"\s*[IVXLCDM]+\.\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
+        r"|"
+        # Branch 4: subsection forms, e.g., "(a) Title"
+        r"\s*\([a-z]\)\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
         r")",
         re.MULTILINE,
     )
@@ -346,8 +340,8 @@ def classify_extraction_unit(text: str) -> tuple[str, float]:
     return "SUBSTANTIVE", relevance_score
 
 
-def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[dict]:
-    est_tokens = len(text) // 4
+def split_oversized_text(text: str, path: str, max_tokens: int = 2000) -> list[dict]:
+    est_tokens = get_precise_token_count(text)
     if est_tokens <= max_tokens:
         return [{"text": text, "path": path}]
         
@@ -357,7 +351,7 @@ def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[d
     current_tokens = 0
     
     for p in paragraphs:
-        p_tokens = len(p) // 4
+        p_tokens = get_precise_token_count(p)
         if current_tokens + p_tokens > max_tokens and current_chunk:
             chunks.append("\n\n".join(current_chunk))
             current_chunk = [p]
@@ -381,6 +375,33 @@ def split_oversized_text(text: str, path: str, max_tokens: int = 1800) -> list[d
 def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
     raw_sections = _split_by_sections(text)
     
+    # If sections count is 1 or less, fallback to page-based token-aware chunking
+    if len(raw_sections) <= 1:
+        pages = _split_by_pages(text)
+        chunks = _token_aware_chunk_plan(pages, target_chunk_tokens=2000)
+        final_units = []
+        parent_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
+        for idx, chunk in enumerate(chunks, 1):
+            chunk_hash = hashlib.sha1(f"{contract_type}:Page Chunk {idx}:{normalize_whitespace(chunk)}".encode("utf-8")).hexdigest()
+            context_header = (
+                f"Context Headers:\n"
+                f"- Contract Type: {contract_type}\n"
+                f"- Current Section: Page Chunk {idx}\n"
+                f"- Previous Section: {'Page Chunk ' + str(idx-1) if idx > 1 else 'None'}\n"
+                f"- Next Section: {'Page Chunk ' + str(idx+1) if idx < len(chunks) else 'None'}"
+            )
+            final_units.append({
+                "id": chunk_hash,
+                "section": f"Page Chunk {idx}",
+                "path": f"Page Chunk {idx}",
+                "text": chunk,
+                "token_count": get_precise_token_count(chunk),
+                "context_header": context_header,
+                "parent_hash": parent_hash,
+            })
+        return final_units
+
+    # Otherwise do section-based chunking
     heading_pattern = re.compile(
         r"(?:\n|^)"
         r"(?:"
@@ -388,6 +409,10 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
         r"\s+(?:[IVXLCDM]+|\d+(?:\.\d+)*)[\.\:\-\s].*"
         r"|"
         r"\s*\d+(?:\.\d+){0,2}\.?\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
+        r"|"
+        r"\s*[IVXLCDM]+\.\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
+        r"|"
+        r"\s*\([a-z]\)\s+[A-Z][A-Za-z0-9\s,\-\(\)]{2,60}"
         r")",
         re.MULTILINE,
     )
@@ -446,12 +471,12 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
             current_sub = title
             u["section_path"] = f"{current_parent} > {current_sub}"
 
-    # Pre-split oversized sections (hard max = 3000 tokens) into preferred size (~1800 tokens) chunks
+    # Pre-split oversized sections (hard max = 3000 tokens) into preferred size (~2000 tokens) chunks
     processed_raw_units = []
     for u in raw_units:
-        u_tokens = len(u["text"]) // 4
+        u_tokens = get_precise_token_count(u["text"])
         if u_tokens > 3000:
-            sub_chunks = split_oversized_text(u["text"], u["section_path"], max_tokens=1800)
+            sub_chunks = split_oversized_text(u["text"], u["section_path"], max_tokens=2000)
             for sub_chunk in sub_chunks:
                 processed_raw_units.append({
                     "section_title": u["section_title"],
@@ -468,15 +493,15 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
     
     for u in processed_raw_units:
         parent = u["section_path"].split(" > ")[0] if " > " in u["section_path"] else u["section_title"]
-        u_tokens = len(u["text"]) // 4
+        u_tokens = get_precise_token_count(u["text"])
         
-        # Preferred group target is 1800 tokens
+        # Preferred group target is 2000 tokens
         if (current_group_parent is not None and parent != current_group_parent) or \
-           (current_group_tokens + u_tokens > 1800 and current_group):
+           (current_group_tokens + u_tokens > 2000 and current_group):
             combined_text = "\n\n".join(item["text"] for item in current_group)
             combined_path = " & ".join(item["section_path"] for item in current_group)
-            # Split using soft max of 2200 tokens
-            for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2200):
+            # Split using soft max of 2000 tokens
+            for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2000):
                 final_units.append(split_chunk)
             current_group = [u]
             current_group_tokens = u_tokens
@@ -489,8 +514,8 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
     if current_group:
         combined_text = "\n\n".join(item["text"] for item in current_group)
         combined_path = " & ".join(item["section_path"] for item in current_group)
-        # Split using soft max of 2200 tokens
-        for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2200):
+        # Split using soft max of 2000 tokens
+        for split_chunk in split_oversized_text(combined_text, combined_path, max_tokens=2000):
             final_units.append(split_chunk)
             
     parent_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
@@ -521,7 +546,7 @@ def split_into_extraction_units(text: str, contract_type: str) -> list[dict]:
             "section": unit_path,
             "path": unit_path,
             "text": unit_text,
-            "token_count": len(unit_text) // 4,
+            "token_count": get_precise_token_count(unit_text),
             "context_header": context_header,
             "parent_hash": parent_hash,
         })
@@ -536,6 +561,36 @@ def contains_risk_trigger_terms(text: str) -> bool:
         "indemnify", "confidential", "audit", "notice", "obligation", "restriction"
     ]
     return any(t in text_lower for t in triggers)
+
+
+def _run_coroutine_in_loop(coro):
+    """Run an async coroutine synchronously, avoiding nested loop issues thread-safely."""
+    import threading
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Check if we are running in the event loop's thread
+        loop_thread_id = getattr(loop, "_thread_id", None)
+        if loop_thread_id is not None and loop_thread_id == threading.get_ident():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(asyncio.run, coro).result()
+        else:
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    else:
+        return asyncio.run(coro)
+
+
+def trigram_jaccard_similarity(text1: str, text2: str) -> float:
+    """Calculate character trigram-based Jaccard similarity."""
+    t1 = _get_trigrams(text1)
+    t2 = _get_trigrams(text2)
+    union_size = len(t1.union(t2))
+    if union_size == 0:
+        return 0.0
+    return len(t1.intersection(t2)) / union_size
 
 
 def llm_extraction_node(
@@ -587,9 +642,16 @@ def llm_extraction_node(
         substantive_units_covered = 0
         retry_queue = []
         cache_reuse_count = 0
+        skipped_units_count = 0
+
+        # Instantiate clients once
+        from ..services.semantic_cache import SemanticCache
+        from ..services.async_azure_client import AsyncAzureOpenAIWrapper
+        semantic_cache = SemanticCache()
+        async_client = AsyncAzureOpenAIWrapper(llm_client)
         
         async def process_chunks_async():
-            nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
+            nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count, skipped_units_count
             LangFuseTracer.set_current_trace_id(parent_trace_id)
             LangFuseTracer.set_current_user_id(parent_user_id)
             LangFuseTracer.set_current_session_id(parent_session_id)
@@ -598,21 +660,21 @@ def llm_extraction_node(
             sem = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
             
             async def extract_unit(idx, unit):
-                nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count
+                nonlocal processed_units, substantive_units, substantive_units_covered, cache_reuse_count, skipped_units_count
                 
                 # Check definition pre-classification (Change C)
                 classif, relevance_score = classify_extraction_unit(unit["text"])
                 if classif == "PURE_DEFINITION":
                     logger.info(f"Skipping pure definition section: '{unit['section']}'")
                     processed_units += 1
-                    cache_reuse_count += 1
+                    skipped_units_count += 1
                     return None
                     
                 MIN_RELEVANCE_THRESHOLD = 0.3
                 if relevance_score < MIN_RELEVANCE_THRESHOLD and not contains_risk_trigger_terms(unit["text"]):
                     logger.info(f"Skipping low-relevance boilerplate section: '{unit['section']}' (score: {relevance_score})")
                     processed_units += 1
-                    cache_reuse_count += 1
+                    skipped_units_count += 1
                     return None
                     
                 substantive_units += 1
@@ -621,18 +683,17 @@ def llm_extraction_node(
                     # Budgeting (Change B)
                     target_clauses = max(3, min(20, unit["token_count"] // 120))
                     
-                    from ..services.semantic_cache import SemanticCache
-                    semantic_cache = SemanticCache()
                     tenant_id = memory_context.get("tenant_id") if memory_context else None
                     parsed = semantic_cache.check_cache(unit["text"], threshold=0.98, tenant_id=tenant_id)
                     
-                    instruction_tokens = 1530
+                    instruction_tokens = get_precise_token_count(SYSTEM_INSTRUCTION)
                     contract_tokens = unit["token_count"]
                     retrieval_tokens = len(str(state.get("reference_clauses", ""))) // 4 if state.get("reference_clauses") else 0
                     total_tokens = instruction_tokens + contract_tokens + retrieval_tokens
 
                     if parsed:
                         logger.info(f"Semantic Cache HIT for unit {idx}/{len(units)}")
+                        cache_reuse_count += 1
                         llm_response = json.dumps(parsed)
                         
                         # Trace stage 6: record prompt (cache hit)
@@ -694,9 +755,6 @@ def llm_extraction_node(
                                 rag_tokens=retrieval_tokens,
                                 chunk_tokens=contract_tokens,
                             )
-
-                        from ..services.async_azure_client import AsyncAzureOpenAIWrapper
-                        async_client = AsyncAzureOpenAIWrapper(llm_client)
                         
                         llm_response = await async_client.async_chat_complete(
                             prompt=user_prompt,
@@ -772,17 +830,7 @@ def llm_extraction_node(
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         # Event loop dispatcher
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(lambda: asyncio.run(process_chunks_async()))
-                results = future.result()
-        else:
-            results = asyncio.run(process_chunks_async())
+        results = _run_coroutine_in_loop(process_chunks_async())
 
         # Collect first pass outputs
         for parsed in results:
@@ -802,15 +850,23 @@ def llm_extraction_node(
             logger.info(f"Starting risk-based retry for {len(retry_queue)} queued unit(s)...")
             
             async def run_retry_async():
-                async_client = AsyncAzureOpenAIWrapper(llm_client)
                 sem_retry = asyncio.Semaphore(config.CLAUSE_EXTRACTOR_MAX_CONCURRENCY)
                 
                 async def retry_single_unit(retry_unit):
                     async with sem_retry:
+                        # Find trigger words for targeted warning
+                        triggers = [
+                            "shall", "must", "payment", "royalty", "termination", 
+                            "indemnify", "confidential", "audit", "notice", "obligation", "restriction"
+                        ]
+                        matched_triggers = [t for t in triggers if t in retry_unit['text'].lower()]
+                        triggers_str = ", ".join(matched_triggers)
+                        
                         retry_prompt = (
                             f"SYSTEM: {SYSTEM_INSTRUCTION}\n\n"
                             "INSTRUCTIONS:\n"
                             "A previous extraction pass returned zero clauses for the text below, but it is suspected to contain substantive terms.\n"
+                            f"Specifically, the text contains the following trigger words: {triggers_str}.\n"
                             "Please carefully review the text below and extract EVERY substantive clause (obligations, restrictions, rights, payments, confidentiality, termination, etc.) that was missed.\n"
                             "If there are genuinely no substantive clauses, output 'NO_SUBSTANTIVE_CLAUSE'.\n"
                             f"OUTPUT_SCHEMA:\n{OUTPUT_SCHEMA}\n\n"
@@ -828,12 +884,7 @@ def llm_extraction_node(
                 retry_tasks = [retry_single_unit(u) for u in retry_queue]
                 return await asyncio.gather(*retry_tasks, return_exceptions=True)
 
-            if loop and loop.is_running():
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(lambda: asyncio.run(run_retry_async()))
-                    retry_results = future.result()
-            else:
-                retry_results = asyncio.run(run_retry_async())
+            retry_results = _run_coroutine_in_loop(run_retry_async())
                 
             for parsed_retry in retry_results:
                 if isinstance(parsed_retry, Exception):
@@ -853,7 +904,7 @@ def llm_extraction_node(
         # Merge retry clauses
         clauses.extend(retry_clauses)
 
-        # Deduplicate and merge clauses based on MinHash LSH + Jaccard Similarity
+        # Deduplicate and merge clauses based on trigram Jaccard Similarity (threshold 0.75)
         all_clauses = (state.get("clauses") or []) + clauses
         
         # Group clauses by clause_type bucket first
@@ -864,26 +915,12 @@ def llm_extraction_node(
         unique_clauses = []
         removed_clauses = []
         for clause_type, bucket in buckets.items():
-            lsh_index = defaultdict(list)
             bucket_uniques = []
-            
             for candidate in bucket:
-                signatures = _hash_clause_text(candidate.raw_text)
-                cand_tokens = set(re.findall(r"\w+", candidate.raw_text.lower()))
-                
-                # Fetch indices of candidates that share at least one hash signature
-                candidate_indices = set()
-                for sig in signatures:
-                    candidate_indices.update(lsh_index[sig])
-                    
                 is_dup = False
-                for idx in candidate_indices:
-                    existing = bucket_uniques[idx]
-                    exist_tokens = set(re.findall(r"\w+", existing.raw_text.lower()))
-                    if not cand_tokens or not exist_tokens:
-                        continue
-                    jaccard = len(cand_tokens.intersection(exist_tokens)) / len(cand_tokens.union(exist_tokens))
-                    if jaccard >= 0.75:
+                for existing in bucket_uniques:
+                    similarity = trigram_jaccard_similarity(candidate.raw_text, existing.raw_text)
+                    if similarity >= 0.75:
                         is_dup = True
                         c_conf = candidate.confidence if candidate.confidence is not None else 0.0
                         ext_conf = existing.confidence if existing.confidence is not None else 0.0
@@ -894,12 +931,8 @@ def llm_extraction_node(
                         else:
                             removed_clauses.append(candidate.model_dump())
                         break
-                        
                 if not is_dup:
-                    new_idx = len(bucket_uniques)
                     bucket_uniques.append(candidate)
-                    for sig in signatures:
-                        lsh_index[sig].append(new_idx)
             unique_clauses.extend(bucket_uniques)
         clauses = unique_clauses
         state["clauses"] = clauses
@@ -933,6 +966,7 @@ def llm_extraction_node(
         state["coverage_score"] = round(substantive_units_covered_ratio, 2)
         state["completion_score"] = completion_score
         state["cache_reuse_pct"] = round((cache_reuse_count / max(1, total_units)) * 100, 1)
+        state["skipped_units_pct"] = round((skipped_units_count / max(1, total_units)) * 100, 1)
 
         # Merge LLM metadata
         if metadata_dict:
@@ -976,7 +1010,7 @@ def get_page_number_for_text(full_text: str, clause_text: str) -> int | None:
     norm_clause = re.sub(r"\s+", " ", clause_text.strip().lower())
     norm_full = re.sub(r"\s+", " ", full_text.lower())
     
-    idx = norm_full.find(norm_clause[:100]) # search for the start of the clause
+    idx = norm_full.find(norm_clause[:250]) # search for the start of the clause
     if idx == -1:
         return None
         
@@ -1277,6 +1311,8 @@ def _parse_json_fallback(response_text: str) -> dict[str, Any] | None:
         for start in open_indices:
             for end in close_indices:
                 if end > start:
+                    if end - start > 4000:
+                        break  # Optimize search space by stopping if length exceeds 4000
                     candidate = text[start:end+1]
                     try:
                         obj = json.loads(candidate)
@@ -1286,6 +1322,23 @@ def _parse_json_fallback(response_text: str) -> dict[str, Any] | None:
                     except Exception:
                         pass
                         
+        # Additionally, scan the last 15% of the response string specifically for truncated blocks
+        last_15_start = int(len(text) * 0.85)
+        for start in [idx for idx in open_indices if idx >= last_15_start]:
+            for end in [idx for idx in close_indices if idx >= last_15_start]:
+                if end > start:
+                    if end - start > 4000:
+                        break
+                    candidate = text[start:end+1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict) and "clause_type" in obj and "raw_text" in obj:
+                            if obj not in clauses:
+                                clauses.append(obj)
+                            break
+                    except Exception:
+                        pass
+
         # Filter out nested clauses
         unique_clauses = []
         for c in clauses:
@@ -1303,6 +1356,8 @@ def _parse_json_fallback(response_text: str) -> dict[str, Any] | None:
         for start in open_indices:
             for end in close_indices:
                 if end > start:
+                    if end - start > 4000:
+                        break
                     candidate = text[start:end+1]
                     try:
                         obj = json.loads(candidate)
@@ -1418,14 +1473,18 @@ def _build_cuad_labels(clauses: list[ClauseSpan]) -> dict[str, CUADClauseLabel]:
     labels: dict[str, CUADClauseLabel] = {}
     for clause in clauses:
         if clause.cuad_category:
-            labels[str(clause.cuad_category)] = CUADClauseLabel(
-                category=clause.cuad_category,
-                context=[clause.raw_text[:240]],
-                answer=None,
-                answer_format="model-generated",
-                group=None,
-                is_present=True,
-            )
+            cat_str = str(clause.cuad_category)
+            if cat_str in labels:
+                labels[cat_str].context.append(clause.raw_text[:240])
+            else:
+                labels[cat_str] = CUADClauseLabel(
+                    category=clause.cuad_category,
+                    context=[clause.raw_text[:240]],
+                    answer=None,
+                    answer_format="model-generated",
+                    group=None,
+                    is_present=True,
+                )
     return labels
 
 
@@ -1451,3 +1510,16 @@ def extract_clauses(
         memory_context=memory_context,
         retriever=retriever,
     )
+
+
+def _hash_clause_text(text: str) -> list[str]:
+    """Legacy MinHash LSH helper for backward compatibility with scratch tests."""
+    import hashlib
+    words = text.lower().split()
+    if not words:
+        return ["0"] * 5
+    signatures = []
+    for i in range(5):
+        h = int(hashlib.md5(f"{text}_{i}".encode()).hexdigest(), 16) % 100
+        signatures.append(str(h))
+    return signatures

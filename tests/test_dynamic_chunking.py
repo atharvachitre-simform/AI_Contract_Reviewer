@@ -54,11 +54,11 @@ def test_page_chunking():
     
     # Check overlap page inclusion
     assert "PAGE 1" in chunks[0]
-    assert "PAGE 2" in chunks[0]  # page 2 is appended overlap
+    assert "PAGE 2" not in chunks[0]  # No appended overlap (backward-only)
     
     assert "PAGE 1" in chunks[1]  # page 1 is prepended overlap
     assert "PAGE 2" in chunks[1]
-    assert "PAGE 3" in chunks[1]  # page 3 is appended overlap
+    assert "PAGE 3" not in chunks[1]  # No appended overlap (backward-only)
     
     assert "PAGE 2" in chunks[2]  # page 2 is prepended overlap
     assert "PAGE 3" in chunks[2]

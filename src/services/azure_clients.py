@@ -23,7 +23,10 @@ from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.core.credentials import AzureKeyCredential
 from src.services.keyvault import get_secret
 from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.openai import OpenAIClient
+try:
+    from azure.ai.openai import OpenAIClient
+except ImportError:
+    OpenAIClient = None
 import openai as openai_package
 from openai import OpenAI as OpenAIPackageClient
 from openai import AzureOpenAI
