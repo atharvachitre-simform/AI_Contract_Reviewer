@@ -1,5 +1,7 @@
 import pytest
+
 from src.services.services import ContractReviewService
+
 
 def test_scanned_pdf_detection():
     service = ContractReviewService()

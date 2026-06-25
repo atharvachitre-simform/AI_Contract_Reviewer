@@ -4,15 +4,26 @@ Falls back to sync wrapper via thread executor when SDK does not support async.
 """
 
 import asyncio
-import httpx
 from typing import Any, Dict, List
-from .azure_clients import AzureOpenAIWrapper, config, logger
-from tenacity import retry, retry_if_exception, wait_exponential, stop_after_attempt
+
+import httpx
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+from ..helpers.mask import mask_sensitive_text
+from .azure_clients import (
+    AzureOpenAIWrapper,
+    config,
+    logger,
+)
+from .langfuse_tracer import LangFuseTracer
+from .llm_client import BUSINESS_DOMAIN_HEADER, sanitize_prompt_for_content_filter
+
 
 def should_retry_httpx(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
         return e.response.status_code in (429, 500, 502, 503, 504)
     return isinstance(e, (httpx.RequestError, httpx.TimeoutException))
+
 
 class AsyncAzureOpenAIWrapper:
     """Asynchronous wrapper around :class:`AzureOpenAIWrapper`.
@@ -35,7 +46,7 @@ class AsyncAzureOpenAIWrapper:
 
     async def _run_sync_in_executor(self, func, *args, **kwargs):
         # Capture current thread-local trace context in the parent async thread
-        from .langfuse_tracer import LangFuseTracer
+
         tid = LangFuseTracer.get_current_trace_id()
         uid = LangFuseTracer.get_current_user_id()
         sid = LangFuseTracer.get_current_session_id()
@@ -54,8 +65,10 @@ class AsyncAzureOpenAIWrapper:
 
     @retry(
         retry=retry_if_exception(should_retry_httpx),
-        wait=wait_exponential(multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT),
-        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS)
+        wait=wait_exponential(
+            multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT
+        ),
+        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS),
     )
     async def async_chat_complete(
         self,
@@ -72,14 +85,15 @@ class AsyncAzureOpenAIWrapper:
             raise RuntimeError("Azure OpenAI client is not configured for async completions")
 
         # ── Proactive sanitization (mirrors sync _execute_chat_complete) ─────
-        from .azure_clients import sanitize_prompt_for_content_filter, BUSINESS_DOMAIN_HEADER
-        from ..helpers.mask import mask_sensitive_text
+
         prompt = sanitize_prompt_for_content_filter(prompt)
         if system_prompt:
             # Keyword redaction only — BUSINESS_DOMAIN_HEADER is prepended below,
             # so using full sanitize_prompt_for_content_filter here would double-prefix.
             user_keywords = getattr(config, "SENSITIVE_KEYWORDS", []) or []
-            system_prompt = mask_sensitive_text(system_prompt, keywords=user_keywords or None, use_builtin=True)
+            system_prompt = mask_sensitive_text(
+                system_prompt, keywords=user_keywords or None, use_builtin=True
+            )
 
         # Build messages identical to sync version — system MUST be first
         if system_prompt:
@@ -88,7 +102,10 @@ class AsyncAzureOpenAIWrapper:
             else:
                 sys_content = system_prompt
         else:
-            sys_content = BUSINESS_DOMAIN_HEADER + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+            sys_content = (
+                BUSINESS_DOMAIN_HEADER
+                + "You are a contract review assistant that extracts, classifies, and summarizes contract clauses."
+            )
         messages = [{"role": "system", "content": sys_content}, {"role": "user", "content": prompt}]
 
         # Groq async via httpx
@@ -110,7 +127,7 @@ class AsyncAzureOpenAIWrapper:
                 content = data["choices"][0]["message"]["content"] or ""
                 # Log to Langfuse using SDK v3 API (log_generation)
                 try:
-                    from .langfuse_tracer import LangFuseTracer
+
                     tracer = LangFuseTracer()
                     trace_id = tracer.get_current_trace_id()
                     if trace_id and tracer.enabled:
@@ -144,8 +161,10 @@ class AsyncAzureOpenAIWrapper:
 
     @retry(
         retry=retry_if_exception(should_retry_httpx),
-        wait=wait_exponential(multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT),
-        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS)
+        wait=wait_exponential(
+            multiplier=config.RETRY_MULTIPLIER, min=config.RETRY_MIN_WAIT, max=config.RETRY_MAX_WAIT
+        ),
+        stop=stop_after_attempt(config.RETRY_MAX_ATTEMPTS),
     )
     async def async_chat_complete_multimodal(
         self,
@@ -157,7 +176,9 @@ class AsyncAzureOpenAIWrapper:
         Uses Groq via httpx when applicable; otherwise runs the sync method in a thread pool.
         """
         if not self.is_configured():
-            raise RuntimeError("Azure OpenAI client is not configured for async multimodal completions")
+            raise RuntimeError(
+                "Azure OpenAI client is not configured for async multimodal completions"
+            )
 
         if self.use_groq and self.groq_client is not None:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -175,7 +196,7 @@ class AsyncAzureOpenAIWrapper:
                 content = data["choices"][0]["message"]["content"] or ""
                 # Log to Langfuse using SDK v3 API (log_generation)
                 try:
-                    from .langfuse_tracer import LangFuseTracer
+
                     tracer = LangFuseTracer()
                     trace_id = tracer.get_current_trace_id()
                     if trace_id and tracer.enabled:
@@ -194,7 +215,9 @@ class AsyncAzureOpenAIWrapper:
                             trace_id=trace_id,
                         )
                 except Exception as lf_err:
-                    logger.debug(f"Failed to log generation to Langfuse in async multimodal: {lf_err}")
+                    logger.debug(
+                        f"Failed to log generation to Langfuse in async multimodal: {lf_err}"
+                    )
                 return content
 
         # Fallback to sync multimodal method

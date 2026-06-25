@@ -50,27 +50,22 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     result_expires=int(os.getenv("CELERY_PROGRESS_EVENT_TTL", "3600")),
-
     # Time limits — soft limit triggers SoftTimeLimitExceeded (catchable),
     # hard limit sends SIGKILL to the task thread.
     task_soft_time_limit=540,  # 9 minutes — log/clean up gracefully
-    task_time_limit=600,       # 10 minutes — hard kill
-
+    task_time_limit=600,  # 10 minutes — hard kill
     # Fairness: one task per execution slot at a time.
     # LLM pipeline tasks are I/O-bound and long-running; prefetch > 1 would
     # cause a fast worker to hoard tasks from a slow queue.
     worker_prefetch_multiplier=1,
-
     # Crash-safe delivery: ack only after the task function returns.
     # Combined with reject_on_worker_lost, this re-queues tasks on worker crash.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
-
     # Routing: all pipeline tasks go to the dedicated "contract_review" queue.
     task_routes={
         "contract_reviewer.review_contract": {"queue": "contract_review"},
     },
-
     # Namespaced transport options — Redis Cluster compatible (no DB numbers).
     broker_transport_options={
         "global_keyprefix": "celery:broker:",

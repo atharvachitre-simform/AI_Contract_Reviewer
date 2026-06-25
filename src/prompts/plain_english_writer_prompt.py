@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 SYSTEM_INSTRUCTION = (
     "CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.\n\n"
@@ -45,7 +44,12 @@ PROMPT_GUIDELINES = (
 )
 
 
-def build_plain_english_writer_prompt(clauses_text: str, risks_text: str = "", red_flags_text: str = "", perspective: str | None = None) -> str:
+def build_plain_english_writer_prompt(
+    clauses_text: str,
+    risks_text: str = "",
+    red_flags_text: str = "",
+    perspective: str | None = None,
+) -> str:
     """Build a prompt for the plain English writer agent."""
     context_section = ""
     if risks_text or red_flags_text:

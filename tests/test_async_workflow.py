@@ -4,19 +4,20 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.models import (
-    ProcessingStatus,
     ClauseExtractorOutput,
     ObligationFinderOutput,
-    RedFlagDetectorOutput,
-    RiskScorerOutput,
     PlainEnglishWriterOutput,
+    ProcessingStatus,
+    RedFlagDetectorOutput,
     ReportAssemblerOutput,
+    RiskScorerOutput,
 )
 from src.workflows.async_workflow import AsyncContractReviewWorkflow
 
 
 def test_async_workflow_run_streaming_imports_and_flow():
     """Verify that run_streaming runs without ModuleNotFoundError on step loads."""
+
     async def run_test():
         workflow = AsyncContractReviewWorkflow()
 
@@ -24,7 +25,9 @@ def test_async_workflow_run_streaming_imports_and_flow():
         dummy_obligation_output = ObligationFinderOutput(obligations=[])
         dummy_red_flag_output = RedFlagDetectorOutput(red_flags=[])
         dummy_risk_output = RiskScorerOutput(issues=[])
-        dummy_plain_output = PlainEnglishWriterOutput(executive_summary="Summary", clause_summaries=[])
+        dummy_plain_output = PlainEnglishWriterOutput(
+            executive_summary="Summary", clause_summaries=[]
+        )
         dummy_report_output = ReportAssemblerOutput(report_summary="Final Report")
 
         # Mock all agent functions imported dynamically in run_streaming
@@ -44,12 +47,15 @@ def test_async_workflow_run_streaming_imports_and_flow():
 
         # Apply patches
         patches = [
-            patch("src.workflows.async_workflow.RedisCheckpointer", return_value=mock_checkpointer),
+            patch("src.checkpointing.redis_checkpointer.RedisCheckpointer", return_value=mock_checkpointer),
             patch("src.agents.clause_extractor.extract_clauses", mock_extract_clauses),
             patch("src.agents.obligation_finder.find_obligations", mock_find_obligations),
             patch("src.agents.red_flag_detector.detect_red_flags", mock_detect_red_flags),
             patch("src.agents.risk_scorer.score_risks", mock_score_risks),
-            patch("src.agents.plain_english_writer.generate_plain_english", mock_generate_plain_english),
+            patch(
+                "src.agents.plain_english_writer.generate_plain_english",
+                mock_generate_plain_english,
+            ),
             patch("src.agents.report_assembler.assemble_report", mock_assemble_report),
         ]
 
@@ -70,7 +76,7 @@ def test_async_workflow_run_streaming_imports_and_flow():
             assert events[-1]["step"] == "done"
             assert events[-1]["status"] == "completed"
             assert "state" in events[-1]
-            
+
             # Verify the structure of the final state
             final_state = events[-1]["state"]
             assert final_state["contract_id"] == "test-contract-123"
@@ -84,6 +90,7 @@ def test_async_workflow_run_streaming_imports_and_flow():
 
 def test_async_workflow_resume_from_checkpoint():
     """Verify that run_streaming can resume from checkpointer load data."""
+
     async def run_test():
         workflow = AsyncContractReviewWorkflow()
 
@@ -91,19 +98,23 @@ def test_async_workflow_resume_from_checkpoint():
         dummy_obligation_output = ObligationFinderOutput(obligations=[])
         dummy_red_flag_output = RedFlagDetectorOutput(red_flags=[])
         dummy_risk_output = RiskScorerOutput(issues=[])
-        dummy_plain_output = PlainEnglishWriterOutput(executive_summary="Summary", clause_summaries=[])
+        dummy_plain_output = PlainEnglishWriterOutput(
+            executive_summary="Summary", clause_summaries=[]
+        )
         dummy_report_output = ReportAssemblerOutput(report_summary="Final Report")
 
         # Setup checkpointer to return all steps as completed
         mock_checkpointer = MagicMock()
-        mock_checkpointer.completed_steps = AsyncMock(return_value=[
-            "clause_extraction",
-            "obligation_finding",
-            "red_flag_detection",
-            "risk_scoring",
-            "plain_english",
-            "final_report",
-        ])
+        mock_checkpointer.completed_steps = AsyncMock(
+            return_value=[
+                "clause_extraction",
+                "obligation_finding",
+                "red_flag_detection",
+                "risk_scoring",
+                "plain_english",
+                "final_report",
+            ]
+        )
         mock_checkpointer.save = AsyncMock()
         mock_checkpointer.verify_or_update_hash = AsyncMock(return_value=True)
 
@@ -129,7 +140,7 @@ def test_async_workflow_resume_from_checkpoint():
         mock_extract_clauses = MagicMock()
 
         patches = [
-            patch("src.workflows.async_workflow.RedisCheckpointer", return_value=mock_checkpointer),
+            patch("src.checkpointing.redis_checkpointer.RedisCheckpointer", return_value=mock_checkpointer),
             patch("src.agents.clause_extractor.extract_clauses", mock_extract_clauses),
         ]
 

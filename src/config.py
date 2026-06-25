@@ -33,9 +33,15 @@ PLAIN_ENGLISH_WRITER_CLAUSES_LIMIT = int(os.getenv("PLAIN_ENGLISH_WRITER_CLAUSES
 REPORT_ASSEMBLER_CLAUSES_LIMIT = int(os.getenv("REPORT_ASSEMBLER_CLAUSES_LIMIT", "15"))
 
 # Enable masking of sensitive words in PDF content (default: on — proactively prevents Azure content filter hits)
-ENABLE_SENSITIVE_MASKING = os.getenv("ENABLE_SENSITIVE_MASKING", "true").lower() in ("1", "true", "yes")
+ENABLE_SENSITIVE_MASKING = os.getenv("ENABLE_SENSITIVE_MASKING", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 # Comma‑separated list of keywords to redact (e.g., "playboy,adult,violence")
-SENSITIVE_KEYWORDS = [kw.strip() for kw in os.getenv("SENSITIVE_KEYWORDS", "").split(",") if kw.strip()]
+SENSITIVE_KEYWORDS = [
+    kw.strip() for kw in os.getenv("SENSITIVE_KEYWORDS", "").split(",") if kw.strip()
+]
 
 # --- Tenacity Retry Settings ---
 RETRY_MULTIPLIER = float(os.getenv("RETRY_MULTIPLIER", "1.0"))
@@ -65,8 +71,13 @@ STORE_PAGE_IMAGES = os.getenv("STORE_PAGE_IMAGES", "true").lower() == "true"
 # --- Map-Reduce Chunk Size ---
 AGENT_PROCESSING_CHUNK_SIZE = int(os.getenv("AGENT_PROCESSING_CHUNK_SIZE", "25"))
 ADMINISTRATIVE_CLAUSE_TYPES = {
-    "Document Name", "Parties", "Agreement Date", "Effective Date",
-    "Governing Law", "Severability", "Counterparts"
+    "Document Name",
+    "Parties",
+    "Agreement Date",
+    "Effective Date",
+    "Governing Law",
+    "Severability",
+    "Counterparts",
 }
 
 # --- Clause Extractor Chunk Size ---
@@ -79,7 +90,9 @@ AZURE_RPM_LIMIT = int(os.getenv("AZURE_RPM_LIMIT", "600"))
 
 # --- Groq Configuration ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile").strip()# --- File Upload Limits ---
+GROQ_DEFAULT_MODEL = os.getenv(
+    "GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"
+).strip()  # --- File Upload Limits ---
 MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "50"))
 
 # --- Extraction Trace Mode ---
@@ -101,3 +114,11 @@ CELERY_WORKER_MAX_CONCURRENCY = int(os.getenv("CELERY_WORKER_MAX_CONCURRENCY", "
 CELERY_WORKER_MIN_CONCURRENCY = int(os.getenv("CELERY_WORKER_MIN_CONCURRENCY", "1"))
 # TTL (seconds) for the Redis List event buffer used by the SSE relay (default: 1 hour)
 CELERY_PROGRESS_EVENT_TTL = int(os.getenv("CELERY_PROGRESS_EVENT_TTL", "3600"))
+
+# --- Magic Constants (Decomposed) ---
+DEFAULT_BATCH_MODEL = os.getenv("DEFAULT_BATCH_MODEL", "gpt-4o")
+CLAUSE_EXTRACTION_MAX_TOKENS_LIMIT = int(os.getenv("CLAUSE_EXTRACTION_MAX_TOKENS_LIMIT", "4000"))
+TRUNCATION_SCAN_FACTOR = float(os.getenv("TRUNCATION_SCAN_FACTOR", "0.85"))
+DEFAULT_CONFIDENCE_SCORE = float(os.getenv("DEFAULT_CONFIDENCE_SCORE", "0.5"))
+BATCH_TTL_SECONDS = int(os.getenv("BATCH_TTL_SECONDS", "86400"))
+

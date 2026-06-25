@@ -13,9 +13,10 @@ import asyncio
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import redis.asyncio as aioredis
+
 from src.fastapi_app import _celery_sse_relay
 
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
@@ -28,7 +29,9 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-async def _collect_sse(contract_id: str, last_event_id: int = 0, buffered_events=None, live_events=None):
+async def _collect_sse(
+    contract_id: str, last_event_id: int = 0, buffered_events=None, live_events=None
+):
     """
     Drive _celery_sse_relay with mocked Redis and collect yielded SSE strings.
 
@@ -89,9 +92,7 @@ class TestCelerySSERelay(unittest.TestCase):
         results, mock_redis = _run_async(_run())
 
         # Verify LRANGE was called with offset=1
-        mock_redis.lrange.assert_called_once_with(
-            "celery:progress:test-contract", 1, -1
-        )
+        mock_redis.lrange.assert_called_once_with("celery:progress:test-contract", 1, -1)
 
         # Should only contain events from offset 1 onward
         self.assertEqual(len(results), 2)
@@ -130,8 +131,11 @@ class TestCelerySSERelay(unittest.TestCase):
 
         _run_async(_run())
 
-        self.assertEqual(call_order, ["subscribe", "lrange"],
-                         f"Expected subscribe→lrange order, got: {call_order}")
+        self.assertEqual(
+            call_order,
+            ["subscribe", "lrange"],
+            f"Expected subscribe→lrange order, got: {call_order}",
+        )
 
     def test_relay_terminates_on_done_event(self):
         """Relay should stop yielding after receiving the 'done' event."""
@@ -177,7 +181,9 @@ class TestCelerySSERelay(unittest.TestCase):
 
 def aiter(iterable):
     """Helper: convert a regular iterable to an async iterator."""
+
     async def _gen():
         for item in iterable:
             yield item
+
     return _gen()

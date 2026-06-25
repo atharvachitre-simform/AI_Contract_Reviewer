@@ -1,5 +1,5 @@
 """Checkpointing package for AI Contract Reviewer."""
 
-from .redis_checkpointer import RedisCheckpointer, PIPELINE_STEPS
+from .redis_checkpointer import PIPELINE_STEPS, RedisCheckpointer
 
 __all__ = ["RedisCheckpointer", "PIPELINE_STEPS"]

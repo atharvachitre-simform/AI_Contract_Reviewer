@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 import redis.asyncio as aioredis
+
 from src import config
 from src.worker.celery_app import celery_app
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 SYSTEM_INSTRUCTION = (
     "CONTEXT: Professional contract review analysis. Evaluates commercial parameters and risk factors of the agreement for commercial suitability.\n\n"
@@ -69,7 +68,7 @@ def build_report_assembler_prompt(
     completeness_section = ""
     if completeness_summary:
         completeness_section = f"5. EXTRACTION COMPLETENESS STATUS:\n{completeness_summary}\n\n"
-    
+
     perspective_instruction = ""
     if perspective:
         upper_p = perspective.upper()

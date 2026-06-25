@@ -10,11 +10,13 @@ These tests verify:
 
 from __future__ import annotations
 
-import os
-import pytest
 import base64
 import json
+import os
 from unittest.mock import MagicMock
+
+import pytest
+
 from src.middleware.rate_limiter import get_user_id_or_ip
 
 # Force in-memory storage so tests don't require a live Redis
@@ -29,6 +31,7 @@ os.environ.setdefault("SUPABASE_KEY", "")
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
 
 from fastapi.testclient import TestClient
+
 from src.fastapi_app import app
 
 client = TestClient(app, raise_server_exceptions=False)
@@ -36,6 +39,7 @@ client = TestClient(app, raise_server_exceptions=False)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _auth_headers(user_id: str = "test-user-001") -> dict:
     """Fabricate a minimal (unsigned) JWT bearer token for a given user_id.
@@ -51,6 +55,7 @@ def _auth_headers(user_id: str = "test-user-001") -> dict:
 # ---------------------------------------------------------------------------
 # Rate limit — /api/v1/review/stream
 # ---------------------------------------------------------------------------
+
 
 class TestReviewStreamRateLimit:
     """Limit is 3/minute (set via env var above for fast testing)."""
@@ -91,9 +96,9 @@ class TestReviewStreamRateLimit:
             headers=headers,
         )
         if resp.status_code == 429:
-            assert "retry-after" in {k.lower() for k in resp.headers}, (
-                "429 response must include Retry-After header"
-            )
+            assert "retry-after" in {
+                k.lower() for k in resp.headers
+            }, "429 response must include Retry-After header"
 
     def test_different_users_have_independent_buckets(self):
         """Exhausting user A's limit must not affect user B."""
@@ -106,14 +111,15 @@ class TestReviewStreamRateLimit:
 
         # User B should still be within their limit
         status_b = self._post_stream(headers_b)
-        assert status_b != 429, (
-            f"User B was rate-limited after User A exhausted their bucket (got {status_b})"
-        )
+        assert (
+            status_b != 429
+        ), f"User B was rate-limited after User A exhausted their bucket (got {status_b})"
 
 
 # ---------------------------------------------------------------------------
 # Rate limit — /api/v1/chat
 # ---------------------------------------------------------------------------
+
 
 class TestChatRateLimit:
     """Limit is 5/minute (set via env var above for fast testing)."""
@@ -135,6 +141,7 @@ class TestChatRateLimit:
 # ---------------------------------------------------------------------------
 # Rate limiter key function unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestRateLimiterKeyFunction:
     """Unit-test the key extraction logic without invoking the full app."""

@@ -1,6 +1,8 @@
 import sys
+
 sys.path.insert(0, '.')
 import re
+
 from src.helpers.contract_analysis import normalize_whitespace
 
 with open('scratch/contract_46ce978f8a9180f4.txt', 'r') as f:
@@ -33,6 +35,7 @@ while i < len(parts):
         i += 1
 
 from collections import Counter
+
 line_counts = Counter()
 _WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
 

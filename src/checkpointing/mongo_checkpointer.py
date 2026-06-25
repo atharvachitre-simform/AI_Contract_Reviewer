@@ -1,9 +1,11 @@
-import os
 import logging
+import os
 from typing import Any, Dict, List
+
 from pymongo import MongoClient
 
 logger = logging.getLogger(__name__)
+
 
 class MongoCheckpointerStore:
     """Session-wise MongoDB store for workflow checkpoints."""
@@ -13,7 +15,7 @@ class MongoCheckpointerStore:
         self.client = None
         self.db = None
         self.collection = None
-        
+
         if self.uri:
             try:
                 # Set a short connection timeout so it fails fast if server is unreachable
@@ -21,12 +23,14 @@ class MongoCheckpointerStore:
                 # Parse DB from URI or default to "ai_contract_reviewer"
                 self.db = self.client.get_database("ai_contract_reviewer")
                 self.collection = self.db["stage_checkpoints"]
-                
+
                 # Check connection
                 self.client.admin.command("ping")
                 logger.info("MongoDB checkpointer connected successfully.")
             except Exception as e:
-                logger.warning(f"MongoDB connection failed: {e}. Checkpointer will skip MongoDB writes.")
+                logger.warning(
+                    f"MongoDB connection failed: {e}. Checkpointer will skip MongoDB writes."
+                )
                 self.client = None
                 self.db = None
                 self.collection = None
@@ -45,7 +49,7 @@ class MongoCheckpointerStore:
                     "contract_id": contract_id,
                     "step": step,
                     "state_data": state_data,
-                    "updated_at": {"$currentDate": {"type": "timestamp"}}
+                    "updated_at": {"$currentDate": {"type": "timestamp"}},
                 }
             }
             self.collection.update_one(query, update, upsert=True)

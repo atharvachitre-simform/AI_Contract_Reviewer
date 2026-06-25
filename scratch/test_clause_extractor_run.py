@@ -1,11 +1,13 @@
 import sys
+
 sys.path.insert(0, '.')
 import json
 import logging
-from src.services.azure_clients import AzureOpenAIWrapper
+
 from src import config
-from src.prompts.clause_extractor_prompt import build_clause_extractor_prompt
 from src.agents.clause_extractor import ClauseExtractorAgent
+from src.prompts.clause_extractor_prompt import build_clause_extractor_prompt
+from src.services.azure_clients import AzureOpenAIWrapper
 
 logging.basicConfig(level=logging.INFO)
 

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import re
 from typing import Any
+
 from ..models import ClauseSpan
 
+
 def calculate_coverage(
-    contract_text: str,
-    clauses: list[ClauseSpan],
-    page_count: int | None = None
+    contract_text: str, clauses: list[ClauseSpan], page_count: int | None = None
 ) -> dict[str, Any]:
     """Calculate completeness score and highest clause number.
-    
+
     Returns a dict with:
       - coverage_score: float (0.0 to 1.0)
       - highest_clause_number: int | None
@@ -34,8 +34,10 @@ def calculate_coverage(
     # Extract clause numbers from clause section references or types
     clause_numbers = []
     # Match numbers either preceded by a clause/section keyword or at the very start of the string
-    number_pattern = re.compile(r'\b(?:clause|section|article|para|part|§)\s*(\d+)\b|^\s*(\d+)\b', re.IGNORECASE)
-    
+    number_pattern = re.compile(
+        r"\b(?:clause|section|article|para|part|§)\s*(\d+)\b|^\s*(\d+)\b", re.IGNORECASE
+    )
+
     # We only inspect top-level clauses
     top_level_count = len(clauses)
     for clause in clauses:
@@ -48,7 +50,9 @@ def calculate_coverage(
                         if val:
                             num = int(val)
                             # Exclude likely years, large numbers, or common durations unless explicitly labeled
-                            if match.group(2):  # matched start of string without section/clause prefix keyword
+                            if match.group(
+                                2
+                            ):  # matched start of string without section/clause prefix keyword
                                 if num > 100 or num in {30, 60, 90, 180, 365}:
                                     continue
                             clause_numbers.append(num)
@@ -56,11 +60,11 @@ def calculate_coverage(
                         pass
 
     highest_num = max(clause_numbers) if clause_numbers else None
-    
+
     # Determine completeness
     is_complete = True
     notes = "Extraction completeness appears normal."
-    
+
     # completeness score calculation
     if highest_num and highest_num > 0:
         coverage_ratio = min(1.0, top_level_count / highest_num)

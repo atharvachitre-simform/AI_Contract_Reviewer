@@ -13,15 +13,15 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
-import hashlib
 
 from src import config
-from src.services.redis_client import AsyncRedisClient
 from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
+from src.services.redis_client import AsyncRedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,9 @@ class RedisCheckpointer:
         if await self._is_redis_up():
             try:
                 await self._redis.setex(self._redis_key(step), self.ttl, blob)
-                logger.debug(f"Checkpointer: saved step '{step}' to Redis for contract '{self.contract_id}'")
+                logger.debug(
+                    f"Checkpointer: saved step '{step}' to Redis for contract '{self.contract_id}'"
+                )
             except Exception as e:
                 logger.warning(f"Checkpointer: Redis write failed for step '{step}': {e}")
 
@@ -227,7 +229,9 @@ class RedisCheckpointer:
         meta_path = self._local_dir / "metadata.json"
         if not stored_hash and meta_path.exists():
             try:
-                stored_hash = json.loads(meta_path.read_text(encoding="utf-8")).get("contract_text_hash")
+                stored_hash = json.loads(meta_path.read_text(encoding="utf-8")).get(
+                    "contract_text_hash"
+                )
             except Exception:
                 pass
 
@@ -250,7 +254,9 @@ class RedisCheckpointer:
             return True
 
         # Hashes differ! Delete everything for this contract_id
-        logger.warning(f"Checkpointer: contract text hash changed for contract '{self.contract_id}'. Starting fresh.")
+        logger.warning(
+            f"Checkpointer: contract text hash changed for contract '{self.contract_id}'. Starting fresh."
+        )
         await self.delete()
 
         # Delete metadata too

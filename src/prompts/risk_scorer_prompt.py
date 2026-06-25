@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Any
-from .system_context import BUSINESS_DOMAIN_HEADER
+
 from ..helpers.compression_helper import compress_guideline_text
+from .system_context import BUSINESS_DOMAIN_HEADER
 
 
 def build_risk_scorer_prompt(
@@ -15,13 +16,13 @@ def build_risk_scorer_prompt(
 ) -> str:
     """
     Build a GPT-4.1 structured prompt for risk scoring.
-    
+
     Args:
         clauses_text: Contract clauses to score for risk
         reference_risks: Optional reference risk patterns from knowledge base
         memory_context: Optional prior review history memory context
         perspective: Optional perspective role (Customer, Vendor, Neutral)
-        
+
     Returns:
         Structured prompt string following GPT-4.1 best practices
     """
@@ -37,10 +38,12 @@ def build_risk_scorer_prompt(
                 compressed_val = compress_guideline_text(val)
                 truncated = compressed_val[:250]
                 ref_list.append(f"- {risk_type}: {truncated}")
-        
+
         if ref_list:
-            reference_section = "\n\nREFERENCE RISK PATTERNS FROM SIMILAR CONTRACTS:\n" + "\n".join(ref_list)
-    
+            reference_section = "\n\nREFERENCE RISK PATTERNS FROM SIMILAR CONTRACTS:\n" + "\n".join(
+                ref_list
+            )
+
     perspective_instruction = ""
     if perspective:
         upper_p = perspective.upper()
@@ -71,14 +74,16 @@ def build_risk_scorer_prompt(
         lt = memory_context.get("long_term") or {}
         overall_risk = st.get("overall_risk_level") or lt.get("overall_risk")
         key_risks = st.get("summary") or lt.get("review_summary")
-        
+
         if overall_risk or key_risks:
             prior_context_block = "PRIOR REVIEW CONTEXT:\n"
             if overall_risk:
                 prior_context_block += f"- Previous overall risk score/level: {overall_risk}\n"
             if key_risks:
                 prior_context_block += f"- Previous main findings: {key_risks}\n"
-            prior_context_block += "Check whether these risks have been mitigated in this version of the contract.\n\n"
+            prior_context_block += (
+                "Check whether these risks have been mitigated in this version of the contract.\n\n"
+            )
 
     prompt = f"""{BUSINESS_DOMAIN_HEADER}
 ROLE: You are a contract risk assessment agent specialized in identifying financial, legal, operational, and compliance risks in commercial agreements.

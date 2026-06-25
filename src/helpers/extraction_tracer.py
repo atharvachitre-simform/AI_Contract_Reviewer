@@ -40,7 +40,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,10 +50,10 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_ROOT = Path("artifacts/extraction_runs")
 
 # FAIL thresholds
-_PREPROCESS_REMOVED_PCT_FAIL = 20.0   # % of chars removed considered suspicious
-_RETRIEVAL_ZERO_FAIL = True            # fail if 0 RAG examples returned
-_POSTPROCESS_DROP_FAIL = 10.0         # % of clauses lost in dedup is suspicious
-_CHUNK_TOKEN_HARD_LIMIT = 12_000      # tokens per chunk (est.) — warn above this
+_PREPROCESS_REMOVED_PCT_FAIL = 20.0  # % of chars removed considered suspicious
+_RETRIEVAL_ZERO_FAIL = True  # fail if 0 RAG examples returned
+_POSTPROCESS_DROP_FAIL = 10.0  # % of clauses lost in dedup is suspicious
+_CHUNK_TOKEN_HARD_LIMIT = 12_000  # tokens per chunk (est.) — warn above this
 
 
 class _NoOpTracer:
@@ -62,15 +61,23 @@ class _NoOpTracer:
 
     enabled = False
 
-    def save_raw(self, text: str) -> None: pass
-    def save_preprocessed(self, text: str, stats: dict) -> None: pass
-    def save_chunks(self, chunks: list[str], sections: list[str] | None = None) -> None: pass
+    def save_raw(self, text: str) -> None:
+        pass
+
+    def save_preprocessed(self, text: str, stats: dict) -> None:
+        pass
+
+    def save_chunks(self, chunks: list[str], sections: list[str] | None = None) -> None:
+        pass
+
     def record_retrieval(
         self,
         retrieved: list[dict],
         filtered: list[dict],
         used: list[dict],
-    ) -> None: pass
+    ) -> None:
+        pass
+
     def record_prompt(
         self,
         chunk_idx: int,
@@ -79,7 +86,9 @@ class _NoOpTracer:
         task_tokens: int = 0,
         rag_tokens: int = 0,
         chunk_tokens: int = 0,
-    ) -> None: pass
+    ) -> None:
+        pass
+
     def record_llm(
         self,
         chunk_idx: int,
@@ -89,15 +98,22 @@ class _NoOpTracer:
         clauses_extracted: int,
         categories: list[str] | None = None,
         avg_confidence: float | None = None,
-    ) -> None: pass
+    ) -> None:
+        pass
+
     def record_postprocess(
         self,
         before_dedupe: int,
         after_dedupe: int,
         removed_clauses: list[dict] | None = None,
-    ) -> None: pass
-    def save_final(self, output_dict: dict) -> None: pass
-    def write_metrics(self) -> None: pass
+    ) -> None:
+        pass
+
+    def save_final(self, output_dict: dict) -> None:
+        pass
+
+    def write_metrics(self) -> None:
+        pass
 
 
 class ExtractionTracer:
@@ -169,12 +185,14 @@ class ExtractionTracer:
         sections_payload: list[dict] = []
         if sections:
             for idx, s in enumerate(sections):
-                sections_payload.append({
-                    "section_idx": idx,
-                    "first_line": s.split("\n")[0].strip()[:120] if s.strip() else "",
-                    "char_count": len(s),
-                    "est_tokens": len(s) // 4,
-                })
+                sections_payload.append(
+                    {
+                        "section_idx": idx,
+                        "first_line": s.split("\n")[0].strip()[:120] if s.strip() else "",
+                        "char_count": len(s),
+                        "est_tokens": len(s) // 4,
+                    }
+                )
         self._write_json("03_sections.json", sections_payload)
 
         # Build per-chunk metadata
@@ -183,7 +201,9 @@ class ExtractionTracer:
         for i, chunk in enumerate(chunks):
             char_count = len(chunk)
             est_tokens = char_count // 4
-            first_line = next((ln.strip() for ln in chunk.split("\n") if ln.strip()), f"chunk_{i+1}")[:80]
+            first_line = next(
+                (ln.strip() for ln in chunk.split("\n") if ln.strip()), f"chunk_{i+1}"
+            )[:80]
 
             meta = {
                 "chunk_id": i + 1,
@@ -192,7 +212,7 @@ class ExtractionTracer:
                 "token_count_est": est_tokens,
                 "start_offset": cumulative_offset,
                 "end_offset": cumulative_offset + char_count,
-                "text": chunk
+                "text": chunk,
             }
             chunk_meta.append(meta)
             self._chunk_metrics.append(meta)
@@ -200,16 +220,23 @@ class ExtractionTracer:
 
             # Fail if chunk is too large
             if est_tokens > _CHUNK_TOKEN_HARD_LIMIT:
-                flag = f"CHUNK_{i+1}_OVERSIZED: ~{est_tokens} tokens > {_CHUNK_TOKEN_HARD_LIMIT} limit"
+                flag = (
+                    f"CHUNK_{i+1}_OVERSIZED: ~{est_tokens} tokens > {_CHUNK_TOKEN_HARD_LIMIT} limit"
+                )
                 self._fail_flags.append(flag)
                 logger.warning("[ExtractionTracer] FAIL — %s", flag)
 
-        self._write_json("04_chunks.json", {
-            "num_chunks": len(chunks),
-            "avg_tokens_est": int(sum(m["token_count_est"] for m in chunk_meta) / max(len(chunk_meta), 1)),
-            "max_tokens_est": max((m["token_count_est"] for m in chunk_meta), default=0),
-            "chunks": chunk_meta,
-        })
+        self._write_json(
+            "04_chunks.json",
+            {
+                "num_chunks": len(chunks),
+                "avg_tokens_est": int(
+                    sum(m["token_count_est"] for m in chunk_meta) / max(len(chunk_meta), 1)
+                ),
+                "max_tokens_est": max((m["token_count_est"] for m in chunk_meta), default=0),
+                "chunks": chunk_meta,
+            },
+        )
 
         logger.info(
             "[ExtractionTracer] 04_chunks.json written: %d chunks, max est tokens %d",
@@ -229,14 +256,16 @@ class ExtractionTracer:
     ) -> None:
         examples = []
         for ex in retrieved:
-            accepted = ex in used or ex in filtered
-            examples.append({
-                "score": ex.get("score") or ex.get("@search.score"),
-                "contract_type": ex.get("contract_type", ""),
-                "snippet": (ex.get("content") or ex.get("text") or str(ex))[:200],
-                "accepted": ex in used,
-                "rejected_reason": None if ex in used else "filtered_by_contract_type",
-            })
+            ex in used or ex in filtered
+            examples.append(
+                {
+                    "score": ex.get("score") or ex.get("@search.score"),
+                    "contract_type": ex.get("contract_type", ""),
+                    "snippet": (ex.get("content") or ex.get("text") or str(ex))[:200],
+                    "accepted": ex in used,
+                    "rejected_reason": None if ex in used else "filtered_by_contract_type",
+                }
+            )
 
         payload = {
             "retrieved": len(retrieved),
@@ -254,7 +283,9 @@ class ExtractionTracer:
 
         logger.info(
             "[ExtractionTracer] 05_rag_examples.json: retrieved=%d filtered=%d used=%d",
-            len(retrieved), len(filtered), len(used),
+            len(retrieved),
+            len(filtered),
+            len(used),
         )
 
     # ------------------------------------------------------------------
@@ -288,7 +319,9 @@ class ExtractionTracer:
         # Save representative prompt only for chunk 1
         if chunk_idx == 1:
             self._write_text("06_prompt.txt", prompt_text)
-            logger.info("[ExtractionTracer] 06_prompt.txt written for chunk 1 (%d chars)", len(prompt_text))
+            logger.info(
+                "[ExtractionTracer] 06_prompt.txt written for chunk 1 (%d chars)", len(prompt_text)
+            )
 
         if system_tokens + task_tokens > 0 and chunk_tokens < system_tokens + task_tokens:
             flag = (
@@ -334,10 +367,14 @@ class ExtractionTracer:
             except Exception:
                 existing = []
         existing.append({**metric, "raw_output": raw_output})
-        llm_out_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        llm_out_path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
         if clauses_extracted == 0:
-            flag = f"LLM_CHUNK_{chunk_idx}_ZERO_CLAUSES: input={input_tokens}t output={output_tokens}t"
+            flag = (
+                f"LLM_CHUNK_{chunk_idx}_ZERO_CLAUSES: input={input_tokens}t output={output_tokens}t"
+            )
             self._fail_flags.append(flag)
             logger.warning("[ExtractionTracer] FAIL — %s", flag)
         elif density < 0.5:
@@ -347,7 +384,11 @@ class ExtractionTracer:
 
         logger.info(
             "[ExtractionTracer] chunk %d: input=%dt output=%dt clauses=%d density=%.3f/1k",
-            chunk_idx, input_tokens, output_tokens, clauses_extracted, density,
+            chunk_idx,
+            input_tokens,
+            output_tokens,
+            clauses_extracted,
+            density,
         )
 
     # ------------------------------------------------------------------
@@ -381,7 +422,9 @@ class ExtractionTracer:
 
         logger.info(
             "[ExtractionTracer] 08_postprocessed.json: %d → %d clauses (%.1f%% removed)",
-            before_dedupe, after_dedupe, drop_pct,
+            before_dedupe,
+            after_dedupe,
+            drop_pct,
         )
 
     # ------------------------------------------------------------------
@@ -412,17 +455,23 @@ class ExtractionTracer:
             "preprocess": {
                 **self._preprocess_stats,
                 "removed_pct": round(
-                    (self._preprocess_stats.get("total_chars_removed", 0) /
-                     max(self._preprocess_stats.get("original_chars", 1), 1)) * 100, 1
+                    (
+                        self._preprocess_stats.get("total_chars_removed", 0)
+                        / max(self._preprocess_stats.get("original_chars", 1), 1)
+                    )
+                    * 100,
+                    1,
                 ),
             },
             "chunking": {
                 "num_chunks": len(self._chunk_metrics),
                 "avg_tokens_est": int(
-                    sum(m["token_count_est"] for m in self._chunk_metrics) /
-                    max(len(self._chunk_metrics), 1)
+                    sum(m["token_count_est"] for m in self._chunk_metrics)
+                    / max(len(self._chunk_metrics), 1)
                 ),
-                "max_tokens_est": max((m["token_count_est"] for m in self._chunk_metrics), default=0),
+                "max_tokens_est": max(
+                    (m["token_count_est"] for m in self._chunk_metrics), default=0
+                ),
                 "chunks": self._chunk_metrics,
             },
             "retrieval": self._retrieval_metrics,
@@ -432,19 +481,27 @@ class ExtractionTracer:
                 "total_clauses_extracted": llm_total_clauses,
                 "total_input_tokens": llm_total_input_t,
                 "total_output_tokens": llm_total_output_t,
-                "overall_density_per_1k": round(llm_total_clauses / max(llm_total_input_t, 1) * 1000, 3),
+                "overall_density_per_1k": round(
+                    llm_total_clauses / max(llm_total_input_t, 1) * 1000, 3
+                ),
                 "per_chunk": self._llm_metrics,
             },
             "postprocessing": self._postprocess_metrics,
         }
         self._write_json("metrics.json", metrics)
-        logger.info("[ExtractionTracer] metrics.json written with %d fail flags", len(self._fail_flags))
+        logger.info(
+            "[ExtractionTracer] metrics.json written with %d fail flags", len(self._fail_flags)
+        )
 
         # Coverage CSV — per chunk coverage
         csv_path = self.run_dir / "coverage.csv"
         fieldnames = [
-            "chunk_id", "section", "section_tokens", "clauses_found",
-            "categories_found", "zero_clause_flag",
+            "chunk_id",
+            "section",
+            "section_tokens",
+            "clauses_found",
+            "categories_found",
+            "zero_clause_flag",
         ]
         llm_by_chunk = {m["chunk_idx"]: m for m in self._llm_metrics}
         rows = []
@@ -452,14 +509,16 @@ class ExtractionTracer:
             idx = cm["chunk_id"]
             llm = llm_by_chunk.get(idx, {})
             clauses = llm.get("clauses_extracted", 0)
-            rows.append({
-                "chunk_id": idx,
-                "section": cm["section"],
-                "section_tokens": cm["token_count_est"],
-                "clauses_found": clauses,
-                "categories_found": "|".join(llm.get("categories_seen", [])),
-                "zero_clause_flag": "YES" if clauses == 0 else "",
-            })
+            rows.append(
+                {
+                    "chunk_id": idx,
+                    "section": cm["section"],
+                    "section_tokens": cm["token_count_est"],
+                    "clauses_found": clauses,
+                    "categories_found": "|".join(llm.get("categories_seen", [])),
+                    "zero_clause_flag": "YES" if clauses == 0 else "",
+                }
+            )
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -500,7 +559,10 @@ class ExtractionTracer:
 # Factory
 # ------------------------------------------------------------------
 
-def get_tracer(contract_id: str | None = None, enabled: bool | None = None) -> ExtractionTracer | _NoOpTracer:
+
+def get_tracer(
+    contract_id: str | None = None, enabled: bool | None = None
+) -> ExtractionTracer | _NoOpTracer:
     """Return a live ExtractionTracer when TRACE_EXTRACTION is set, else a no-op."""
     if enabled is None:
         enabled = os.getenv("TRACE_EXTRACTION", "false").lower() in ("1", "true", "yes")

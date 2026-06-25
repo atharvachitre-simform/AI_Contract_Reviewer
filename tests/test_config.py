@@ -1,5 +1,7 @@
 import importlib
+
 from src import config
+
 
 def test_config_defaults(monkeypatch):
     # Test that default values are correctly loaded by removing env overrides temporarily
@@ -31,6 +33,7 @@ def test_config_defaults(monkeypatch):
     finally:
         importlib.reload(config)
 
+
 def test_config_env_overrides(monkeypatch):
     # Test that env overrides work correctly when config is loaded
     monkeypatch.setenv("RISK_SCORER_MAX_CLAUSES", "25")
@@ -38,10 +41,10 @@ def test_config_env_overrides(monkeypatch):
     monkeypatch.setenv("RISK_THRESHOLD_HIGH", "0.8")
     monkeypatch.setenv("OBLIGATION_FINDER_MAX_TOKENS", "1500")
     monkeypatch.setenv("RETRY_MULTIPLIER", "2.5")
-    
+
     # Reload config module to reflect env changes
     importlib.reload(config)
-    
+
     try:
         assert config.MAX_CLAUSES_TO_ANALYZE == 25
         assert config.CLAUSE_TEXT_TRUNCATION == 500

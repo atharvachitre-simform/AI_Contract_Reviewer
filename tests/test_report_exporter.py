@@ -1,21 +1,21 @@
+from src.helpers.report_exporter import export_as_docx, export_as_markdown, export_as_pdf
 from src.models.models import (
-    ContractReviewState,
-    ReportAssemblerOutput,
-    ReviewVerdict,
-    RiskLevel,
     ContractMetadata,
-    ObligationItem,
+    ContractReviewState,
+    MissingClause,
+    NegotiationPriority,
     ObligationFinderOutput,
-    RedFlagItem,
-    RedFlagDetectorOutput,
+    ObligationItem,
     PlainEnglishClause,
     PlainEnglishWriterOutput,
-    NegotiationPriority,
-    MissingClause,
+    RedFlagDetectorOutput,
+    RedFlagItem,
+    ReportAssemblerOutput,
+    ReviewVerdict,
+    RiskIssue,
+    RiskLevel,
     RiskScorerOutput,
-    RiskIssue
 )
-from src.helpers.report_exporter import export_as_markdown, export_as_pdf, export_as_docx
 
 
 def test_report_exporters():
@@ -24,9 +24,7 @@ def test_report_exporters():
         contract_id="test-123",
         perspective="Customer",
         metadata=ContractMetadata(
-            document_name="Test Agreement",
-            contract_type="SaaS Agreement",
-            governing_law="Delaware"
+            document_name="Test Agreement", contract_type="SaaS Agreement", governing_law="Delaware"
         ),
         final_report=ReportAssemblerOutput(
             verdict=ReviewVerdict.NEGOTIATE,
@@ -39,17 +37,17 @@ def test_report_exporters():
                     priority=1,
                     reason="Vendor liability is uncapped while Customer liability is capped.",
                     recommended_action="Make liability caps mutual.",
-                    related_clauses=["Limitation of Liability"]
+                    related_clauses=["Limitation of Liability"],
                 )
             ],
             missing_clauses=[
                 MissingClause(
                     category="Governing Law",
                     reason="Explicit governing law section is absent.",
-                    impact="Potential jurisdictional disputes."
+                    impact="Potential jurisdictional disputes.",
                 )
             ],
-            recommended_next_steps=["Contact legal council", "Request revisions"]
+            recommended_next_steps=["Contact legal council", "Request revisions"],
         ),
         red_flag_detection=RedFlagDetectorOutput(
             red_flags=[
@@ -60,7 +58,7 @@ def test_report_exporters():
                     evidence=["Section 10.1: Liability of the vendor shall be unlimited."],
                     safer_alternative="Limit liability to 12 months fees.",
                     benefiting_party="Vendor",
-                    burdened_party="Customer"
+                    burdened_party="Customer",
                 )
             ]
         ),
@@ -80,9 +78,9 @@ def test_report_exporters():
                     burdened_party="Customer",
                     liability_holder="Customer",
                     customer_risk_score=0.9,
-                    vendor_risk_score=0.1
+                    vendor_risk_score=0.1,
                 )
-            ]
+            ],
         ),
         obligation_finding=ObligationFinderOutput(
             obligations=[
@@ -92,7 +90,7 @@ def test_report_exporters():
                     obligation_type="payment",
                     due_date="30 days",
                     frequency="monthly",
-                    condition="after invoice receipt"
+                    condition="after invoice receipt",
                 )
             ]
         ),
@@ -104,10 +102,10 @@ def test_report_exporters():
                     original_text="Customer shall pay within 30 days.",
                     plain_english="You have to pay in 30 days.",
                     why_it_matters="Late fees may apply.",
-                    party_burden="High burden on Customer."
+                    party_burden="High burden on Customer.",
                 )
-            ]
-        )
+            ],
+        ),
     )
 
     # 1. Test Markdown Export

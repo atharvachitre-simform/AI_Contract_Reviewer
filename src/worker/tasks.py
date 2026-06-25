@@ -29,13 +29,15 @@ Retry semantics:
 
 from __future__ import annotations
 
+from typing import Any
 import asyncio
 import json
 import logging
+
 import redis.asyncio as aioredis
 
-from src.worker.celery_app import celery_app
 from src import config
+from src.worker.celery_app import celery_app
 from src.workflows.async_workflow import AsyncContractReviewWorkflow
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ _PROGRESS_CHANNEL_KEY = "celery:progress:channel:{contract_id}"
     # tracking. autoretry_for would conflict with crash-recovery re-queues.
 )
 def run_contract_review_task(
-    self,
+    self: Any,
     contract_text: str,
     contract_id: str,
     user_id: str | None = None,
@@ -138,5 +140,5 @@ def run_contract_review_task(
             exc_info=True,
         )
         # Exponential backoff: 5s, 10s for retries 0 and 1
-        countdown = 5 * (2 ** self.request.retries)
+        countdown = 5 * (2**self.request.retries)
         raise self.retry(exc=exc, countdown=countdown)

@@ -12,11 +12,11 @@ Note on asyncio.run() inside tests:
 
 from __future__ import annotations
 
+import asyncio
+import inspect as inspect_module
 import json
 import os
 import unittest
-import asyncio
-import inspect as inspect_module
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Must be set before importing Celery app
@@ -25,10 +25,11 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("CELERY_PROGRESS_EVENT_TTL", "60")
 
 from celery.exceptions import Retry
-from src.worker.tasks import run_contract_review_task, _PROGRESS_LIST_KEY, _PROGRESS_CHANNEL_KEY
-from src.worker.celery_app import celery_app
-from src.worker.autoscaler import report_queue_depth
+
 from src.worker import autoscaler
+from src.worker.autoscaler import report_queue_depth
+from src.worker.celery_app import celery_app
+from src.worker.tasks import _PROGRESS_CHANNEL_KEY, _PROGRESS_LIST_KEY, run_contract_review_task
 
 
 class TestRunContractReviewTask(unittest.TestCase):
@@ -43,7 +44,11 @@ class TestRunContractReviewTask(unittest.TestCase):
             {"step": "risk_scoring", "status": "completed", "detail": {"issues": 1}},
             {"step": "red_flag_detection", "status": "completed", "detail": {"red_flags": 0}},
             {"step": "plain_english", "status": "completed", "detail": {"summaries": 3}},
-            {"step": "final_report", "status": "completed", "detail": {"verdict": "APPROVE_WITH_MODIFICATIONS"}},
+            {
+                "step": "final_report",
+                "status": "completed",
+                "detail": {"verdict": "APPROVE_WITH_MODIFICATIONS"},
+            },
             {"step": "done", "status": "completed", "state": {}},
         ]
 
@@ -106,8 +111,11 @@ class TestRunContractReviewTask(unittest.TestCase):
         self.assertTrue(conf.task_reject_on_worker_lost, "task_reject_on_worker_lost must be True")
         self.assertEqual(conf.worker_prefetch_multiplier, 1, "prefetch_multiplier must be 1")
         self.assertEqual(conf.task_serializer, "json")
-        self.assertGreater(conf.task_time_limit, conf.task_soft_time_limit,
-                           "Hard time limit must exceed soft time limit")
+        self.assertGreater(
+            conf.task_time_limit,
+            conf.task_soft_time_limit,
+            "Hard time limit must exceed soft time limit",
+        )
 
 
 class TestAutoscaler(unittest.TestCase):
@@ -122,5 +130,8 @@ class TestAutoscaler(unittest.TestCase):
         """Inspect call must be wrapped in run_in_executor to avoid blocking the event loop."""
         # Verify the source references run_in_executor
         source = inspect_module.getsource(autoscaler.report_queue_depth)
-        self.assertIn("run_in_executor", source,
-                      "inspect() must be wrapped in run_in_executor to avoid blocking the event loop")
+        self.assertIn(
+            "run_in_executor",
+            source,
+            "inspect() must be wrapped in run_in_executor to avoid blocking the event loop",
+        )

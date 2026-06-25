@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
 import json
+from typing import Any
+
 from ..helpers.compression_helper import get_compressed_payload_string
 
 SYSTEM_INSTRUCTION = (
@@ -27,7 +28,11 @@ OUTPUT_SCHEMA = {
 }
 
 
-def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[str, Any] | None = None, perspective: str | None = None) -> str:
+def build_obligation_finder_prompt(
+    clause_extraction: Any,
+    memory_context: dict[str, Any] | None = None,
+    perspective: str | None = None,
+) -> str:
     """Build a prompt for the obligation finder agent from ClauseExtractorOutput or list of clauses."""
     # Accept either the full output object or raw list
     clauses = []
@@ -74,4 +79,6 @@ def build_obligation_finder_prompt(clause_extraction: Any, memory_context: dict[
     )
 
     return prompt
+
+
 """Obligation Finder Agent prompt template."""

@@ -24,68 +24,84 @@ Langfuse dashboard.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import logging
 import os
 import uuid
-import logging
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from collections import defaultdict
 
 from dotenv import load_dotenv
 from langfuse._client.client import Langfuse
 from langfuse.types import TraceContext
 
-import threading
-import contextvars
+logger = logging.getLogger(__name__)
 
-def calculate_llm_cost(model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
+
+
+def calculate_llm_cost(
+    model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0
+) -> float:
     """Calculate exact cost for LLM calls based on current pricing."""
     model_lower = str(model).lower()
-    
+
     try:
         input_tokens = int(input_tokens) if input_tokens else 0
     except (ValueError, TypeError):
         input_tokens = 0
-        
+
     try:
         output_tokens = int(output_tokens) if output_tokens else 0
     except (ValueError, TypeError):
         output_tokens = 0
-        
+
     try:
         cached_tokens = int(cached_tokens) if cached_tokens else 0
     except (ValueError, TypeError):
         cached_tokens = 0
-    
+
     # Azure OpenAI GPT-4o
     if "gpt-4o" in model_lower and "mini" not in model_lower:
-        return ((input_tokens - cached_tokens) * 5.00 / 1e6) + (cached_tokens * 2.50 / 1e6) + (output_tokens * 15.00 / 1e6)
-    
+        return (
+            ((input_tokens - cached_tokens) * 5.00 / 1e6)
+            + (cached_tokens * 2.50 / 1e6)
+            + (output_tokens * 15.00 / 1e6)
+        )
+
     # Azure OpenAI GPT-4o-mini
     elif "gpt-4o-mini" in model_lower:
-        return ((input_tokens - cached_tokens) * 0.150 / 1e6) + (cached_tokens * 0.075 / 1e6) + (output_tokens * 0.600 / 1e6)
-        
+        return (
+            ((input_tokens - cached_tokens) * 0.150 / 1e6)
+            + (cached_tokens * 0.075 / 1e6)
+            + (output_tokens * 0.600 / 1e6)
+        )
+
     # Azure OpenAI GPT-4 Turbo
     elif "gpt-4-turbo" in model_lower or "gpt-4" in model_lower and "turbo" in model_lower:
         return (input_tokens * 10.00 / 1e6) + (output_tokens * 30.00 / 1e6)
-        
+
     # Groq LLaMA 3.3 70B
     elif "llama-3.3-70b" in model_lower:
         return (input_tokens * 0.59 / 1e6) + (output_tokens * 0.79 / 1e6)
-        
+
     # Groq LLaMA 3.1 8B
     elif "llama-3.1-8b" in model_lower or "llama3-8b" in model_lower:
         return (input_tokens * 0.05 / 1e6) + (output_tokens * 0.08 / 1e6)
-        
+
     # Groq Mixtral
     elif "mixtral" in model_lower:
         return (input_tokens * 0.24 / 1e6) + (output_tokens * 0.24 / 1e6)
-        
+
     # Default fallback (conservative estimate like GPT-4o)
     else:
-        return ((input_tokens - cached_tokens) * 5.00 / 1e6) + (cached_tokens * 2.50 / 1e6) + (output_tokens * 15.00 / 1e6)
+        return (
+            ((input_tokens - cached_tokens) * 5.00 / 1e6)
+            + (cached_tokens * 2.50 / 1e6)
+            + (output_tokens * 15.00 / 1e6)
+        )
 
 
 class LangFuseTracer:
@@ -156,19 +172,25 @@ class LangFuseTracer:
         if getattr(self, "_initialized", False):
             return
         self._initialized = True
-        
+
         repo_root = Path(__file__).resolve().parents[2]
         dotenv_path = repo_root / ".env"
         if dotenv_path.exists():
             load_dotenv(dotenv_path=dotenv_path, override=False)
-        self.host = (os.getenv("LANGFUSE_HOST") or "https://cloud.langfuse.com").strip('"').strip("'").strip().rstrip("/")
+        self.host = (
+            (os.getenv("LANGFUSE_HOST") or "https://cloud.langfuse.com")
+            .strip('"')
+            .strip("'")
+            .strip()
+            .rstrip("/")
+        )
         self.public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip('"').strip("'").strip()
         self.secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip('"').strip("'").strip()
         self.local_log_path = Path("logs/langfuse_events.jsonl")
         self.local_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.client = self._initialize_client()
         self.enabled = bool(self.public_key and self.secret_key and self.client is not None)
-        
+
         self.trace_cached_tokens = defaultdict(int)
         self.trace_input_tokens = defaultdict(int)
         self.trace_output_tokens = defaultdict(int)
@@ -184,7 +206,7 @@ class LangFuseTracer:
                     debug=True,
                 )
             except Exception as exc:
-                print(f"Langfuse client init error: {exc}")
+                logger.error(f"Langfuse client init error: {exc}")
 
         return Langfuse(
             public_key="fake",
@@ -336,7 +358,11 @@ class LangFuseTracer:
             "step": step,
             "description": description,
             "status": status,
-            "payload": payload if payload is None or isinstance(payload, (str, int, float, bool)) else json.dumps(payload, default=str),
+            "payload": (
+                payload
+                if payload is None or isinstance(payload, (str, int, float, bool))
+                else json.dumps(payload, default=str)
+            ),
             "trace_url": self.get_trace_url(tid) if tid else None,
             "source": "ai-contract-reviewer",
         }
@@ -383,42 +409,21 @@ class LangFuseTracer:
             # Swallow silently — tracing must never break normal execution
             logging.getLogger(__name__).debug(f"Langfuse event error: {exc}")
 
-    def log_generation(
+    def _build_generation_event(
         self,
-        *,
+        tid: str | None,
+        uid: str,
+        sid: str | None,
+        cid: str | None,
         name: str,
         model: str,
-        input_messages: list[dict[str, Any]],
-        output: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        total_tokens: int = 0,
-        cached_tokens: int = 0,
-        trace_id: str | None = None,
-        user_id: str | None = None,
-        session_id: str | None = None,
-        contract_id: str | None = None,
-    ) -> None:
-        """Log an LLM generation span using the Langfuse SDK v4 API (OTEL-based).
-
-        Uses ``start_observation(as_type='generation')`` with
-        ``usage_details`` (int token counts) as required by SDK v4.
-
-        Also writes token data to the local JSONL log for guaranteed visibility
-        regardless of Langfuse dashboard state.
-
-        All identity fields default to thread-local values set by
-        ``start_pipeline_trace()`` or ``start_chat_trace()``, so callers
-        inside agents and async workers don't need to pass them explicitly.
-        """
-        tid = trace_id or self.get_current_trace_id()
-        uid = user_id or self.get_current_user_id() or "anonymous"
-        sid = session_id or self.get_current_session_id()
-        cid = contract_id or self.get_current_contract_id()
-
-        # Always write token data to local JSONL so it's visible in logs
-        # even when the Langfuse remote dashboard has issues.
-        generation_event = {
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        total_tokens: int,
+    ) -> dict[str, Any]:
+        """Build metadata dict for the generation event."""
+        return {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "trace_id": tid,
             "user_id": uid,
@@ -435,16 +440,55 @@ class LangFuseTracer:
             "trace_url": self.get_trace_url(tid) if tid else None,
             "source": "ai-contract-reviewer",
         }
+
+    def _update_trace_metrics(
+        self,
+        tid: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+    ) -> float:
+        """Update trace statistics and calculate exact LLM cost."""
+        self.trace_input_tokens[tid] += input_tokens
+        self.trace_output_tokens[tid] += output_tokens
+        self.trace_cached_tokens[tid] += cached_tokens
+        cost = calculate_llm_cost(model, input_tokens, output_tokens, cached_tokens)
+        self.trace_costs[tid] += cost
+        return cost
+
+    def log_generation(
+        self,
+        *,
+        name: str,
+        model: str,
+        input_messages: list[dict[str, Any]],
+        output: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        cached_tokens: int = 0,
+        trace_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        contract_id: str | None = None,
+    ) -> None:
+        """Log an LLM generation span using the Langfuse SDK v4 API (OTEL-based)."""
+        tid = trace_id or self.get_current_trace_id()
+        uid = user_id or self.get_current_user_id() or "anonymous"
+        sid = session_id or self.get_current_session_id()
+        cid = contract_id or self.get_current_contract_id()
+
+        generation_event = self._build_generation_event(
+            tid, uid, sid, cid, name, model, input_tokens, output_tokens, cached_tokens, total_tokens
+        )
         self._write_local(generation_event)
-        
+
+        cost = 0.0
         if tid:
-            self.trace_input_tokens[tid] += input_tokens
-            self.trace_output_tokens[tid] += output_tokens
-            self.trace_cached_tokens[tid] += cached_tokens
-            
-            # calculate exact cost
-            cost = calculate_llm_cost(model, input_tokens, output_tokens, cached_tokens)
-            self.trace_costs[tid] += cost
+            cost = self._update_trace_metrics(
+                tid, model, input_tokens, output_tokens, cached_tokens
+            )
 
         if not self.enabled or not tid:
             return
@@ -462,26 +506,22 @@ class LangFuseTracer:
                     "output": output_tokens,
                     "total": total_tokens if total_tokens else input_tokens + output_tokens,
                 },
-                cost=cost if tid else 0.0,
+                cost=cost,
                 metadata={
                     "user_id": uid,
                     "session_id": sid,
                     "contract_id": cid,
-                    "cost": cost if tid else 0.0,
+                    "cost": cost,
                 },
             )
             obs.end()
-            # Flush immediately so the OTEL span is exported before the thread
-            # pool worker exits. Without this, background batching may miss spans
-            # from short-lived executor threads.
             self.client.flush()
         except Exception as exc:
             logging.getLogger(__name__).debug(f"Langfuse generation error: {exc}")
 
-
     def flush(self) -> None:
         """Force flush all pending events to Langfuse.
-        
+
         Call this at the end of scripts or workflows to ensure all asynchronous
         events are uploaded before the process exits.
         """
@@ -497,11 +537,10 @@ class LangFuseTracer:
         out = self.trace_output_tokens[trace_id]
         cached = self.trace_cached_tokens[trace_id]
         cost = self.trace_costs[trace_id]
-        
+
         ratio = cached / max(1, inp)
         cost_per_clause = cost / max(1, useful_clauses)
-        
-        logger = logging.getLogger(__name__)
+
         logger.info(
             f"[Pipeline Metrics] trace_id={trace_id} | "
             f"input_tokens={inp} | cached_tokens={cached} | "
@@ -509,7 +548,7 @@ class LangFuseTracer:
             f"total_cost=${cost:.6f} | useful_clauses={useful_clauses} | "
             f"cost_per_useful_clause=${cost_per_clause:.6f}"
         )
-        
+
         # Log to Langfuse as custom event
         if self.enabled:
             try:
@@ -522,15 +561,15 @@ class LangFuseTracer:
                         "output_tokens": out,
                         "cached_tokens": cached,
                         "total_cost": cost,
-                        "useful_clauses": useful_clauses
+                        "useful_clauses": useful_clauses,
                     },
                     metadata={
                         "total_cost": cost,
                         "total_prompt_tokens": inp,
                         "total_completion_tokens": out,
                         "cache_effective_input_ratio": round(ratio, 4),
-                        "cost_per_useful_clause": round(cost_per_clause, 6)
-                    }
+                        "cost_per_useful_clause": round(cost_per_clause, 6),
+                    },
                 )
             except Exception as exc:
                 logger.debug(f"Langfuse metrics logging error: {exc}")

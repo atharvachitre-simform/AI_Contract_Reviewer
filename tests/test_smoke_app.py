@@ -1,4 +1,5 @@
 """Smoke test - Verify that the FastAPI app imports correctly."""
+
 from src.fastapi_app import app
 
 

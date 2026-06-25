@@ -1,5 +1,7 @@
 """Main entry point - Runs FastAPI via uvicorn."""
+
 import uvicorn
+
 from src.fastapi_app import app
 
 if __name__ == "__main__":

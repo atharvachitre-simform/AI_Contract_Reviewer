@@ -13,7 +13,6 @@ from copy import copy
 
 from src.models import ContractMetadata, ContractParty
 
-
 _WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
@@ -42,7 +41,7 @@ def normalize_whitespace(text: str) -> str:
         if page_marker_re.match(parts[i]):
             markers.append(parts[i])
             if i + 1 < len(parts):
-                pages.append(parts[i+1])
+                pages.append(parts[i + 1])
                 i += 2
             else:
                 pages.append("")
@@ -70,9 +69,18 @@ def normalize_whitespace(text: str) -> str:
     for line_clean, count in line_counts.items():
         if count >= 3:
             lower_line = line_clean.lower()
-            is_heading = any(lower_line.startswith(prefix) for prefix in [
-                "section", "article", "clause", "para", "part", "schedule", "exhibit"
-            ])
+            is_heading = any(
+                lower_line.startswith(prefix)
+                for prefix in [
+                    "section",
+                    "article",
+                    "clause",
+                    "para",
+                    "part",
+                    "schedule",
+                    "exhibit",
+                ]
+            )
             is_heading = is_heading or bool(re.match(r"^\d+[\.\s]+[A-Z]", line_clean))
             if not is_heading:
                 header_footer_candidates.add(line_clean)
@@ -115,14 +123,24 @@ def extract_party_names(text: str) -> list[ContractParty]:
     """Best-effort extraction of parties and aliases from a contract snippet."""
 
     parties: list[ContractParty] = []
-    alias_pattern = re.compile(r"(?P<name>[A-Z0-9][^;\n]{1,120}?)\s*\((?:\"|“)(?P<alias>[^\"”]+)(?:\"|”)?\)")
+    alias_pattern = re.compile(
+        r"(?P<name>[A-Z0-9][^;\n]{1,120}?)\s*\((?:\"|“)(?P<alias>[^\"”]+)(?:\"|”)?\)"
+    )
     for match in alias_pattern.finditer(text):
-        parties.append(ContractParty(name=match.group("name").strip(), role=match.group("alias").strip(), normalized_name=match.group("name").strip()))
+        parties.append(
+            ContractParty(
+                name=match.group("name").strip(),
+                role=match.group("alias").strip(),
+                normalized_name=match.group("name").strip(),
+            )
+        )
 
     if parties:
         return parties
 
-    first_line = next((line.strip() for line in normalize_whitespace(text).split("\n") if line.strip()), "")
+    first_line = next(
+        (line.strip() for line in normalize_whitespace(text).split("\n") if line.strip()), ""
+    )
     if first_line:
         for piece in re.split(r";| and |,", first_line):
             candidate = piece.strip(" \"'()[]")
@@ -131,14 +149,20 @@ def extract_party_names(text: str) -> list[ContractParty]:
     return parties[:6]
 
 
-def extract_metadata(text: str, source_file: str | None = None, source_format: str | None = None) -> ContractMetadata:
+def extract_metadata(
+    text: str, source_file: str | None = None, source_format: str | None = None
+) -> ContractMetadata:
     """Build a basic metadata object from contract text."""
 
     cleaned = normalize_whitespace(text)
     first_line = next(
-        (line.strip() for line in cleaned.split("\n")
-         if line.strip() and not re.match(r'^---\s*PAGE\s*\d+\s*---$', line.strip(), re.IGNORECASE)),
-        None
+        (
+            line.strip()
+            for line in cleaned.split("\n")
+            if line.strip()
+            and not re.match(r"^---\s*PAGE\s*\d+\s*---$", line.strip(), re.IGNORECASE)
+        ),
+        None,
     )
     document_name = first_line[:180] if first_line else None
     if document_name and document_name.startswith(("This Agreement", "The term", "WHEREAS")):
@@ -158,18 +182,26 @@ def is_boilerplate_clause(clause) -> bool:
     t = (clause.clause_type or "").lower()
     ref = (clause.section_reference or "").lower()
     text = (clause.raw_text or "").lower()
-    
+
     # Check title / type / reference keywords
-    keywords = {"signature", "recitals", "counterparts", "table of contents", "formatting", "boilerplate", "preamble"}
+    keywords = {
+        "signature",
+        "recitals",
+        "counterparts",
+        "table of contents",
+        "formatting",
+        "boilerplate",
+        "preamble",
+    }
     if any(kw in t for kw in keywords) or any(kw in ref for kw in keywords):
         return True
-        
+
     # If the text is very short and starts with formatting/header patterns
     if len(text.strip()) < 150:
         short_keywords = {"page", "continued", "confidential", "exhibit", "schedule"}
         if any(text.strip().lower().startswith(kw) for kw in short_keywords):
             return True
-            
+
     return False
 
 
@@ -177,10 +209,9 @@ def filter_boilerplate_clauses(clause_extraction):
     """Filter out boilerplate clauses from the ClauseExtractorOutput object."""
     if not clause_extraction or not getattr(clause_extraction, "clauses", None):
         return clause_extraction
-        
+
     filtered = [c for c in clause_extraction.clauses if not is_boilerplate_clause(c)]
-    
+
     new_extraction = copy(clause_extraction)
     new_extraction.clauses = filtered
     return new_extraction
-

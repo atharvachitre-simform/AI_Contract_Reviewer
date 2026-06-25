@@ -184,7 +184,7 @@ class RiskIssue(BaseModel):
     negotiation_suggestion: str | None = None
     evidence: list[str] = Field(default_factory=list)
     related_categories: list[CUADCategory | str] = Field(default_factory=list)
-    
+
     # Party-centric metadata & dual-risk calculation
     benefiting_party: str | None = None
     burdened_party: str | None = None

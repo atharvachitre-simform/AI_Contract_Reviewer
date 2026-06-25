@@ -2,34 +2,35 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TypedDict
 
-from langgraph.graph import StateGraph, END
+from src.helpers.llm_parsing import parse_llm_json_response
 
 from ..models import (
     ClauseExtractorOutput,
     MissingClause,
     NegotiationPriority,
+    ObligationFinderOutput,
     PlainEnglishWriterOutput,
     RedFlagDetectorOutput,
+    ReportAssemblerOutput,
     ReviewVerdict,
     RiskLevel,
     RiskScorerOutput,
-    ReportAssemblerOutput,
-    ObligationFinderOutput,
 )
 from ..prompts.report_assembler_prompt import build_report_assembler_prompt
-from src.helpers.llm_parsing import strip_markdown_fences
 
 logger = logging.getLogger(__name__)
 from src import config
-from .pipeline_tools import run_agent_tool_loop
+from src.agents.risk_scorer import normalize_risk_level
+
+from src.services.tool_executor import run_agent_tool_loop
 
 
 class ReportAssemblerState(TypedDict):
     """State for report assembler workflow."""
+
     clause_extraction: ClauseExtractorOutput
     risk_scoring: RiskScorerOutput
     red_flags: RedFlagDetectorOutput
@@ -49,29 +50,7 @@ class ReportAssemblerState(TypedDict):
     warnings: list[str]
 
 
-def _strip_markdown_fences(text: str) -> str:
-    """Strip markdown code fences (```json ... ```) from LLM response."""
-    return strip_markdown_fences(text)
-
-
-def _parse_report_response(response_text: str) -> dict | None:
-    """Parse LLM response with resilient fallback."""
-    clean = _strip_markdown_fences(response_text)
-
-    try:
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        pass
-
-    first = clean.find("{")
-    last = clean.rfind("}")
-    if first != -1 and last != -1 and last > first:
-        try:
-            return json.loads(clean[first:last + 1])
-        except json.JSONDecodeError:
-            pass
-
-    return None
+_parse_report_response = parse_llm_json_response
 
 
 def _normalize_verdict(raw_val: str | None) -> ReviewVerdict:
@@ -90,20 +69,6 @@ def _normalize_verdict(raw_val: str | None) -> ReviewVerdict:
     return ReviewVerdict.REVIEW
 
 
-def _normalize_risk_level(raw_val: str | None) -> RiskLevel:
-    """Normalize risk level to RiskLevel enum values."""
-    if not raw_val:
-        return RiskLevel.MEDIUM
-    val = raw_val.strip().lower()
-    if val in {"high", "h"}:
-        return RiskLevel.HIGH
-    if val in {"medium", "m", "moderate"}:
-        return RiskLevel.MEDIUM
-    if val in {"low", "l"}:
-        return RiskLevel.LOW
-    if val in {"critical", "crit"}:
-        return RiskLevel.CRITICAL
-    return RiskLevel.MEDIUM
 
 
 def check_completeness(text: str | None) -> tuple[bool, list[str]]:
@@ -128,7 +93,7 @@ def check_completeness(text: str | None) -> tuple[bool, list[str]]:
             "signee",
             "signatory",
             "signed",
-            "execution"
+            "execution",
         ]
         has_sig = any(kw in text_lower for kw in sig_keywords)
         if not has_sig:
@@ -144,20 +109,41 @@ def check_completeness(text: str | None) -> tuple[bool, list[str]]:
             sentence_terminators = {".", "!", "?", '"', "'", "”", "’", ")", "]", "}"}
             if last_char not in sentence_terminators:
                 is_incomplete = True
-                warnings.append("Prematurely truncated text detected (does not end with standard sentence punctuation).")
+                warnings.append(
+                    "Prematurely truncated text detected (does not end with standard sentence punctuation)."
+                )
             else:
                 words = last_segment_clean.lower().split()
                 if words:
                     last_word = words[-1]
-                    dangling_words = {"and", "or", "the", "of", "to", "for", "with", "by", "a", "an", "in", "at", "on", "from"}
+                    dangling_words = {
+                        "and",
+                        "or",
+                        "the",
+                        "of",
+                        "to",
+                        "for",
+                        "with",
+                        "by",
+                        "a",
+                        "an",
+                        "in",
+                        "at",
+                        "on",
+                        "from",
+                    }
                     if last_word in dangling_words:
                         is_incomplete = True
-                        warnings.append(f"Prematurely truncated text detected (ends with trailing conjunction/preposition '{last_word}').")
+                        warnings.append(
+                            f"Prematurely truncated text detected (ends with trailing conjunction/preposition '{last_word}')."
+                        )
 
     return is_incomplete, warnings
 
 
-def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None) -> ReportAssemblerState:
+def llm_assemble_node(
+    state: ReportAssemblerState, llm_client: Any | None = None
+) -> ReportAssemblerState:
     """Call LLM to compile and assemble the final review report."""
     is_inc, warnings_list = check_completeness(state["clause_extraction"].raw_contract_text)
     state["is_incomplete"] = is_inc
@@ -172,14 +158,21 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
     try:
         clauses_list = []
         for idx, clause in enumerate(state["clause_extraction"].clauses, 1):
-            clauses_list.append(f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}")
+            clauses_list.append(
+                f"- [{clause.clause_type}] Category: {clause.cuad_category or 'N/A'}"
+            )
         clauses_summary = "\n".join(clauses_list) if clauses_list else "(No clauses provided)"
 
-        risks_list = [f"Overall Risk Level: {state['risk_scoring'].overall_risk_level.value}", f"Overall Risk Score: {state['risk_scoring'].overall_risk_score}"]
+        risks_list = [
+            f"Overall Risk Level: {state['risk_scoring'].overall_risk_level.value}",
+            f"Overall Risk Score: {state['risk_scoring'].overall_risk_score}",
+        ]
         risk_idx = 1
         for issue in state["risk_scoring"].issues:
             if issue.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
-                risks_list.append(f"- Issue {risk_idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}")
+                risks_list.append(
+                    f"- Issue {risk_idx}: [{issue.clause_type}] ({issue.risk_level.value}) {issue.issue}. Suggestion: {issue.negotiation_suggestion}"
+                )
                 risk_idx += 1
         risks_summary = "\n".join(risks_list)
 
@@ -187,7 +180,9 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
         rf_idx = 1
         for flag in state["red_flags"].red_flags:
             if flag.severity in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL}:
-                red_flags_list.append(f"- Red Flag {rf_idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}")
+                red_flags_list.append(
+                    f"- Red Flag {rf_idx}: [{flag.pattern_name}] ({flag.severity.value}) {flag.description}. Alternative: {flag.safer_alternative}"
+                )
                 rf_idx += 1
         red_flags_summary = "\n".join(red_flags_list)
 
@@ -221,7 +216,9 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
             system_prompt = None
             user_prompt = prompt
 
-        contract_type = getattr(state["clause_extraction"].metadata, "contract_type", "NDA") or "NDA"
+        contract_type = (
+            getattr(state["clause_extraction"].metadata, "contract_type", "NDA") or "NDA"
+        )
 
         response_text = run_agent_tool_loop(
             llm_client=llm_client,
@@ -231,7 +228,7 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
                 "contract_type": contract_type,
             },
             system_prompt=system_prompt,
-            max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS
+            max_tokens=config.REPORT_ASSEMBLER_MAX_TOKENS,
         )
 
         parsed = _parse_report_response(response_text)
@@ -241,7 +238,7 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
             return state
 
         state["verdict"] = _normalize_verdict(parsed.get("verdict"))
-        state["overall_risk_level"] = _normalize_risk_level(parsed.get("overall_risk_level"))
+        state["overall_risk_level"] = normalize_risk_level(parsed.get("overall_risk_level"))
         state["report_summary"] = str(parsed.get("report_summary") or "").strip()
 
         priorities = []
@@ -249,7 +246,11 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
             if not isinstance(item, dict):
                 continue
             related = item.get("related_clauses", [])
-            related_list = [str(r) for r in related] if isinstance(related, list) else [str(related)] if related else []
+            related_list = (
+                [str(r) for r in related]
+                if isinstance(related, list)
+                else [str(related)] if related else []
+            )
             priorities.append(
                 NegotiationPriority(
                     title=str(item.get("title") or "Priority"),
@@ -275,7 +276,9 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
         state["missing_clauses"] = missing_list
 
         state["key_risks"] = [str(r) for r in parsed.get("key_risks", []) if r]
-        state["recommended_next_steps"] = [str(s) for s in parsed.get("recommended_next_steps", []) if s]
+        state["recommended_next_steps"] = [
+            str(s) for s in parsed.get("recommended_next_steps", []) if s
+        ]
         state["llm_attempt_success"] = True
 
         # Apply missing clause validation rule override
@@ -287,6 +290,89 @@ def llm_assemble_node(state: ReportAssemblerState, llm_client: Any | None = None
         state["error_messages"].append(f"LLM compilation error: {str(e)}")
 
     return state
+
+
+def _check_clause_and_metadata_presence(
+    display_name: str,
+    detected_terms: set[str],
+    synonyms: list[str],
+    state: ReportAssemblerState,
+) -> bool:
+    # 1. Check direct clause detection
+    for term in detected_terms:
+        if any(syn in term for syn in synonyms):
+            return True
+
+    # 2. Check metadata fields
+    if state.get("clause_extraction") and getattr(state["clause_extraction"], "metadata", None):
+        metadata = state["clause_extraction"].metadata
+        if (
+            display_name == "Governing Law"
+            and (getattr(metadata, "governing_law", None) or "").strip()
+        ):
+            return True
+        elif display_name == "Termination" and (
+            (getattr(metadata, "expiration_date", None) or "").strip()
+            or (getattr(metadata, "renewal_term", None) or "").strip()
+            or (getattr(metadata, "notice_period_to_terminate_renewal", None) or "").strip()
+        ):
+            return True
+
+    # 3. Check document metadata descriptors (e.g. License Agreement implies IP and Termination)
+    if state.get("clause_extraction") and getattr(state["clause_extraction"], "metadata", None):
+        metadata = state["clause_extraction"].metadata
+        doc_type = (getattr(metadata, "contract_type", "") or "").lower()
+        doc_name = (getattr(metadata, "document_name", "") or "").lower()
+        if display_name == "Intellectual Property" and (
+            "license" in doc_type
+            or "license" in doc_name
+            or "patent" in doc_type
+            or "patent" in doc_name
+        ):
+            return True
+        elif display_name == "Termination" and (
+            "license" in doc_type
+            or "license" in doc_name
+            or "agreement" in doc_type
+            or "agreement" in doc_name
+        ):
+            return True
+
+    return False
+
+
+def _check_outputs_for_clause(
+    display_name: str,
+    synonyms: list[str],
+    state: ReportAssemblerState,
+) -> bool:
+    # 4. Check extracted obligations
+    ob_finding = state.get("obligation_finding")
+    if ob_finding is not None and ob_finding.obligations:
+        for o in ob_finding.obligations:
+            text_to_check = (
+                f"{o.obligation} {o.source_clause or ''} {o.obligation_type or ''}".lower()
+            )
+            if any(syn in text_to_check for syn in synonyms):
+                return True
+
+    # 5. Check risk scoring issues
+    risk_scoring = state.get("risk_scoring")
+    if risk_scoring is not None and risk_scoring.issues:
+        for issue in risk_scoring.issues:
+            text_to_check = f"{issue.clause_type} {issue.issue} {issue.rationale or ''}".lower()
+            if any(syn in text_to_check for syn in synonyms):
+                return True
+
+    # 6. Check detected red flags
+    red_flags = state.get("red_flags")
+    if red_flags is not None and red_flags.red_flags:
+        for flag in red_flags.red_flags:
+            text_to_check = f"{flag.pattern_name} {flag.description}".lower()
+            if any(syn in text_to_check for syn in synonyms):
+                return True
+
+    return False
 
 
 def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[MissingClause]:
@@ -301,20 +387,48 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
     }
 
     CLAUSE_SYNONYMS = {
-        "Governing Law": ["governing law", "choice of law", "applicable law",
-                      "jurisdiction", "governing jurisdiction"],
-        "Termination": ["termination", "term and termination", "expiration",
-                    "cancellation", "right to terminate"],
-        "Confidentiality": ["confidentiality", "non-disclosure", "nda",
-                        "proprietary information", "trade secret"],
-        "Indemnification": ["indemnification", "indemnity", "hold harmless",
-                        "defend and indemnify"],
-        "Limitation of Liability": ["limitation of liability", "liability cap",
-                                 "liability limit", "cap on liability",
-                                 "maximum liability"],
-        "Intellectual Property": ["intellectual property", "ip rights",
-                               "ownership of ip", "proprietary rights",
-                               "license grant", "ip ownership"]
+        "Governing Law": [
+            "governing law",
+            "choice of law",
+            "applicable law",
+            "jurisdiction",
+            "governing jurisdiction",
+        ],
+        "Termination": [
+            "termination",
+            "term and termination",
+            "expiration",
+            "cancellation",
+            "right to terminate",
+        ],
+        "Confidentiality": [
+            "confidentiality",
+            "non-disclosure",
+            "nda",
+            "proprietary information",
+            "trade secret",
+        ],
+        "Indemnification": [
+            "indemnification",
+            "indemnity",
+            "hold harmless",
+            "defend and indemnify",
+        ],
+        "Limitation of Liability": [
+            "limitation of liability",
+            "liability cap",
+            "liability limit",
+            "cap on liability",
+            "maximum liability",
+        ],
+        "Intellectual Property": [
+            "intellectual property",
+            "ip rights",
+            "ownership of ip",
+            "proprietary rights",
+            "license grant",
+            "ip ownership",
+        ],
     }
 
     # Extract recursively all clause types and cuad categories detected
@@ -335,60 +449,9 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
     validated_missing = []
     for display_name, cuad_name in required_categories.items():
         synonyms = CLAUSE_SYNONYMS.get(display_name, [display_name.lower(), cuad_name.lower()])
-        found = False
-
-        # 1. Check direct clause detection
-        for term in detected_terms:
-            if any(syn in term for syn in synonyms):
-                found = True
-                break
-
-        # 2. Check metadata fields
-        if not found and state.get("clause_extraction") and getattr(state["clause_extraction"], "metadata", None):
-            metadata = state["clause_extraction"].metadata
-            if display_name == "Governing Law" and (getattr(metadata, "governing_law", None) or "").strip():
-                found = True
-            elif display_name == "Termination" and (
-                (getattr(metadata, "expiration_date", None) or "").strip() or
-                (getattr(metadata, "renewal_term", None) or "").strip() or
-                (getattr(metadata, "notice_period_to_terminate_renewal", None) or "").strip()
-            ):
-                found = True
-
-        # 3. Check document metadata descriptors (e.g. License Agreement implies IP and Termination)
-        if not found and state.get("clause_extraction") and getattr(state["clause_extraction"], "metadata", None):
-            metadata = state["clause_extraction"].metadata
-            doc_type = (getattr(metadata, "contract_type", "") or "").lower()
-            doc_name = (getattr(metadata, "document_name", "") or "").lower()
-            if display_name == "Intellectual Property" and ("license" in doc_type or "license" in doc_name or "patent" in doc_type or "patent" in doc_name):
-                found = True
-            elif display_name == "Termination" and ("license" in doc_type or "license" in doc_name or "agreement" in doc_type or "agreement" in doc_name):
-                # Standard commercial agreements of this scale invariably have term/termination
-                found = True
-
-        # 4. Check extracted obligations
-        if not found and state.get("obligation_finding") and getattr(state["obligation_finding"], "obligations", []):
-            for o in state["obligation_finding"].obligations:
-                text_to_check = f"{o.obligation} {o.source_clause or ''} {o.obligation_type or ''}".lower()
-                if any(syn in text_to_check for syn in synonyms):
-                    found = True
-                    break
-
-        # 5. Check risk scoring issues
-        if not found and state.get("risk_scoring") and getattr(state["risk_scoring"], "issues", []):
-            for issue in state["risk_scoring"].issues:
-                text_to_check = f"{issue.clause_type} {issue.issue} {issue.rationale or ''}".lower()
-                if any(syn in text_to_check for syn in synonyms):
-                    found = True
-                    break
-
-        # 6. Check detected red flags
-        if not found and state.get("red_flags") and getattr(state["red_flags"], "red_flags", []):
-            for flag in state["red_flags"].red_flags:
-                text_to_check = f"{flag.pattern_name} {flag.description}".lower()
-                if any(syn in text_to_check for syn in synonyms):
-                    found = True
-                    break
+        found = _check_clause_and_metadata_presence(
+            display_name, detected_terms, synonyms, state
+        ) or _check_outputs_for_clause(display_name, synonyms, state)
 
         if found:
             continue
@@ -397,7 +460,7 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
                 MissingClause(
                     category=display_name,
                     reason="Unknown / Not Extracted (Clause not detected by extraction pipeline)",
-                    impact="Extraction coverage is incomplete. Genuineness of missing status cannot be confirmed."
+                    impact="Extraction coverage is incomplete. Genuineness of missing status cannot be confirmed.",
                 )
             )
         else:
@@ -405,7 +468,7 @@ def enforce_missing_clauses_validation(state: ReportAssemblerState) -> list[Miss
                 MissingClause(
                     category=display_name,
                     reason="Missing from contract",
-                    impact=f"Standard commercial safeguard '{display_name}' was not found in the fully analyzed contract."
+                    impact=f"Standard commercial safeguard '{display_name}' was not found in the fully analyzed contract.",
                 )
             )
     return validated_missing
@@ -429,22 +492,10 @@ def validate_report_node(state: ReportAssemblerState) -> ReportAssemblerState:
 
 
 class ReportAssemblerAgent:
-    """Compiles final contract review report using LangGraph and LLM."""
+    """Compiles final contract review report using LLM."""
 
     def __init__(self, llm_client: Any | None = None):
         self.llm_client = llm_client
-
-    def _create_graph(self, llm_client: Any | None = None):
-        workflow = StateGraph(ReportAssemblerState)
-
-        workflow.add_node("llm_assemble", lambda state: llm_assemble_node(state, llm_client))
-        workflow.add_node("validate_report", validate_report_node)
-
-        workflow.set_entry_point("llm_assemble")
-        workflow.add_edge("llm_assemble", "validate_report")
-        workflow.add_edge("validate_report", END)
-
-        return workflow.compile()
 
     def assemble(
         self,
@@ -475,8 +526,9 @@ class ReportAssemblerAgent:
             "warnings": [],
         }
 
-        graph = self._create_graph(self.llm_client)
-        final_state = graph.invoke(initial_state)
+        # Sequential execution
+        state = llm_assemble_node(initial_state, self.llm_client)
+        final_state = validate_report_node(state)
 
         return ReportAssemblerOutput(
             verdict=final_state["verdict"],
@@ -504,9 +556,15 @@ def assemble_report(
     if llm_client is None:
         try:
             from ..services.azure_clients import AzureClientFactory
+
             llm_client = AzureClientFactory().get_openai_client_for_agent("report_assembler")
         except Exception:
             pass
     return ReportAssemblerAgent(llm_client=llm_client).assemble(
-        clause_extraction, risk_scoring, red_flags, plain_english, obligation_finding=obligation_finding, perspective=perspective
+        clause_extraction,
+        risk_scoring,
+        red_flags,
+        plain_english,
+        obligation_finding=obligation_finding,
+        perspective=perspective,
     )
