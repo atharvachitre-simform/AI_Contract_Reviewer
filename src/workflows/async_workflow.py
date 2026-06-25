@@ -392,6 +392,7 @@ class AsyncContractReviewWorkflow:
                     risk_scoring=state.risk_scoring,
                     red_flags=state.red_flag_detection,
                     plain_english=state.plain_english,
+                    obligation_finding=state.obligation_finding,
                     llm_client=assembler_llm_client,
                     perspective=perspective,
                 )

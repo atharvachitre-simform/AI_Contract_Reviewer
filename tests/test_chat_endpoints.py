@@ -17,7 +17,7 @@ client = TestClient(app)
 
 def test_chat_text_endpoint():
     """Verify text chat endpoint parses inputs, calls ContractChatService, and returns findings."""
-    with patch("src.services.chat_service.ContractChatService") as mock_service_class:
+    with patch("src.fastapi_app.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
         mock_instance.ask = AsyncMock(return_value={
             "answer": "This is a mock answer based on text context.",
@@ -45,7 +45,7 @@ def test_chat_text_endpoint():
 
 def test_chat_image_endpoint():
     """Verify multimodal vision chat endpoint processes form fields and upload file."""
-    with patch("src.services.chat_service.ContractChatService") as mock_service_class:
+    with patch("src.fastapi_app.ContractChatService") as mock_service_class:
         mock_instance = MagicMock()
         mock_instance.ask_with_image = AsyncMock(return_value={
             "answer": "This is a mock answer based on the page image.",

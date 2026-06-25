@@ -1,5 +1,6 @@
 """Pytest configuration and global dependency overrides for FastAPI test client."""
 import os
+os.environ["REDIS_URL"] = "memory://"
 os.environ["RATE_LIMIT_REVIEW_STREAM"] = "3/minute"
 os.environ["RATE_LIMIT_CHAT"] = "5/minute"
 os.environ["RATE_LIMIT_GLOBAL"] = "10/minute"

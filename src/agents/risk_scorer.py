@@ -16,6 +16,7 @@ from src.models import ClauseExtractorOutput, ClauseSpan, RiskIssue, RiskLevel, 
 from src.prompts.risk_scorer_prompt import build_risk_scorer_prompt
 from src.agents.pipeline_tools import run_agent_tool_loop
 from src.helpers.compression_helper import get_compressed_payload_string
+from src.helpers.llm_parsing import strip_markdown_fences
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +63,7 @@ class RiskScorerAgent:
 
     def _strip_markdown_fences(self, text: str) -> str:
         """Strip markdown code fences (```json ... ```) from LLM response."""
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            # Remove opening fence (```json or ```) and closing fence
-            inner = [l for l in lines[1:] if l.strip() != "```"]
-            return "\n".join(inner).strip()
-        return stripped
+        return strip_markdown_fences(text)
 
     def _extract_json_payload(self, text: str) -> str | None:
         """Extract the first balanced JSON object from the LLM response."""
@@ -188,18 +183,15 @@ class RiskScorerAgent:
         try:
             clause_extraction = state["clause_extraction"]
             raw_clauses = clause_extraction.clauses or []
-            SKIP_FOR_RISK = {
-                "Document Name", "Parties", "Agreement Date", "Effective Date", 
-                "Governing Law"
-            }
+            SKIP_FOR_RISK = config.ADMINISTRATIVE_CLAUSE_TYPES
             filtered_clauses = [
                 c for c in raw_clauses
                 if str(getattr(c, "cuad_category", "") or "").strip() not in SKIP_FOR_RISK
-                and str(getattr(c, "clause_type", "") or "").strip().lower() not in {"governing law", "parties", "agreement date", "effective date", "document name"}
+                and str(getattr(c, "clause_type", "") or "").strip().lower() not in {t.lower() for t in SKIP_FOR_RISK}
                 and getattr(c, "clause_tag", "") not in {"definition", "placeholder"}
             ]
             clauses_to_analyze = filtered_clauses[:self.MAX_CLAUSES_TO_ANALYZE]
-            chunk_size = self.MAX_CLAUSES_TO_ANALYZE
+            chunk_size = config.AGENT_PROCESSING_CHUNK_SIZE
             
             # Divide into chunks
             chunks = [clauses_to_analyze[i:i + chunk_size] for i in range(0, len(clauses_to_analyze), chunk_size)]
@@ -319,8 +311,11 @@ class RiskScorerAgent:
 
                 if llm_risks:
                     current_score = sum(issue.risk_score for issue in llm_risks) / len(llm_risks)
-                    if current_score >= config.RISK_THRESHOLD_HIGH:
-                        logger.info(f"Early exit: Reached high risk confidence threshold ({current_score:.2f}) after chunk {chunk_idx + 1}.")
+                    # Only exit early if we've processed at least a minimum representative sample
+                    # of chunks and the running average risk score is consistently high.
+                    min_chunks_for_exit = max(2, len(chunks) // 2) if len(chunks) > 1 else 1
+                    if (chunk_idx + 1) >= min_chunks_for_exit and current_score >= config.RISK_THRESHOLD_HIGH:
+                        logger.info(f"Early exit: Reached high risk confidence threshold ({current_score:.2f}) after chunk {chunk_idx + 1}/{len(chunks)}.")
                         break
 
             logger.info(f"LLM risk analysis complete: {len(llm_risks)} issues identified")

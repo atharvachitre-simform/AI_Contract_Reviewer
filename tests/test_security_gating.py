@@ -45,7 +45,7 @@ def test_auth_route_success_with_valid_token(mock_client_class, clean_overrides)
     client = TestClient(app)
     
     # We patch ContractReviewService in services module
-    with patch("src.services.services.ContractReviewService") as mock_service_class:
+    with patch("src.fastapi_app.ContractReviewService") as mock_service_class:
         mock_service = mock_service_class.return_value
         mock_service.load_checkpoint.return_value = MagicMock()
         
@@ -133,7 +133,7 @@ def test_contract_ownership_accepted(mock_redis_client_class, clean_overrides):
     app.dependency_overrides[get_current_user] = mock_user
 
     client = TestClient(app)
-    with patch("src.services.services.ContractReviewService") as mock_service_class:
+    with patch("src.fastapi_app.ContractReviewService") as mock_service_class:
         mock_service = mock_service_class.return_value
         mock_service.load_checkpoint.return_value = MagicMock()
 

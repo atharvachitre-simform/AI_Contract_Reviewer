@@ -25,7 +25,7 @@ os.environ.setdefault("SUPABASE_KEY", "")
 
 def _run_async(coro):
     """Helper to run an async coroutine in a synchronous test."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 async def _collect_sse(contract_id: str, last_event_id: int = 0, buffered_events=None, live_events=None):

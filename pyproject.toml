@@ -41,6 +41,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "limits>=3.6",
     "celery>=5.3",
+    "headroom>=0.2.7",
 ]
 
 [dependency-groups]
