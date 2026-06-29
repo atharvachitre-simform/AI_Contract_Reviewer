@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from src.services.azure_clients import AzureOpenAIWrapper
+from ai_service.services.azure_clients import AzureOpenAIWrapper
 
 
 def test_retry_on_transient_error():
@@ -33,7 +33,7 @@ def test_retry_on_transient_error():
     # Patch tenacity wait_exponential to wait 0 seconds in tests and clear Groq key
     with (
         patch("tenacity.wait_exponential", return_value=lambda *args, **kwargs: 0),
-        patch("src.services.azure_clients.config.GROQ_API_KEY", ""),
+        patch("ai_service.services.azure_clients.config.GROQ_API_KEY", ""),
     ):
         result = wrapper.chat_complete("Test prompt")
 

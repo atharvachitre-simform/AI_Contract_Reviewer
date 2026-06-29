@@ -1,6 +1,6 @@
 import pytest
 
-from src.services.services import ContractReviewService
+from ai_service.services.services import ContractReviewService
 
 
 def test_scanned_pdf_detection():

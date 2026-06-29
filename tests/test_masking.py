@@ -1,15 +1,13 @@
-import pytest
 
-from src.helpers.mask import (
+from ai_service.utils.masker import (
     get_all_trigger_keywords,
     mask_sensitive_text,
     restore_masked_text,
     unmask_review_state,
 )
-from src.models.models import (
+from ai_service.output_schemas.models import (
     ClauseExtractorOutput,
     ClauseSpan,
-    ContractMetadata,
     ContractReviewState,
     ReportAssemblerOutput,
     ReviewVerdict,

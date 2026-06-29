@@ -3,9 +3,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src import config
-from src.services.azure_clients import AzureClientFactory
-from src.services.memory_store import MemoryStore
+from app import config
+from ai_service.services.azure_clients import AzureClientFactory
+from ai_service.memories.memory_store import MemoryStore
 
 
 @pytest.fixture

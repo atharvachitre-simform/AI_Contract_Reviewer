@@ -12,12 +12,10 @@ Note on asyncio.run() inside tests:
 
 from __future__ import annotations
 
-import asyncio
 import inspect as inspect_module
-import json
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 # Must be set before importing Celery app
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
@@ -26,10 +24,10 @@ os.environ.setdefault("CELERY_PROGRESS_EVENT_TTL", "60")
 
 from celery.exceptions import Retry
 
-from src.worker import autoscaler
-from src.worker.autoscaler import report_queue_depth
-from src.worker.celery_app import celery_app
-from src.worker.tasks import _PROGRESS_CHANNEL_KEY, _PROGRESS_LIST_KEY, run_contract_review_task
+from worker import autoscaler
+from worker.autoscaler import report_queue_depth
+from worker.celery_app import celery_app
+from worker.tasks import _PROGRESS_CHANNEL_KEY, _PROGRESS_LIST_KEY, run_contract_review_task
 
 
 class TestRunContractReviewTask(unittest.TestCase):
@@ -52,7 +50,7 @@ class TestRunContractReviewTask(unittest.TestCase):
             {"step": "done", "status": "completed", "state": {}},
         ]
 
-    @patch("src.worker.tasks.asyncio.run")
+    @patch("worker.tasks.asyncio.run")
     def test_task_runs_in_eager_mode(self, mock_asyncio_run):
         """Task should execute synchronously when CELERY_TASK_ALWAYS_EAGER=True."""
         mock_asyncio_run.return_value = None  # _run() coroutine returns None
@@ -66,7 +64,7 @@ class TestRunContractReviewTask(unittest.TestCase):
         self.assertIsNotNone(result)
         mock_asyncio_run.assert_called_once()
 
-    @patch("src.worker.tasks.asyncio.run")
+    @patch("worker.tasks.asyncio.run")
     def test_task_publishes_events_to_redis(self, mock_asyncio_run):
         """Verify that the inner coroutine would publish events to both List and Pub/Sub."""
         events_pushed = []
@@ -86,7 +84,7 @@ class TestRunContractReviewTask(unittest.TestCase):
         # If asyncio.run was called, the task body executed
         mock_asyncio_run.assert_called_once()
 
-    @patch("src.worker.tasks.asyncio.run", side_effect=RuntimeError("LLM unavailable"))
+    @patch("worker.tasks.asyncio.run", side_effect=RuntimeError("LLM unavailable"))
     def test_task_retries_on_exception(self, mock_asyncio_run):
         """Task should raise Retry on exception (up to max_retries)."""
         with self.assertRaises((Retry, RuntimeError)):
@@ -125,7 +123,7 @@ class TestAutoscaler(unittest.TestCase):
         """report_queue_depth must be an async function (safe for async FastAPI context)."""
         self.assertTrue(inspect_module.iscoroutinefunction(report_queue_depth))
 
-    @patch("src.worker.autoscaler.celery_app")
+    @patch("worker.autoscaler.celery_app")
     def test_report_uses_run_in_executor_for_inspect(self, mock_celery):
         """Inspect call must be wrapped in run_in_executor to avoid blocking the event loop."""
         # Verify the source references run_in_executor

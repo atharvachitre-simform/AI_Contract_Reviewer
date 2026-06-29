@@ -1,11 +1,11 @@
 import sys
 
-sys.path.insert(0, '.')
+sys.path.insert(0, ".")
 import re
 
 from src.helpers.contract_analysis import normalize_whitespace
 
-with open('scratch/contract_46ce978f8a9180f4.txt', 'r') as f:
+with open("scratch/contract_46ce978f8a9180f4.txt", "r") as f:
     raw_text = f.read()
 
 # Let's run the header/footer detection logic isolated so we can print the candidate set
@@ -24,7 +24,7 @@ while i < len(parts):
     if page_marker_re.match(parts[i]):
         markers.append(parts[i])
         if i + 1 < len(parts):
-            pages.append(parts[i+1])
+            pages.append(parts[i + 1])
             i += 2
         else:
             pages.append("")
@@ -52,9 +52,10 @@ header_footer_candidates = set()
 for line_clean, count in line_counts.items():
     if count >= 3:
         lower_line = line_clean.lower()
-        is_heading = any(lower_line.startswith(prefix) for prefix in [
-            "section", "article", "clause", "para", "part", "schedule", "exhibit"
-        ])
+        is_heading = any(
+            lower_line.startswith(prefix)
+            for prefix in ["section", "article", "clause", "para", "part", "schedule", "exhibit"]
+        )
         is_heading = is_heading or bool(re.match(r"^\d+[\.\s]+[A-Z]", line_clean))
         if not is_heading:
             header_footer_candidates.add(line_clean)

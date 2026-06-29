@@ -15,9 +15,8 @@ import json
 import os
 from unittest.mock import MagicMock
 
-import pytest
 
-from src.middleware.rate_limiter import get_user_id_or_ip
+from app.middlewares.rate_limiter import get_user_id_or_ip
 
 # Force in-memory storage so tests don't require a live Redis
 os.environ.setdefault("REDIS_URL", "memory://")
@@ -32,7 +31,7 @@ os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
 
 from fastapi.testclient import TestClient
 
-from src.fastapi_app import app
+from app.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -133,8 +132,12 @@ class TestChatRateLimit:
         return resp.status_code
 
     def test_over_limit_returns_429(self):
+        from unittest.mock import patch, AsyncMock
         headers = _auth_headers("rate-test-chat-001")
-        statuses = [self._post_chat(headers) for _ in range(8)]
+        with patch("app.routers.chat_router.check_contract_ownership", return_value=None):
+            with patch("app.services.app_helpers.handle_chat_text", new_callable=AsyncMock) as mock_handle:
+                mock_handle.return_value = {"answer": "mocked text response"}
+                statuses = [self._post_chat(headers) for _ in range(35)]
         assert 429 in statuses, f"Expected 429 for chat endpoint, got: {statuses}"
 
 

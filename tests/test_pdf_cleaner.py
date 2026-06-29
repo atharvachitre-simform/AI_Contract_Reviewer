@@ -1,4 +1,4 @@
-from src.helpers.pdf_cleaner import (
+from ai_service.utils.pdf_cleaner import (
     clean_extracted_pages,
     clean_extracted_paragraphs,
     is_page_number_line,

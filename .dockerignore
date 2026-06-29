@@ -47,11 +47,15 @@ contract-reviewer.tar
 # Local debug and run traces
 scratch/
 artifacts/
+data/
 
 # Deployment & Utility Scripts
 scripts/
 deploy_secure.sh
 Makefile
 
-
-
+# Hidden Config Files
+.github/
+.flake8
+.pre-commit-config.yaml
+.python-version

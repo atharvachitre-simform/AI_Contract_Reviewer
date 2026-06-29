@@ -1,11 +1,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from src.services.azure_clients import AzureClientFactory
-from src.services.llm_client import (
-    BUSINESS_DOMAIN_HEADER,
-    AzureOpenAIWrapper,
-)
+from ai_service.services.azure_clients import AzureClientFactory
+from ai_service.services.llm_client import BUSINESS_DOMAIN_HEADER, AzureOpenAIWrapper
 
 
 def test_get_openai_client_for_agent_defaults():
@@ -78,7 +75,7 @@ def test_get_openai_client_for_agent_gemini_missing_key():
 
     with patch.dict(os.environ, env_vars, clear=True):
         factory = AzureClientFactory()
-        with patch("src.services.azure_clients.logger.warning") as mock_warning:
+        with patch("ai_service.services.azure_clients.logger.warning") as mock_warning:
             client = factory.get_openai_client_for_agent("relevance_gater")
             assert client is None
             mock_warning.assert_called_once()

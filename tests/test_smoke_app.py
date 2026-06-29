@@ -1,6 +1,6 @@
 """Smoke test - Verify that the FastAPI app imports correctly."""
 
-from src.fastapi_app import app
+from app.main import app
 
 
 def test_app_imports():

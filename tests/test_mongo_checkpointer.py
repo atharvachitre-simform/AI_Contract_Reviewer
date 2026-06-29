@@ -2,13 +2,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
-from src.checkpointing.redis_checkpointer import RedisCheckpointer
+from checkpointing.mongo_checkpointer import MongoCheckpointerStore
+from checkpointing.redis_checkpointer import RedisCheckpointer
 
 
 def test_mongo_checkpointer_store_save_load_delete():
     # Mock MongoClient
-    with patch("src.checkpointing.mongo_checkpointer.MongoClient") as mock_client_class:
+    with patch("checkpointing.mongo_checkpointer.MongoClient") as mock_client_class:
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
 
@@ -56,7 +56,7 @@ def test_mongo_checkpointer_store_save_load_delete():
 async def test_redis_checkpointer_mongo_integration(tmp_path):
     contract_id = "test_contract_456"
 
-    with patch("src.checkpointing.redis_checkpointer.Path") as mock_path:
+    with patch("checkpointing.redis_checkpointer.Path") as mock_path:
         mock_path.return_value = tmp_path
 
         # Instantiate RedisCheckpointer

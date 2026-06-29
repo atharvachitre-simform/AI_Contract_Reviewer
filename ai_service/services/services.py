@@ -1,0 +1,1 @@
+from ai_service.services.contract_review_service import ContractReviewService  # noqa: F401

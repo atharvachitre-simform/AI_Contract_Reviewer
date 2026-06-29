@@ -1,3 +1,4 @@
+# All external connections must be mocked — no live service calls in unit tests.
 import sys
 from unittest.mock import MagicMock
 
@@ -10,8 +11,8 @@ sys.modules["qdrant_client"] = mock_qdrant
 sys.modules["qdrant_client.models"] = mock_models
 
 # Import under test
-from src.services.azure_clients import AzureClientFactory
-from src.services.memory_store import MemoryStore
+from ai_service.services.azure_clients import AzureClientFactory
+from ai_service.memories.memory_store import MemoryStore
 
 
 def test_index_clauses_in_qdrant_success():

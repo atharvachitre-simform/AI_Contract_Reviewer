@@ -8,10 +8,9 @@ os.environ["RATE_LIMIT_CHAT"] = "5/minute"
 os.environ["RATE_LIMIT_GLOBAL"] = "10/minute"
 
 import pytest
-from fastapi.testclient import TestClient
 
-from src.fastapi_app import app
-from src.helpers.auth import check_contract_ownership, get_current_user
+from app.main import app
+from app.utils.auth import check_contract_ownership, get_current_user
 
 
 @pytest.fixture(autouse=True)

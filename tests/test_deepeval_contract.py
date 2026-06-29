@@ -12,7 +12,7 @@ from deepeval.metrics import (
 from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
-from src.services.azure_clients import AzureClientFactory
+from ai_service.services.azure_clients import AzureClientFactory
 
 
 # ===========================================================================

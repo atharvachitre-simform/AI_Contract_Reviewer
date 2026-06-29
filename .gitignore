@@ -88,3 +88,15 @@ contract-reviewer.tar
 scratch/
 artifacts/
 
+# Local tunnel config — contains secrets
+ngrok.yml
+
+# Private keys, certificates and secrets
+*.pem
+*.key
+*.p12
+secrets.json
+
+# detect-secrets baseline — regenerate locally, do not commit
+.secrets.baseline
+

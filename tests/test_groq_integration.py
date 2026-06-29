@@ -1,11 +1,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from src.services.azure_clients import AzureClientFactory
-from src.services.llm_client import (
-    BUSINESS_DOMAIN_HEADER,
-    AzureOpenAIWrapper,
-)
+from ai_service.services.azure_clients import AzureClientFactory
+from ai_service.services.llm_client import BUSINESS_DOMAIN_HEADER, AzureOpenAIWrapper
 
 
 def test_groq_wrapper_initialization():
@@ -13,8 +10,8 @@ def test_groq_wrapper_initialization():
     # We will mock the groq package
     mock_groq_client = MagicMock()
     with (
-        patch("src.services.llm_client.groq") as mock_groq_module,
-        patch("src.services.llm_client.config") as mock_config,
+        patch("ai_service.services.llm_client.groq") as mock_groq_module,
+        patch("ai_service.services.llm_client.config") as mock_config,
     ):
 
         mock_groq_module.Groq.return_value = mock_groq_client
@@ -82,8 +79,8 @@ def test_rate_limit_fallback_to_groq():
     mock_groq_client.chat.completions.create.return_value = mock_completion
 
     with (
-        patch("src.services.llm_client.groq") as mock_groq_module,
-        patch("src.services.llm_client.config") as mock_config,
+        patch("ai_service.services.llm_client.groq") as mock_groq_module,
+        patch("ai_service.services.llm_client.config") as mock_config,
     ):
 
         mock_groq_module.Groq.return_value = mock_groq_client
@@ -131,7 +128,7 @@ def test_azure_client_factory_groq_routing():
 
     with (
         patch.dict(os.environ, env_vars, clear=True),
-        patch("src.services.llm_client.groq") as mock_groq_module,
+        patch("ai_service.services.llm_client.groq") as mock_groq_module,
     ):
 
         mock_groq_module.Groq.return_value = MagicMock()

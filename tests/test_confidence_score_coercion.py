@@ -1,4 +1,4 @@
-from src.agents.clause_extractor import _build_clauses_from_llm
+from ai_service.agents.clause_extractor import _build_clauses_from_llm
 
 
 def test_confidence_score_coercion():

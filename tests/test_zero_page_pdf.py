@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from src.services.services import ContractReviewService
+from ai_service.services.services import ContractReviewService
 
 
 def test_zero_page_pdf():

@@ -7,12 +7,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from src.fastapi_app import app, verify_path_contract_access
-from src.helpers.auth import UserRole, check_contract_ownership, get_current_user
-from src.helpers.cleanup import cleanup_old_pages
+from app.main import app
+from app.utils.auth import UserRole, check_contract_ownership, get_current_user, verify_path_contract_access
+from app.utils.cleanup import cleanup_old_pages
 
 
 @pytest.fixture
@@ -32,7 +31,7 @@ def test_auth_route_rejection_without_token(clean_overrides):
     assert "Missing authentication credentials" in response.json()["detail"]
 
 
-@patch("src.helpers.auth.httpx.AsyncClient")
+@patch("app.utils.auth.httpx.AsyncClient")
 def test_auth_route_success_with_valid_token(mock_client_class, clean_overrides):
     """Verify that route succeeds when valid token is verified by Supabase."""
     mock_response = MagicMock()
@@ -52,9 +51,12 @@ def test_auth_route_success_with_valid_token(mock_client_class, clean_overrides)
     client = TestClient(app)
 
     # We patch ContractReviewService in services module
-    with patch("src.fastapi_app.ContractReviewService") as mock_service_class:
+    with patch("app.routers.review_router.ContractReviewService") as mock_service_class:
         mock_service = mock_service_class.return_value
-        mock_service.load_checkpoint.return_value = MagicMock()
+        mock_state = MagicMock()
+        mock_state.model_dump.return_value = {}
+        mock_state.model_copy.return_value = mock_state
+        mock_service.load_checkpoint.return_value = mock_state
 
         response = client.get(
             "/api/v1/review/test-contract", headers={"Authorization": "Bearer valid-supabase-token"}
@@ -85,7 +87,7 @@ def test_checkpoint_delete_admin_allowed(clean_overrides):
 
     # Override get_current_user to return an admin
     async def mock_admin_user():
-        return {"id": "admin_uuid", "email": "atharvachitre123@gmail.com", "role": UserRole.ADMIN}
+        return {"id": "admin_uuid", "email": "admin@example.com", "role": UserRole.ADMIN}
 
     # Override verify_path_contract_access (the actual route dependency that wraps
     # check_contract_ownership as a direct call — not a FastAPI dependency injection)
@@ -96,7 +98,7 @@ def test_checkpoint_delete_admin_allowed(clean_overrides):
     app.dependency_overrides[verify_path_contract_access] = mock_path_access
 
     with patch(
-        "src.checkpointing.redis_checkpointer.RedisCheckpointer.delete", new_callable=AsyncMock
+        "checkpointing.redis_checkpointer.RedisCheckpointer.delete", new_callable=AsyncMock
     ) as mock_delete:
         client = TestClient(app)
         response = client.delete(
@@ -115,7 +117,7 @@ def test_checkpoint_delete_reviewer_forbidden(clean_overrides):
     async def mock_reviewer_user():
         return {
             "id": "reviewer_uuid",
-            "email": "testuser_chitre@gmail.com",
+            "email": "reviewer@example.com",
             "role": UserRole.REVIEWER,
         }
 
@@ -135,7 +137,7 @@ def test_checkpoint_delete_reviewer_forbidden(clean_overrides):
     assert "Admin privileges required" in response.json()["detail"]
 
 
-@patch("src.services.redis_client.AsyncRedisClient")
+@patch("app.services.redis_client.AsyncRedisClient")
 def test_contract_ownership_accepted(mock_redis_client_class, clean_overrides):
     """Verify that document access is allowed when the user is the registered owner in Redis."""
     mock_redis = mock_redis_client_class.return_value
@@ -151,9 +153,12 @@ def test_contract_ownership_accepted(mock_redis_client_class, clean_overrides):
     app.dependency_overrides[get_current_user] = mock_user
 
     client = TestClient(app)
-    with patch("src.fastapi_app.ContractReviewService") as mock_service_class:
+    with patch("app.routers.review_router.ContractReviewService") as mock_service_class:
         mock_service = mock_service_class.return_value
-        mock_service.load_checkpoint.return_value = MagicMock()
+        mock_state = MagicMock()
+        mock_state.model_dump.return_value = {}
+        mock_state.model_copy.return_value = mock_state
+        mock_service.load_checkpoint.return_value = mock_state
 
         response = client.get(
             "/api/v1/review/owned-contract", headers={"Authorization": "Bearer some-token"}
@@ -161,7 +166,7 @@ def test_contract_ownership_accepted(mock_redis_client_class, clean_overrides):
         assert response.status_code == 200
 
 
-@patch("src.services.redis_client.AsyncRedisClient")
+@patch("app.services.redis_client.AsyncRedisClient")
 def test_contract_ownership_rejected(mock_redis_client_class, clean_overrides):
     """Verify that document access is forbidden (403) when owned by another user."""
     mock_redis = mock_redis_client_class.return_value

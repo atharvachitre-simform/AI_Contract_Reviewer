@@ -1,8 +1,6 @@
-import pytest
 
-from src.agents.red_flag_detector import _normalize_severity, _parse_red_flag_response
-from src.agents.risk_scorer import RiskScorerAgent
-from src.models import RedFlagItem, RiskIssue, RiskLevel
+from ai_service.agents.risk_scorer import RiskScorerAgent
+from ai_service.output_schemas import RedFlagItem, RiskIssue, RiskLevel
 
 
 def test_risk_issue_pydantic_fields():

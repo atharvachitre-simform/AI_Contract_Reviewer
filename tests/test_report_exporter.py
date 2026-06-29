@@ -1,5 +1,5 @@
-from src.helpers.report_exporter import export_as_docx, export_as_markdown, export_as_pdf
-from src.models.models import (
+from app.reports.report_exporter import export_as_docx, export_as_markdown, export_as_pdf
+from ai_service.output_schemas.models import (
     ContractMetadata,
     ContractReviewState,
     MissingClause,

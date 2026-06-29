@@ -1,5 +1,5 @@
-from src.agents.report_assembler import ReportAssemblerAgent, check_completeness
-from src.models.models import (
+from ai_service.agents.report_assembler import ReportAssemblerAgent, check_completeness
+from ai_service.output_schemas.models import (
     ClauseExtractorOutput,
     PlainEnglishWriterOutput,
     RedFlagDetectorOutput,

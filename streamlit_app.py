@@ -3,44 +3,50 @@
 This app exposes the available review models and a simple pipeline selection UI.
 """
 
-import asyncio
 import base64
 import contextlib
 import hashlib
-import json
 import logging
 import os
 import re
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src import config
-from src.agents import (
-    assemble_report,
-    detect_red_flags,
-    extract_clauses,
-    find_obligations,
-    generate_plain_english,
-    score_risks,
-)
-from src.checkpointing.mongo_checkpointer import MongoCheckpointerStore
-from src.config import SENSITIVE_KEYWORDS
-from src.controllers.controller import ContractReviewController
-from src.helpers.auth import check_contract_ownership
-from src.helpers.contract_analysis import normalize_whitespace
-from src.helpers.mask import mask_sensitive_text, unmask_review_state, unmask_single_output
-from src.helpers.page_renderer import render_clause_crops
-from src.helpers.report_exporter import export_as_docx, export_as_markdown, export_as_pdf
-from src.services.azure_clients import AzureClientFactory
-from src.services.chat_service import ContractChatService
-from src.services.langfuse_tracer import LangFuseTracer, calculate_llm_cost
-from src.services.redis_client import AsyncRedisClient
-from src.services.services import ContractReviewService
+from app import config
+from ai_service.utils.contract_analysis import normalize_whitespace
+from ai_service.utils.masker import mask_sensitive_text
+from ai_service.utils.page_renderer import render_clause_crops
+from app.reports.report_exporter import export_as_docx, export_as_markdown, export_as_pdf
+from ai_service.output_schemas.models import ContractReviewState
+
+
+
+class DictToObject:
+    """Wrapper to turn nested dict into dot-attribute accessible object."""
+    def __init__(self, data: dict):
+        self._data = data
+        for key, value in data.items():
+            if isinstance(value, dict):
+                setattr(self, key, DictToObject(value))
+            elif isinstance(value, list):
+                setattr(self, key, [DictToObject(item) if isinstance(item, dict) else item for item in value])
+            else:
+                setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def model_dump(self, mode="json"):
+        return self._data
 
 MODEL_OPTIONS = [
     "Full Contract Review Pipeline",
@@ -54,24 +60,28 @@ MODEL_OPTIONS = [
 
 
 PARENT_DIR = os.path.dirname(os.path.abspath(__file__))
-COMPONENT_DIR = os.path.join(PARENT_DIR, "src", "helpers", "session_component")
+COMPONENT_DIR = os.path.join(PARENT_DIR, "ai_service", "utils", "session_component")
 
 _session_component = components.declare_component("session_component", path=COMPONENT_DIR)
-
-
 def check_supabase_auth(email, password) -> dict | None:
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
 
     if not supabase_url or not supabase_key:
-        # Dev/mock mode: no Supabase configured
-        # WARNING: This bypass is intentional for local development only.
-        # Set SUPABASE_URL and SUPABASE_KEY in .env before deploying to any shared environment.
         logging.getLogger(__name__).warning(
-            "SUPABASE_URL/SUPABASE_KEY not set — running in unauthenticated dev mode. "
-            "All users share the mock_user_id identity. DO NOT use this in production."
+            "SUPABASE_URL/SUPABASE_KEY not set — running in unauthenticated dev mode."
         )
-        return {"user": {"id": "mock_user_id", "email": email}, "access_token": "mock-token"}
+        role = "admin" if "admin" in email.lower() else "reviewer"
+        return {
+            "user": {
+                "id": "mock_user_id",
+                "email": email,
+                "role": role,
+                "user_metadata": {"full_name": email.split("@")[0].title()},
+                "app_metadata": {"role": role}
+            },
+            "access_token": "mock-token"
+        }
 
     url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
     headers = {"apikey": supabase_key, "Content-Type": "application/json"}
@@ -80,8 +90,13 @@ def check_supabase_auth(email, password) -> dict | None:
         response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
         if response.status_code == 200:
             data = response.json()
+            user_obj = data.get("user") or {}
+            app_metadata = user_obj.get("app_metadata", {})
+            user_metadata = user_obj.get("user_metadata", {})
+            role = app_metadata.get("role") or user_metadata.get("role") or "reviewer"
+            user_obj["role"] = role
             return {
-                "user": data.get("user"),
+                "user": user_obj,
                 "access_token": data.get("access_token"),
                 "refresh_token": data.get("refresh_token"),
             }
@@ -103,8 +118,13 @@ def refresh_supabase_token(refresh_token: str) -> dict | None:
         response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
         if response.status_code == 200:
             data = response.json()
+            user_obj = data.get("user") or {}
+            app_metadata = user_obj.get("app_metadata", {})
+            user_metadata = user_obj.get("user_metadata", {})
+            role = app_metadata.get("role") or user_metadata.get("role") or "reviewer"
+            user_obj["role"] = role
             return {
-                "user": data.get("user"),
+                "user": user_obj,
                 "access_token": data.get("access_token"),
                 "refresh_token": data.get("refresh_token"),
             }
@@ -117,20 +137,31 @@ def get_user_from_token(token: str) -> dict | None:
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
     if not supabase_url or not supabase_key:
-        return {"id": "mock_user_id", "email": "atharvachitre123@gmail.com"}
+        return {
+            "id": "mock_user_id",
+            "email": "mock@example.com",
+            "role": "reviewer",
+            "user_metadata": {"full_name": "Mock User"},
+            "app_metadata": {"role": "reviewer"}
+        }
 
     url = f"{supabase_url.rstrip('/')}/auth/v1/user"
     headers = {"apikey": supabase_key, "Authorization": f"Bearer {token}"}
     try:
         response = httpx.get(url, headers=headers, timeout=5.0)
         if response.status_code == 200:
-            return response.json()
+            user_data = response.json()
+            app_metadata = user_data.get("app_metadata", {})
+            user_metadata = user_data.get("user_metadata", {})
+            role = app_metadata.get("role") or user_metadata.get("role") or "reviewer"
+            user_data["role"] = role
+            return user_data
     except Exception:
         pass
     return None
 
 
-@st.cache_data
+# @st.cache_data
 def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
     name = file_name.lower()
     if name.endswith(".pdf"):
@@ -138,7 +169,15 @@ def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
             tmp.write(file_bytes)
             tmp_path = Path(tmp.name)
         try:
-            return ContractReviewService().extract_from_pdf(str(tmp_path))
+            api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+            headers = {}
+            if st.session_state.get("auth_token"):
+                headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
+            with open(tmp_path, "rb") as f:
+                files = {"file": (file_name, f, "application/pdf")}
+                response = httpx.post(f"{api_url}/api/v1/review/extract", files=files, headers=headers, timeout=900.0)
+                response.raise_for_status()
+                return response.json()["text"]
         finally:
             tmp_path.unlink(missing_ok=True)
     try:
@@ -205,12 +244,23 @@ def _val(obj: object, default: str = "N/A") -> str:
     return getattr(obj, "value", str(obj))
 
 
-def render_api_trace(api_trace: list[dict]) -> None:
+def render_api_trace(api_trace: list[Any]) -> None:
     with st.expander("Trace / API call history", expanded=False):
         if not api_trace:
             st.write("No trace events available.")
             return
-        st.table(api_trace)
+        # Convert any DictToObject or custom object to raw dicts for st.table
+        raw_trace = []
+        for event in api_trace:
+            if hasattr(event, "_data") and isinstance(event._data, dict):
+                raw_trace.append(event._data)
+            elif hasattr(event, "model_dump"):
+                raw_trace.append(event.model_dump())
+            elif isinstance(event, dict):
+                raw_trace.append(event)
+            else:
+                raw_trace.append({"value": str(event)})
+        st.table(raw_trace)
 
 
 def render_clause_extraction(output: object) -> None:
@@ -263,7 +313,7 @@ def render_risk_scoring(output: object) -> None:
         if truncation_warning:
             st.warning(truncation_warning)
 
-        st.markdown(f"**Method:** LLM")
+        st.markdown("**Method:** LLM")
 
         risk_level = _val(getattr(output, "overall_risk_level", None)).upper()
         risk_score = getattr(output, "overall_risk_score", "N/A")
@@ -373,7 +423,7 @@ def render_red_flag_detection(output: object) -> None:
         if not output:
             st.write("No red flags detected.")
             return
-        st.markdown(f"**Method:** LLM")
+        st.markdown("**Method:** LLM")
         if getattr(output, "summary", None) and "failed" in getattr(output, "summary", "").lower():
             st.warning(output.summary)
             return
@@ -419,7 +469,7 @@ def render_plain_english(output: object) -> None:
         if not output:
             st.write("No plain English output available.")
             return
-        st.markdown(f"**Method:** LLM")
+        st.markdown("**Method:** LLM")
         if getattr(output, "executive_summary", None):
             st.markdown(
                 f"""
@@ -472,7 +522,7 @@ def render_report_assembler(output: object) -> None:
         if not output:
             st.write("No report output available.")
             return
-        st.markdown(f"**Method:** LLM")
+        st.markdown("**Method:** LLM")
 
         verdict = _val(getattr(output, "verdict", None))
         risk_level = _val(getattr(output, "overall_risk_level", None)).upper()
@@ -558,22 +608,28 @@ def render_chat_tab(contract_id: str) -> None:
 
     session_id = contract_id
 
-    # Register/verify contract ownership in Redis for the logged-in user
-    try:
-        asyncio.run(check_contract_ownership(contract_id, st.session_state["auth_user"]))
-    except Exception as e:
-        st.error(f"Access Denied: {e}")
-        st.stop()
+    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+    headers = {}
+    if st.session_state.get("auth_token"):
+        headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
 
-    chat_service = ContractChatService(
-        contract_id=contract_id,
-        session_id=session_id,
-        user_id=st.session_state["auth_user"].get("id"),
-    )
     history_key = f"history_{contract_id}_{session_id}"
     if history_key not in st.session_state:
-        summary, loaded_history = asyncio.run(chat_service._load_history())
-        st.session_state[history_key] = loaded_history
+        try:
+            response = httpx.get(
+                f"{api_url}/api/v1/chat/{contract_id}/history?session_id={session_id}",
+                headers=headers,
+                timeout=15.0
+            )
+            if response.status_code == 200:
+                st.session_state[history_key] = response.json().get("history", [])
+            else:
+                st.error("Failed to load chat history.")
+                st.session_state[history_key] = []
+        except Exception as e:
+            st.error(f"Error loading chat history: {e}")
+            st.session_state[history_key] = []
+
     history = st.session_state[history_key]
 
     # Document Page Viewer and Multi-modal input setup
@@ -612,16 +668,32 @@ def render_chat_tab(contract_id: str) -> None:
             user_prompt = history[-1]["content"]
             with st.chat_message("assistant"):
                 with st.spinner("Generating answer..."):
-                    res = asyncio.run(chat_service.ask(user_prompt))
-
-                    # Append assistant response + sources to history
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": res["answer"],
-                            "sources": res.get("sources", []),
+                    try:
+                        payload = {
+                            "contract_id": contract_id,
+                            "question": user_prompt,
+                            "session_id": session_id,
                         }
-                    )
+                        response = httpx.post(
+                            f"{api_url}/api/v1/chat",
+                            json=payload,
+                            headers=headers,
+                            timeout=180.0
+                        )
+                        if response.status_code == 200:
+                            res = response.json()
+                            history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": res["answer"],
+                                    "sources": res.get("sources", []),
+                                }
+                            )
+                        else:
+                            st.error("Failed to generate answer.")
+                    except Exception as e:
+                        st.error(f"Error calling chat API: {e}")
+                    st.rerun()
 
                     st.rerun()
 
@@ -772,12 +844,18 @@ def render_full_review(state: object) -> None:
         st.divider()
         st.subheader("📥 Export & Share Report")
 
+        # Convert DictToObject to ContractReviewState for proper typed export
+        try:
+            export_state = ContractReviewState.model_validate(state._data)
+        except Exception:
+            export_state = state  # fallback to DictToObject
+
         report_id = contract_id or "report"
         col_dl1, col_dl2, col_dl3 = st.columns(3)
         with col_dl1:
             st.download_button(
                 "⬇️ Markdown (.md)",
-                data=export_as_markdown(state),
+                data=export_as_markdown(export_state),
                 file_name=f"contract_review_{report_id}.md",
                 mime="text/markdown",
                 key="download_md",
@@ -785,7 +863,7 @@ def render_full_review(state: object) -> None:
         with col_dl2:
             st.download_button(
                 "⬇️ PDF (.pdf)",
-                data=export_as_pdf(state),
+                data=export_as_pdf(export_state),
                 file_name=f"contract_review_{report_id}.pdf",
                 mime="application/pdf",
                 key="download_pdf",
@@ -793,11 +871,12 @@ def render_full_review(state: object) -> None:
         with col_dl3:
             st.download_button(
                 "⬇️ Word (.docx)",
-                data=export_as_docx(state),
+                data=export_as_docx(export_state),
                 file_name=f"contract_review_{report_id}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 key="download_docx",
             )
+
 
     with tab2:
         if not contract_id:
@@ -839,50 +918,17 @@ def _clear_localstorage_session() -> None:
 
 @st.cache_data(ttl=300)
 def get_trace_cost_metrics(trace_id: str) -> dict:
-    log_file = Path("logs/langfuse_events.jsonl")
-
-    metrics = {"total_cost": 0.0, "total_input": 0, "total_output": 0}
-    if not log_file.exists() or not trace_id:
-        return metrics
-
+    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+    headers = {}
+    if st.session_state.get("auth_token"):
+        headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
     try:
-        with open(log_file, "r") as f:
-            for line in f:
-                if trace_id in line and "generation:" in line:
-                    try:
-                        data = json.loads(line.strip())
-                        if data.get("trace_id") == trace_id and data.get("step", "").startswith(
-                            "generation:"
-                        ):
-                            inp = data.get("input_tokens", 0) or 0
-                            out = data.get("output_tokens", 0) or 0
-                            cached = data.get("cached_tokens", 0) or 0
-                            model = data.get("model", "")
-
-                            # safely convert
-                            try:
-                                inp = int(inp)
-                            except:
-                                inp = 0
-                            try:
-                                out = int(out)
-                            except:
-                                out = 0
-                            try:
-                                cached = int(cached)
-                            except:
-                                cached = 0
-
-                            cost = calculate_llm_cost(model, inp, out, cached)
-
-                            metrics["total_input"] += inp
-                            metrics["total_output"] += out
-                            metrics["total_cost"] += cost
-                    except Exception:
-                        pass
+        response = httpx.get(f"{api_url}/api/trace/{trace_id}/cost", headers=headers, timeout=10.0)
+        if response.status_code == 200:
+            return response.json()
     except Exception:
         pass
-    return metrics
+    return {"total_cost": 0.0, "total_input": 0, "total_output": 0}
 
 
 def main() -> None:
@@ -1116,10 +1162,29 @@ def main() -> None:
     # Initialize defaults to prevent NameError if Run Model is clicked in chatbot view
     selected_model = "Full Contract Review Pipeline"
     perspective = "Neutral"
-
     with st.sidebar:
-        # Profile Info and Log Out Button
-        st.write(f"👤 **Logged in as:** `{st.session_state['auth_user']['email']}`")
+        user_info = st.session_state['auth_user']
+        user_metadata = user_info.get("user_metadata", {}) if isinstance(user_info, dict) else {}
+        display_name = (
+            user_metadata.get("full_name")
+            or user_metadata.get("display_name")
+            or user_metadata.get("name")
+            or user_info.get("email", "").split("@")[0].title()
+            if isinstance(user_info, dict) else "User"
+        )
+        app_metadata = user_info.get("app_metadata", {}) if isinstance(user_info, dict) else {}
+        role = (
+            user_info.get("role")
+            or app_metadata.get("role")
+            or user_metadata.get("role")
+            or "reviewer"
+            if isinstance(user_info, dict) else "reviewer"
+        ).title()
+
+        st.write(f"👤 **User:** `{display_name}`")
+        st.write(f"✉️ **Email:** `{user_info.get('email') if isinstance(user_info, dict) else ''}`")
+        st.write(f"🛡️ **Role:** `{role}`")
+
         if st.button("Log Out"):
             _clear_localstorage_session()
             st.session_state["auth_user"] = None
@@ -1132,122 +1197,87 @@ def main() -> None:
 
         # --- 1. Load Past Reviewed Contracts Section ---
         st.header("Past Reviewed Contracts")
-        mongo = MongoCheckpointerStore()
-        past_checkpoints = []
-        if mongo.is_connected() and mongo.collection is not None:
-            try:
-                # Find all checkpoints with step="full_state"
-                cursor = mongo.collection.find({"step": "full_state"}).sort("updated_at", -1)
-                past_checkpoints = list(cursor)
-            except Exception:
-                pass
+        api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+        headers = {}
+        if st.session_state.get("auth_token"):
+            headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
 
-        if past_checkpoints:
-            # Query all owners in a single batch pipeline to ensure fast rendering
-            async def get_contract_owners(c_ids):
-                redis = AsyncRedisClient()
-                if not await redis.ping():
-                    return {}
-                client = await redis._get_client()
-                async with client.pipeline(transaction=False) as pipe:
-                    for c_id in c_ids:
-                        pipe.get(f"contract_owner:{c_id}")
-                    owners = await pipe.execute()
-                    return {c_id: owner for c_id, owner in zip(c_ids, owners)}
+        past_sessions = []
+        try:
+            response = httpx.get(f"{api_url}/api/session", headers=headers, timeout=10.0)
+            if response.status_code == 200:
+                past_sessions = response.json()
+        except Exception:
+            pass
 
-            c_ids = [p["contract_id"] for p in past_checkpoints]
-            try:
-                owners_map = asyncio.run(get_contract_owners(c_ids))
-            except Exception:
-                owners_map = {}
+        options = [("", "Select a past contract...")]
+        for s in past_sessions:
+            c_id = s["contract_id"]
+            doc_name = s["document_name"]
+            if doc_name and ("/" in doc_name or "\\" in doc_name):
+                doc_name = doc_name.replace("\\", "/").rsplit("/", 1)[-1]
 
-            options = [("", "Select a past contract...")]
-            user_id = st.session_state["auth_user"].get("id")
-
-            for p in past_checkpoints:
-                c_id = p["contract_id"]
-
-                # Enforce ownership check: skip contracts owned by other users
-                owner_id = owners_map.get(c_id)
-                if user_id == "mock_user_id":
-                    if owner_id and owner_id != "mock_user_id":
-                        continue
-                else:
-                    if owner_id != user_id:
-                        continue
-
-                try:
-                    checkpoint_data = p["state_data"]
-                    metadata = checkpoint_data.get("metadata", {})
-                    doc_name = metadata.get("source_file") or metadata.get("document_name")
-                    if doc_name and ("/" in doc_name or "\\" in doc_name):
-                        doc_name = doc_name.replace("\\", "/").rsplit("/", 1)[-1]
-
-                    # If document_name is a page header or missing, extract first substantive line of contract text
-                    if (
-                        not doc_name
-                        or doc_name.strip() == "--- PAGE 1 ---"
-                        or re.match(
-                            r"^---\s*PAGE\s*\d+\s*---$", str(doc_name).strip(), re.IGNORECASE
-                        )
-                    ):
-                        contract_text_raw = checkpoint_data.get("contract_text", "")
-                        if contract_text_raw:
-                            cleaned_text = normalize_whitespace(contract_text_raw)
-                            first_substantive = next(
-                                (
-                                    line.strip()
-                                    for line in cleaned_text.split("\n")
-                                    if line.strip()
-                                    and not re.match(
-                                        r"^---\s*PAGE\s*\d+\s*---$", line.strip(), re.IGNORECASE
-                                    )
-                                ),
-                                None,
+            if (
+                not doc_name
+                or doc_name.strip() == "--- PAGE 1 ---"
+                or re.match(
+                    r"^---\s*PAGE\s*\d+\s*---$", str(doc_name).strip(), re.IGNORECASE
+                )
+            ):
+                contract_text_raw = s.get("contract_text", "")
+                if contract_text_raw:
+                    cleaned_text = normalize_whitespace(contract_text_raw)
+                    first_substantive = next(
+                        (
+                            line.strip()
+                            for line in cleaned_text.split("\n")
+                            if line.strip()
+                            and not re.match(
+                                r"^---\s*PAGE\s*\d+\s*---$", line.strip(), re.IGNORECASE
                             )
-                            if first_substantive:
-                                doc_name = first_substantive
+                        ),
+                        None,
+                    )
+                    if first_substantive:
+                        doc_name = first_substantive
 
-                    if not doc_name:
-                        doc_name = c_id
+            if not doc_name:
+                doc_name = c_id
 
-                    if len(doc_name) > 35:
-                        display_name = f"{doc_name[:35]}..."
-                    else:
-                        display_name = doc_name
-                    options.append((c_id, f"📁 {display_name}"))
-                except Exception:
-                    options.append((c_id, f"📁 {c_id[:8]}"))
-
-            if len(options) <= 1:
-                st.info("No past reviews found for your account.")
+            if len(doc_name) > 35:
+                display_name = f"{doc_name[:35]}..."
             else:
-                selected_past = st.selectbox(
-                    "Load Past Review",
-                    options=options,
-                    format_func=lambda opt: opt[1],
-                    key="past_contract_selector",
+                display_name = doc_name
+            options.append((c_id, f"📁 {display_name}"))
+
+        if len(options) <= 1:
+            st.info("No past reviews found for your account.")
+        else:
+            selected_past = st.selectbox(
+                "Load Past Review",
+                options=options,
+                format_func=lambda opt: opt[1],
+                key="past_contract_selector",
+            )
+
+            if selected_past and selected_past[0]:
+                c_id = selected_past[0]
+                current_review = st.session_state.get("review_state")
+                current_id = (
+                    getattr(current_review, "contract_id", None) if current_review else None
                 )
 
-                if selected_past and selected_past[0]:
-                    c_id = selected_past[0]
-                    current_review = st.session_state.get("review_state")
-                    current_id = (
-                        getattr(current_review, "contract_id", None) if current_review else None
-                    )
-
-                    if current_id != c_id:
-                        service = ContractReviewService()
-                        loaded_state = service.load_checkpoint(c_id)
-                        if loaded_state:
-                            loaded_state = unmask_review_state(loaded_state, SENSITIVE_KEYWORDS)
-                            st.session_state["review_state"] = loaded_state
+                if current_id != c_id:
+                    try:
+                        response = httpx.get(f"{api_url}/api/session/{c_id}", headers=headers, timeout=15.0)
+                        if response.status_code == 200:
+                            st.session_state["review_state"] = DictToObject(response.json())
                             st.session_state["active_view"] = "📄 Review Report"
                             st.rerun()
                         else:
                             st.error("Failed to load selected checkpoint.")
-        else:
-            st.info("No past reviews found for your account.")
+                    except Exception as e:
+                        st.error(f"Error loading checkpoint: {e}")
 
         st.divider()
         st.header("Cost Analysis")
@@ -1259,6 +1289,24 @@ def main() -> None:
             st.caption(f"**Output Tokens:** {metrics['total_output']:,}")
         else:
             st.info("Load a contract review to see cost metrics.")
+
+        st.divider()
+        if st.button("Clear App Cache & Storage"):
+            with st.spinner("Clearing system cache and Qdrant storage..."):
+                try:
+                    res = httpx.post(f"{api_url}/api/v1/system/clear-cache", headers=headers, timeout=30.0)
+                    if res.status_code == 200:
+                        st.success("App Cache and Storage cleared successfully!")
+                        # Clear local session state
+                        for key in list(st.session_state.keys()):
+                            if key not in ["auth_user", "auth_token", "auth_refresh_token", "session_start_time", "last_activity_time"]:
+                                del st.session_state[key]
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to clear storage: {res.text}")
+                except Exception as e:
+                    st.error(f"Error clearing cache: {e}")
 
     review_active = (
         st.session_state.get("review_state") is not None
@@ -1317,148 +1365,70 @@ def main() -> None:
         try:
             with st.spinner("Running contract review..."):
                 if selected_model == "Full Contract Review Pipeline":
-                    controller = ContractReviewController()
+                    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+                    headers = {}
+                    if st.session_state.get("auth_token"):
+                        headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
+
                     source_file = uploaded_file.name if uploaded_file else None
-                    # Derive a stable contract_id from the content hash so re-uploading
-                    # the same document reuses the existing checkpoint instead of
-                    # creating a duplicate entry in the Past Reviews dropdown.
                     stable_contract_id = hashlib.sha256(
                         contract_text.strip().encode("utf-8")
                     ).hexdigest()[:16]
-                    user_id = st.session_state["auth_user"].get("id")
-                    state = controller.review_contract(
-                        contract_text,
-                        contract_id=stable_contract_id,
-                        perspective=perspective,
-                        source_file=source_file,
-                        user_id=user_id,
-                    )
-                    state = unmask_review_state(state, SENSITIVE_KEYWORDS)
-                    st.session_state["review_state"] = state
 
-                    # Register contract ownership in Redis for the logged-in user immediately
+                    payload = {
+                        "contract_text": contract_text,
+                        "contract_id": stable_contract_id,
+                        "perspective": perspective,
+                    }
+
                     try:
-                        asyncio.run(
-                            check_contract_ownership(
-                                state.contract_id, st.session_state["auth_user"]
-                            )
-                        )
+                        response = httpx.post(f"{api_url}/review", json=payload, headers=headers, timeout=900.0)
+                        if response.status_code == 200:
+                            state = DictToObject(response.json())
+                            st.session_state["review_state"] = state
+
+                            # Render clause crops if PDF bytes exist in session state
+                            if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
+                                pdf_bytes = st.session_state["uploaded_pdf_bytes"]
+                                if getattr(state, "clause_extraction", None) and getattr(
+                                    state.clause_extraction, "clauses", None
+                                ):
+                                    render_clause_crops(
+                                        pdf_bytes,
+                                        state.contract_id,
+                                        state.clause_extraction.clauses,
+                                        dpi=300,
+                                    )
+                        else:
+                            st.error(f"Failed to run review: {response.text}")
                     except Exception as e:
-                        pass
-
-                    # Render clause crops if PDF bytes exist in session state
-                    if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
-                        pdf_bytes = st.session_state["uploaded_pdf_bytes"]
-                        if getattr(state, "clause_extraction", None) and getattr(
-                            state.clause_extraction, "clauses", None
-                        ):
-                            render_clause_crops(
-                                pdf_bytes,
-                                state.contract_id,
-                                state.clause_extraction.clauses,
-                                dpi=300,
-                            )
+                        st.error(f"Error calling review API: {e}")
                 else:
-                    tracer = LangFuseTracer()
-                    user_id = st.session_state.get("auth_user", {}).get("id")
-                    trace_id = tracer.start_pipeline_trace(
-                        contract_id=f"single_model_{int(time.time())}",
-                        user_id=user_id,
-                        perspective=perspective,
-                        source_file=uploaded_file.name if uploaded_file else None,
-                    )
-                    try:
-                        clause_client = AzureClientFactory().get_openai_client_for_agent(
-                            "clause_extractor"
-                        )
-                        clause_output = extract_clauses(contract_text, llm_client=clause_client)
-                        st.session_state["single_model_type"] = selected_model
+                    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+                    headers = {}
+                    if st.session_state.get("auth_token"):
+                        headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
 
-                        if selected_model == "Clause Extractor":
-                            st.session_state["single_model_output"] = clause_output
-                        elif selected_model == "Risk Scorer":
-                            risk_client = AzureClientFactory().get_openai_client_for_agent(
-                                "risk_scorer"
-                            )
-                            if not risk_client or not risk_client.is_configured():
-                                st.error(
-                                    "Risk Scorer is not configured. Check AZURE_OPENAI_DEPLOYMENT_RISK_SCORER and OpenAI settings."
-                                )
-                            else:
-                                st.session_state["single_model_output"] = score_risks(
-                                    clause_output, llm_client=risk_client, perspective=perspective
-                                )
-                        elif selected_model == "Obligation Finder":
-                            obligation_client = AzureClientFactory().get_openai_client_for_agent(
-                                "obligation_finder"
-                            )
-                            if not obligation_client or not obligation_client.is_configured():
-                                st.error(
-                                    "Obligation Finder is not configured. Check AZURE_OPENAI_DEPLOYMENT_OBLIGATION_FINDER and OpenAI settings."
-                                )
-                            else:
-                                st.session_state["single_model_output"] = find_obligations(
-                                    clause_output, llm_client=obligation_client
-                                )
-                        elif selected_model == "Red Flag Detector":
-                            red_flag_client = AzureClientFactory().get_openai_client_for_agent(
-                                "red_flag_detector"
-                            )
-                            st.session_state["single_model_output"] = detect_red_flags(
-                                clause_output, llm_client=red_flag_client, perspective=perspective
-                            )
-                        elif selected_model == "Plain English Writer":
-                            plain_client = AzureClientFactory().get_openai_client_for_agent(
-                                "plain_english_writer"
-                            )
-                            st.session_state["single_model_output"] = generate_plain_english(
-                                clause_output, llm_client=plain_client
-                            )
-                        elif selected_model == "Report Assembler":
-                            risk_client = AzureClientFactory().get_openai_client_for_agent(
-                                "risk_scorer"
-                            )
-                            if not risk_client or not risk_client.is_configured():
-                                st.error(
-                                    "Report assembly requires the Risk Scorer client to be configured."
-                                )
-                            else:
-                                risk_output = score_risks(
-                                    clause_output, llm_client=risk_client, perspective=perspective
-                                )
-                                red_flag_client = AzureClientFactory().get_openai_client_for_agent(
-                                    "red_flag_detector"
-                                )
-                                red_flag_output = detect_red_flags(
-                                    clause_output,
-                                    llm_client=red_flag_client,
-                                    perspective=perspective,
-                                )
-                                plain_client = AzureClientFactory().get_openai_client_for_agent(
-                                    "plain_english_writer"
-                                )
-                                plain_output = generate_plain_english(
-                                    clause_output, llm_client=plain_client
-                                )
-                                assembler_client = AzureClientFactory().get_openai_client_for_agent(
-                                    "report_assembler"
-                                )
-                                st.session_state["single_model_output"] = assemble_report(
-                                    clause_extraction=clause_output,
-                                    risk_scoring=risk_output,
-                                    red_flags=red_flag_output,
-                                    plain_english=plain_output,
-                                    llm_client=assembler_client,
-                                    perspective=perspective,
-                                )
-                    finally:
-                        if st.session_state.get("single_model_output") is not None:
-                            st.session_state["single_model_output"] = unmask_single_output(
-                                st.session_state["single_model_output"],
-                                contract_text,
-                                SENSITIVE_KEYWORDS,
-                            )
-                        tracer.flush()
+                    payload = {
+                        "selected_model": selected_model,
+                        "contract_text": contract_text,
+                        "perspective": perspective,
+                        "source_file": uploaded_file.name if uploaded_file else None,
+                    }
+                    try:
+                        st.session_state["single_model_type"] = selected_model
+                        response = httpx.post(
+                            f"{api_url}/api/debug/run-agent",
+                            json=payload,
+                            headers=headers,
+                            timeout=900.0
+                        )
+                        if response.status_code == 200:
+                            st.session_state["single_model_output"] = DictToObject(response.json())
+                        else:
+                            st.error(f"Failed to run agent model: {response.text}")
+                    except Exception as e:
+                        st.error(f"Error calling run-agent API: {e}")
         finally:
             st.session_state["pipeline_running"] = False
 

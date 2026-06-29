@@ -1,8 +1,8 @@
 import json
-import pytest
 
-from src.services.tool_implementations import execute_pipeline_tool
-from src.services.tool_executor import run_agent_tool_loop
+
+from ai_service.services.tool_executor import run_agent_tool_loop
+from ai_service.services.tool_implementations import execute_pipeline_tool
 
 
 # Mock LLM Client to test fallbacks and tool loop execution

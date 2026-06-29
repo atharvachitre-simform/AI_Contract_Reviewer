@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from src.agents.obligation_finder import ObligationFinderAgent
-from src.models import ClauseExtractorOutput, ClauseSpan, ContractMetadata
+from ai_service.agents.obligation_finder import ObligationFinderAgent
+from ai_service.output_schemas import ClauseExtractorOutput, ClauseSpan, ContractMetadata
 
 
 def test_obligation_finder_list_parsing():

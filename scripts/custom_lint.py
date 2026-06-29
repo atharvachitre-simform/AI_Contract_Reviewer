@@ -80,7 +80,7 @@ def lint_file(filepath):
 
 def main():
     exclude_dirs = {".venv", ".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".deepeval"}
-    target_dirs = ["src"]
+    target_dirs = ["app", "ai_service", "checkpointing", "scripts"]
 
     total_warnings = 0
     for target in target_dirs:

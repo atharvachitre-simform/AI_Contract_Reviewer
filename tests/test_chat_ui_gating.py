@@ -1,15 +1,15 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.services.azure_clients import AzureOpenAIWrapper
-from src.services.chat_service import ContractChatService
+from ai_service.services.azure_clients import AzureOpenAIWrapper
+from ai_service.services.chat_service import ContractChatService
 
 
 def test_question_relevancy_gating_positive():
     """Verify that is_question_relevant returns True for legal/contract queries."""
     service = ContractChatService(contract_id="general")
 
-    with patch("src.services.azure_clients.AzureOpenAIWrapper.chat_complete", return_value="YES"):
+    with patch("ai_service.services.azure_clients.AzureOpenAIWrapper.chat_complete", return_value="YES"):
         assert service.is_question_relevant("What is the indemnity clause limit?") is True
 
 
@@ -17,7 +17,7 @@ def test_question_relevancy_gating_negative():
     """Verify that is_question_relevant returns False for irrelevant queries."""
     service = ContractChatService(contract_id="general")
 
-    with patch("src.services.azure_clients.AzureOpenAIWrapper.chat_complete", return_value="NO"):
+    with patch("ai_service.services.azure_clients.AzureOpenAIWrapper.chat_complete", return_value="NO"):
         assert service.is_question_relevant("Tell me a chocolate cake recipe.") is False
 
 
@@ -49,8 +49,8 @@ def test_gating_fallback_to_groq_on_429():
         pass
 
     with (
-        patch("src.services.azure_clients.config") as mock_config,
-        patch("src.services.llm_client.groq") as mock_groq_module,
+        patch("ai_service.services.azure_clients.config") as mock_config,
+        patch("ai_service.services.llm_client.groq") as mock_groq_module,
     ):
 
         mock_config.GROQ_API_KEY = "fallback_groq_key"
@@ -75,7 +75,7 @@ def test_gating_fallback_to_groq_on_429():
 
         with (
             patch(
-                "src.services.azure_clients.AzureClientFactory.get_openai_client",
+                "ai_service.services.azure_clients.AzureClientFactory.get_openai_client",
                 return_value=wrapper,
             ),
             patch("tenacity.wait_exponential", return_value=lambda *args, **kwargs: 0),
@@ -125,7 +125,7 @@ def test_sources_persisted_in_history():
     service.transient_relevancy_check = mock_relevancy_check
 
     with patch(
-        "src.services.azure_clients.AzureClientFactory.get_openai_client", return_value=mock_wrapper
+        "ai_service.services.azure_clients.AzureClientFactory.get_openai_client", return_value=mock_wrapper
     ):
         res = asyncio.run(service.ask("What is the liability cap?"))
 

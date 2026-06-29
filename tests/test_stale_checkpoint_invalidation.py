@@ -1,10 +1,8 @@
-import json
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.checkpointing.redis_checkpointer import RedisCheckpointer
+from checkpointing.redis_checkpointer import RedisCheckpointer
 
 
 @pytest.mark.anyio
@@ -12,7 +10,7 @@ async def test_stale_checkpoint_invalidation(tmp_path):
     contract_id = "test_invalidation_123"
 
     # Patch self._local_dir to point to tmp_path
-    with patch("src.checkpointing.redis_checkpointer.Path") as mock_path:
+    with patch("checkpointing.redis_checkpointer.Path") as mock_path:
         # Mock Path to return our temp dir instead of /tmp/checkpoints
         mock_path.return_value = tmp_path
 

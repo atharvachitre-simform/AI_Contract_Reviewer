@@ -1,9 +1,7 @@
-import os
-from pathlib import Path
 
 import pytest
 
-from src.services.db_store import SQLiteChatStore
+from app.services.db_store import SQLiteChatStore
 
 
 @pytest.fixture

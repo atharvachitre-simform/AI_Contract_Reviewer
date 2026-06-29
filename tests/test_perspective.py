@@ -1,8 +1,7 @@
-import pytest
 
-from src.prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
-from src.prompts.report_assembler_prompt import build_report_assembler_prompt
-from src.prompts.risk_scorer_prompt import build_risk_scorer_prompt
+from ai_service.prompts.red_flag_detector_prompt import build_red_flag_detector_prompt
+from ai_service.prompts.report_assembler_prompt import build_report_assembler_prompt
+from ai_service.prompts.risk_scorer_prompt import build_risk_scorer_prompt
 
 
 def test_red_flag_detector_prompt_perspective():

@@ -1,5 +1,5 @@
-from src.helpers.coverage_validator import calculate_coverage
-from src.models.models import ClauseSpan
+from ai_service.utils.coverage_validator import calculate_coverage
+from ai_service.output_schemas.models import ClauseSpan
 
 
 def test_calculate_coverage_ignores_durations_and_years():

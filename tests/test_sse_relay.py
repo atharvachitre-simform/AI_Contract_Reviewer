@@ -13,11 +13,10 @@ import asyncio
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import redis.asyncio as aioredis
 
-from src.fastapi_app import _celery_sse_relay
+from app.routers.review_router import _celery_sse_relay
 
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("SUPABASE_URL", "")
@@ -61,7 +60,7 @@ async def _collect_sse(
     mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
     mock_redis.aclose = AsyncMock()
 
-    with patch("src.fastapi_app.aioredis") as mock_aioredis_mod:
+    with patch("app.routers.review_router.aioredis") as mock_aioredis_mod:
         mock_aioredis_mod.from_url = MagicMock(return_value=mock_redis)
 
         results = []
@@ -124,7 +123,7 @@ class TestCelerySSERelay(unittest.TestCase):
             mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
             mock_redis.aclose = AsyncMock()
 
-            with patch("src.fastapi_app.aioredis") as mock_mod:
+            with patch("app.routers.review_router.aioredis") as mock_mod:
                 mock_mod.from_url = MagicMock(return_value=mock_redis)
                 async for _ in _celery_sse_relay(contract_id="test-race"):
                     pass

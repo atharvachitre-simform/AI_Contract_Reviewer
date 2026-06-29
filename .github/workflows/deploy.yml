@@ -33,7 +33,7 @@ jobs:
         pip install bandit
         
     - name: Run Bandit (SAST)
-      run: bandit -r src/ -c .bandit.yml || true # Ignore failure for now to allow build
+      run: bandit -r app/ worker/ workflows/ scripts/ -ll || true # Ignore failure for now to allow build
 
   build_and_push:
     needs: security_scans
@@ -41,6 +41,22 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install . pytest mypy
+        
+    - name: Run unit tests
+      run: pytest tests/ -v --tb=short --ignore=tests/test_qdrant.py
+
+    - name: Run type checks
+      run: mypy app/ ai_service/ --ignore-missing-imports
+
     - name: Build Docker Image
       run: docker build -t ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.BACKEND_IMAGE }}:${{ github.sha }} -f docker/Dockerfile .
       

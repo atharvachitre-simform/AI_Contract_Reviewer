@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from src.services.azure_clients import AzureClientFactory, AzureOpenAIWrapper
+from ai_service.services.azure_clients import AzureClientFactory, AzureOpenAIWrapper
 
 
 def test_search_documents_hybrid_success():
@@ -11,27 +11,27 @@ def test_search_documents_hybrid_success():
     mock_embedding_client = MagicMock(spec=AzureOpenAIWrapper)
     mock_embedding_client.get_embedding.return_value = [0.1, 0.2, 0.3]
 
-    # Mock search client
-    mock_search_client = MagicMock()
-    mock_search_result = MagicMock()
-    setattr(mock_search_result, "@search.score", 0.95)
-    mock_search_client.search.return_value = [mock_search_result]
+    # Mock Qdrant client
+    mock_qdrant = MagicMock()
+    mock_hit = MagicMock()
+    mock_hit.payload = {"content": "hybrid search mock result"}
+    mock_hit.score = 0.95
+    mock_points = MagicMock()
+    mock_points.points = [mock_hit]
+    mock_qdrant.query_points.return_value = mock_points
+    factory.qdrant_client = mock_qdrant
 
     with patch.object(factory, "get_openai_client", return_value=mock_embedding_client):
-        with patch.object(factory, "get_search_client", return_value=mock_search_client):
-            results = factory.search_documents("test query", "test-index")
+        results = factory.search_documents("test query", "test-index")
 
-            # Assertions
-            assert len(results) == 1
-            assert results[0]["score"] == 0.95
-            mock_embedding_client.get_embedding.assert_called_once_with("test query")
-            mock_search_client.search.assert_called_once()
-
-            # Verify hybrid search was called with vector_queries
-            kwargs = mock_search_client.search.call_args[1]
-            assert kwargs["search_text"] == "test query"
-            assert "vector_queries" in kwargs
-            assert kwargs["query_type"] == "semantic"
+        # Assertions
+        assert len(results) == 1
+        assert results[0]["score"] == 0.95
+        assert results[0]["text"] == "hybrid search mock result"
+        mock_embedding_client.get_embedding.assert_called_once_with("test query")
+        mock_qdrant.query_points.assert_called_once_with(
+            collection_name="test-index", query=[0.1, 0.2, 0.3], limit=5
+        )
 
 
 def test_search_documents_qdrant_fallback():

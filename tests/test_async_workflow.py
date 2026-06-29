@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.models import (
+from ai_service.output_schemas import (
     ClauseExtractorOutput,
     ObligationFinderOutput,
     PlainEnglishWriterOutput,
@@ -12,7 +12,7 @@ from src.models import (
     ReportAssemblerOutput,
     RiskScorerOutput,
 )
-from src.workflows.async_workflow import AsyncContractReviewWorkflow
+from workflows.async_workflow import AsyncContractReviewWorkflow
 
 
 def test_async_workflow_run_streaming_imports_and_flow():
@@ -47,16 +47,19 @@ def test_async_workflow_run_streaming_imports_and_flow():
 
         # Apply patches
         patches = [
-            patch("src.checkpointing.redis_checkpointer.RedisCheckpointer", return_value=mock_checkpointer),
-            patch("src.agents.clause_extractor.extract_clauses", mock_extract_clauses),
-            patch("src.agents.obligation_finder.find_obligations", mock_find_obligations),
-            patch("src.agents.red_flag_detector.detect_red_flags", mock_detect_red_flags),
-            patch("src.agents.risk_scorer.score_risks", mock_score_risks),
             patch(
-                "src.agents.plain_english_writer.generate_plain_english",
+                "checkpointing.redis_checkpointer.RedisCheckpointer",
+                return_value=mock_checkpointer,
+            ),
+            patch("ai_service.agents.clause_extractor.extract_clauses", mock_extract_clauses),
+            patch("ai_service.agents.obligation_finder.find_obligations", mock_find_obligations),
+            patch("ai_service.agents.red_flag_detector.detect_red_flags", mock_detect_red_flags),
+            patch("ai_service.agents.risk_scorer.score_risks", mock_score_risks),
+            patch(
+                "ai_service.agents.plain_english_writer.generate_plain_english",
                 mock_generate_plain_english,
             ),
-            patch("src.agents.report_assembler.assemble_report", mock_assemble_report),
+            patch("ai_service.agents.report_assembler.assemble_report", mock_assemble_report),
         ]
 
         for p in patches:
@@ -140,8 +143,11 @@ def test_async_workflow_resume_from_checkpoint():
         mock_extract_clauses = MagicMock()
 
         patches = [
-            patch("src.checkpointing.redis_checkpointer.RedisCheckpointer", return_value=mock_checkpointer),
-            patch("src.agents.clause_extractor.extract_clauses", mock_extract_clauses),
+            patch(
+                "checkpointing.redis_checkpointer.RedisCheckpointer",
+                return_value=mock_checkpointer,
+            ),
+            patch("ai_service.agents.clause_extractor.extract_clauses", mock_extract_clauses),
         ]
 
         for p in patches:

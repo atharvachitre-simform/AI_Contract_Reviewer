@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 from openai import BadRequestError
 
-from src.services.llm_client import (
+from ai_service.services.llm_client import (
     AzureOpenAIWrapper,
     get_fallback_json_for_prompt,
     is_content_filter_error,

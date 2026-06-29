@@ -1,7 +1,6 @@
-import pytest
 
-from src.agents.report_assembler import ReportAssemblerState, enforce_missing_clauses_validation
-from src.models.models import ClauseExtractorOutput, ClauseSpan
+from ai_service.agents.report_assembler import ReportAssemblerState, enforce_missing_clauses_validation
+from ai_service.output_schemas.models import ClauseExtractorOutput, ClauseSpan
 
 
 def test_synonymous_clause_matching():

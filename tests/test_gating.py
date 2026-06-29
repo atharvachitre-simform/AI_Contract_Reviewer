@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.services.services import ContractReviewService
+from ai_service.services.services import ContractReviewService
 
 
 def test_is_document_contract_yes():
