@@ -5,14 +5,13 @@ description = "AI Contract Reviewer - Multi-agent system for contract analysis"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "langchain>=0.3",
-    "langgraph>=0.2",
-    "langchain_openai>=0.1",
+    "langchain~=1.3.2", # pinned for reproducibility — update intentionally
+    "langgraph~=1.2.2", # pinned for reproducibility — update intentionally
     "langchain-community>=0.3",
     "langfuse>=2.0",
-    "fastapi>=0.110",
+    "fastapi~=0.136.3", # pinned for reproducibility — update intentionally
     "uvicorn>=0.28",
-    "streamlit>=1.32",
+    "streamlit~=1.58.0", # pinned for reproducibility — update intentionally
     "pydantic>=2.0,<3.0",
     "pymupdf>=1.24.0",
     "redis>=5.0",
@@ -25,13 +24,8 @@ dependencies = [
     "python-docx>=1.1",
     "python-multipart>=0.0.32",
     "groq>=0.9.0",
-    # Direct SDK deps previously unlisted:
     "openai>=1.30",
-    "httpx>=0.27",
-    "tenacity>=8.2",
     "qdrant-client>=1.9",
-    "az>=0.1.0.dev1",
-    "login>=0.0.6",
     "jaraco-context>=6.1.0",
     "wheel>=0.46.2",
     "azure-keyvault-secrets>=4.11.0",
@@ -41,12 +35,13 @@ dependencies = [
     "slowapi>=0.1.9",
     "limits>=3.6",
     "celery>=5.3",
+    "headroom>=0.2.7",
+    "cryptography>=42.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
-    "httpx",
     "ruff",
     "mypy",
     "deepeval",
@@ -57,4 +52,30 @@ requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+disallow_untyped_defs = true
+warn_return_any = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false

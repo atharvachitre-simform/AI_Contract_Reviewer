@@ -2,9 +2,11 @@
 import json
 import re
 from pathlib import Path
+
 from src.agents.clause_extractor import _split_by_sections
 
 RUN_DIR = Path("artifacts/extraction_runs/contract_46ce978f8a9180f4")
+
 
 def main():
     preprocessed_path = RUN_DIR / "02_preprocessed.txt"
@@ -15,7 +17,7 @@ def main():
     if not preprocessed_path.exists():
         print(f"File not found: {preprocessed_path}")
         return
-    
+
     preprocessed_text = preprocessed_path.read_text(encoding="utf-8")
     final_data = json.loads(final_output_path.read_text(encoding="utf-8"))
     llm_data = json.loads(llm_output_path.read_text(encoding="utf-8"))
@@ -32,7 +34,7 @@ def main():
         first_line = sec_clean.split("\n")[0][:120] if sec_clean else ""
         chars = len(sec_clean)
         tokens = chars // 4
-        
+
         # Find which final clauses are contained in this section
         matched_clauses = []
         for c in final_clauses:
@@ -44,28 +46,36 @@ def main():
                 matched_clauses.append(c)
 
         extracted_clause_count = len(matched_clauses)
-        categories = list(set(c.get("clause_type") or c.get("cuad_category") for c in matched_clauses))
-        
+        categories = list(
+            set(c.get("clause_type") or c.get("cuad_category") for c in matched_clauses)
+        )
+
         # Calculate covered characters
         covered_chars = sum(len(c.get("raw_text", "")) for c in matched_clauses)
         covered_pct = round(min(1.0, covered_chars / max(1, chars)), 4)
 
-        section_coverage.append({
-            "section": first_line,
-            "chars": chars,
-            "tokens": tokens,
-            "chunks": [1],
-            "extracted_clause_count": extracted_clause_count,
-            "categories": categories,
-            "covered_pct": covered_pct
-        })
+        section_coverage.append(
+            {
+                "section": first_line,
+                "chars": chars,
+                "tokens": tokens,
+                "chunks": [1],
+                "extracted_clause_count": extracted_clause_count,
+                "categories": categories,
+                "covered_pct": covered_pct,
+            }
+        )
 
     # Sort ascending by covered_pct
     section_coverage.sort(key=lambda x: (x["covered_pct"], -x["chars"]))
 
     # Write section_coverage.json to run directory and workspace root
-    Path("section_coverage.json").write_text(json.dumps(section_coverage, indent=2), encoding="utf-8")
-    (RUN_DIR / "section_coverage.json").write_text(json.dumps(section_coverage, indent=2), encoding="utf-8")
+    Path("section_coverage.json").write_text(
+        json.dumps(section_coverage, indent=2), encoding="utf-8"
+    )
+    (RUN_DIR / "section_coverage.json").write_text(
+        json.dumps(section_coverage, indent=2), encoding="utf-8"
+    )
     print(f"Created section_coverage.json with {len(section_coverage)} sections.")
 
     # Output top uncovered sections
@@ -90,37 +100,43 @@ def main():
     # For each chunk in metrics chunking list
     chunks_meta = json.loads((RUN_DIR / "04_chunks.json").read_text(encoding="utf-8"))
     chunks = chunks_meta.get("chunks", [])
-    
+
     dead_chunks = []
     # If chunks list is empty, we treat the single chunk as chunk 1
     if not chunks:
-        chunks = [{
-            "chunk_id": 1,
-            "section": "--- PAGE 1 ---",
-            "char_count": len(preprocessed_text),
-            "token_count_est": len(preprocessed_text) // 4
-        }]
+        chunks = [
+            {
+                "chunk_id": 1,
+                "section": "--- PAGE 1 ---",
+                "char_count": len(preprocessed_text),
+                "token_count_est": len(preprocessed_text) // 4,
+            }
+        ]
 
     for ch in chunks:
         ch_id = ch["chunk_id"]
         # Find LLM metrics for this chunk
         llm_metrics_list = llm_data
         ch_metrics = next((item for item in llm_metrics_list if item.get("chunk_idx") == ch_id), {})
-        
+
         inp_tokens = ch_metrics.get("input_tokens", ch["token_count_est"])
         clauses_extracted = ch_metrics.get("clauses_extracted", len(final_clauses))
         clauses_per_1k = round((clauses_extracted / max(1, inp_tokens)) * 1000, 3)
-        
-        print(f"Chunk {ch_id}: tokens={inp_tokens}, clauses={clauses_extracted}, density={clauses_per_1k}/1k")
-        
+
+        print(
+            f"Chunk {ch_id}: tokens={inp_tokens}, clauses={clauses_extracted}, density={clauses_per_1k}/1k"
+        )
+
         if inp_tokens > 1000 and clauses_extracted == 0:
-            dead_chunks.append({
-                "chunk_id": ch_id,
-                "section": ch.get("section", ""),
-                "tokens": inp_tokens,
-                "clauses_extracted": clauses_extracted,
-                "clauses_per_1k_tokens": clauses_per_1k
-            })
+            dead_chunks.append(
+                {
+                    "chunk_id": ch_id,
+                    "section": ch.get("section", ""),
+                    "tokens": inp_tokens,
+                    "clauses_extracted": clauses_extracted,
+                    "clauses_per_1k_tokens": clauses_per_1k,
+                }
+            )
 
     Path("dead_chunks.json").write_text(json.dumps(dead_chunks, indent=2), encoding="utf-8")
     (RUN_DIR / "dead_chunks.json").write_text(json.dumps(dead_chunks, indent=2), encoding="utf-8")
@@ -151,12 +167,16 @@ def main():
             "duplicate": removed_count,
             "confidence": 0,
             "empty_text": 0,
-            "category_filter": 0
-        }
+            "category_filter": 0,
+        },
     }
 
-    Path("raw_model_output.json").write_text(json.dumps(raw_model_output, indent=2), encoding="utf-8")
-    (RUN_DIR / "raw_model_output.json").write_text(json.dumps(raw_model_output, indent=2), encoding="utf-8")
+    Path("raw_model_output.json").write_text(
+        json.dumps(raw_model_output, indent=2), encoding="utf-8"
+    )
+    (RUN_DIR / "raw_model_output.json").write_text(
+        json.dumps(raw_model_output, indent=2), encoding="utf-8"
+    )
     print(f"Created raw_model_output.json. Removal percentage: {removal_pct}%")
     if removal_pct > 15.0:
         print(f"[FAIL] removed >15% of extracted clauses (removed_pct = {removal_pct}%)")
@@ -166,11 +186,20 @@ def main():
     # Step 5: Category Blind Spot Detection
     print("\n--- Step 5: Category Blind Spot Detection ---")
     expected_categories = [
-        "definitions", "payment", "term", "termination", "IP", "audit", 
-        "confidentiality", "indemnity", "limitations", "governing law", "commercial obligations"
+        "definitions",
+        "payment",
+        "term",
+        "termination",
+        "IP",
+        "audit",
+        "confidentiality",
+        "indemnity",
+        "limitations",
+        "governing law",
+        "commercial obligations",
     ]
     actual_categories = [c.get("clause_type", "").lower() for c in final_clauses]
-    
+
     # Map actual categories to expected category groups
     actual_groups = set()
     for cat in actual_categories:
@@ -208,10 +237,12 @@ def main():
             pattern = "indemnity|indemnification|hold harmless"
         elif group == "limitations":
             pattern = "limitation of liability|liability cap"
-        
+
         matches = re.findall(pattern, preprocessed_text, re.IGNORECASE)
         if matches:
-            print(f"  - Group '{group}' has {len(matches)} mentions in preprocessed text but was NOT extracted.")
+            print(
+                f"  - Group '{group}' has {len(matches)} mentions in preprocessed text but was NOT extracted."
+            )
 
     # Step 6: Chunk Boundary Audit
     print("\n--- Step 6: Chunk Boundary Audit ---")
@@ -230,11 +261,14 @@ def main():
     print("C. Prompt issue")
     print("D. Model under-extracting")
     print("E. Postprocessing deleting")
-    
+
     # We will print the root cause here
     print("\nPROPOSED ROOT CAUSE:")
     print("C. Prompt issue + D. Model under-extracting")
-    print("Explanation: Due to the single-chunk size limit override of 500k chars, the entire contract is sent as one prompt. The prompt guidelines explicitly tell the model to skip definitions, and the model failed to extract key sections like Confidentiality, Indemnification, Limitation of Liability, and Payment terms due to the massive context window (38k tokens) causing under-extraction of major clauses.")
+    print(
+        "Explanation: Due to the single-chunk size limit override of 500k chars, the entire contract is sent as one prompt. The prompt guidelines explicitly tell the model to skip definitions, and the model failed to extract key sections like Confidentiality, Indemnification, Limitation of Liability, and Payment terms due to the massive context window (38k tokens) causing under-extraction of major clauses."
+    )
+
 
 if __name__ == "__main__":
     main()

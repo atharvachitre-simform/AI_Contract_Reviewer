@@ -1,8 +1,7 @@
-import pytest
-from src.agents.pipeline_tools import (
-    split_prompt_for_prompt_caching,
-    run_agent_tool_loop,
-)
+
+from ai_service.utils.prompt_cache import split_prompt_for_prompt_caching
+from ai_service.services.tool_executor import run_agent_tool_loop
+
 
 # Mock LLM Client to inspect messages passed to the API
 class InspectableLLMClient:
@@ -14,7 +13,9 @@ class InspectableLLMClient:
     def is_configured(self):
         return True
 
-    def chat_complete(self, prompt, temperature=0.0, max_tokens=800, response_format=None, system_prompt=None):
+    def chat_complete(
+        self, prompt, temperature=0.0, max_tokens=800, response_format=None, system_prompt=None
+    ):
         return "fallback"
 
     # Mock completions API
@@ -24,13 +25,17 @@ class InspectableLLMClient:
 
         def create(self, **kwargs):
             self.outer.last_kwargs = kwargs
+
             class MockMessage:
                 content = "Mocked final output"
                 tool_calls = None
+
             class MockChoice:
                 message = MockMessage()
+
             class MockResponse:
                 choices = [MockChoice()]
+
             return MockResponse()
 
     class MockChat:
@@ -42,6 +47,7 @@ class InspectableLLMClient:
         class MockClient:
             def __init__(self, outer_self):
                 self.chat = outer_self.MockChat(outer_self)
+
         return MockClient(self)
 
 
@@ -63,11 +69,7 @@ def test_split_prompt_for_prompt_caching_contract_text():
 
 def test_split_prompt_for_prompt_caching_clauses_to_analyze():
     """Verify split works on CONTRACT CLAUSES TO ANALYZE separator."""
-    prompt = (
-        "Analyze these clauses.\n"
-        "CONTRACT CLAUSES TO ANALYZE:\n"
-        "1. Clause A\n2. Clause B"
-    )
+    prompt = "Analyze these clauses.\n" "CONTRACT CLAUSES TO ANALYZE:\n" "1. Clause A\n2. Clause B"
     inst, data = split_prompt_for_prompt_caching(prompt)
     assert inst == "Analyze these clauses."
     assert data == "CONTRACT CLAUSES TO ANALYZE:\n1. Clause A\n2. Clause B"
@@ -75,11 +77,7 @@ def test_split_prompt_for_prompt_caching_clauses_to_analyze():
 
 def test_split_prompt_for_prompt_caching_clauses():
     """Verify split works on CLAUSES separator."""
-    prompt = (
-        "Find obligations in:\n"
-        "CLAUSES:\n"
-        "Some clause text here."
-    )
+    prompt = "Find obligations in:\n" "CLAUSES:\n" "Some clause text here."
     inst, data = split_prompt_for_prompt_caching(prompt)
     assert inst == "Find obligations in:"
     assert data == "CLAUSES:\nSome clause text here."
@@ -88,9 +86,7 @@ def test_split_prompt_for_prompt_caching_clauses():
 def test_split_prompt_for_prompt_caching_report_assembler():
     """Verify split works on 1. CLAUSES EXTRACTED separator."""
     prompt = (
-        "Instructions: Assemble the report.\n"
-        "1. CLAUSES EXTRACTED:\n"
-        "extracted clause text"
+        "Instructions: Assemble the report.\n" "1. CLAUSES EXTRACTED:\n" "extracted clause text"
     )
     inst, data = split_prompt_for_prompt_caching(prompt)
     assert inst == "Instructions: Assemble the report."
@@ -109,23 +105,21 @@ def test_run_agent_tool_loop_reorders_messages():
     """Verify run_agent_tool_loop orders data content first for cache matching."""
     client = InspectableLLMClient()
     prompt = (
-        "Instructions to extract metadata.\n"
-        "CONTRACT_TEXT:\n"
-        "verbatim contract text content"
+        "Instructions to extract metadata.\n" "CONTRACT_TEXT:\n" "verbatim contract text content"
     )
-    
+
     # We must trigger the tool path, so pass a valid tool
     run_agent_tool_loop(
         llm_client=client,
         prompt=prompt,
         tool_names=["search_clause_playbook"],
         context={},
-        system_prompt="System instructions"
+        system_prompt="System instructions",
     )
-    
+
     assert client.last_kwargs is not None
     messages = client.last_kwargs["messages"]
-    
+
     # Expected structure:
     # Index 0: CONTRACT_TEXT user block
     # Index 1: System instructions
@@ -143,18 +137,18 @@ def test_run_agent_tool_loop_no_split_fallback():
     """Verify run_agent_tool_loop message structure when no separator matches."""
     client = InspectableLLMClient()
     prompt = "Simple prompt with no contract sections."
-    
+
     run_agent_tool_loop(
         llm_client=client,
         prompt=prompt,
         tool_names=["search_clause_playbook"],
         context={},
-        system_prompt="System instructions"
+        system_prompt="System instructions",
     )
-    
+
     assert client.last_kwargs is not None
     messages = client.last_kwargs["messages"]
-    
+
     # Expected standard structure:
     # Index 0: System instructions
     # Index 1: Full user prompt

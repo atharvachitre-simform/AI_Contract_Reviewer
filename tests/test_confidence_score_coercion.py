@@ -1,4 +1,5 @@
-from src.agents.clause_extractor import _build_clauses_from_llm
+from ai_service.agents.clause_extractor import _build_clauses_from_llm
+
 
 def test_confidence_score_coercion():
     clauses_data = [
@@ -7,9 +8,9 @@ def test_confidence_score_coercion():
         {"clause_type": "IP", "raw_text": "Company owns", "confidence": "1.0"},
         {"clause_type": "Liability", "raw_text": "Uncapped", "confidence": "invalid_val"},
     ]
-    
+
     clauses = _build_clauses_from_llm(clauses_data)
-    
+
     assert len(clauses) == 4
     assert clauses[0].confidence == 0.85
     assert clauses[1].confidence == 0.1

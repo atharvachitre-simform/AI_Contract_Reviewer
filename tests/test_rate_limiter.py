@@ -10,8 +10,13 @@ These tests verify:
 
 from __future__ import annotations
 
+import base64
+import json
 import os
-import pytest
+from unittest.mock import MagicMock
+
+
+from app.middlewares.rate_limiter import get_user_id_or_ip
 
 # Force in-memory storage so tests don't require a live Redis
 os.environ.setdefault("REDIS_URL", "memory://")
@@ -25,7 +30,8 @@ os.environ.setdefault("SUPABASE_KEY", "")
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
 
 from fastapi.testclient import TestClient
-from src.fastapi_app import app
+
+from app.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -33,12 +39,12 @@ client = TestClient(app, raise_server_exceptions=False)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _auth_headers(user_id: str = "test-user-001") -> dict:
     """Fabricate a minimal (unsigned) JWT bearer token for a given user_id.
     The rate limiter decodes the payload without signature verification,
     so this is sufficient for key-function testing.
     """
-    import base64, json
     payload = json.dumps({"sub": user_id}).encode()
     b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
     fake_jwt = f"header.{b64}.signature"
@@ -48,6 +54,7 @@ def _auth_headers(user_id: str = "test-user-001") -> dict:
 # ---------------------------------------------------------------------------
 # Rate limit — /api/v1/review/stream
 # ---------------------------------------------------------------------------
+
 
 class TestReviewStreamRateLimit:
     """Limit is 3/minute (set via env var above for fast testing)."""
@@ -88,9 +95,9 @@ class TestReviewStreamRateLimit:
             headers=headers,
         )
         if resp.status_code == 429:
-            assert "retry-after" in {k.lower() for k in resp.headers}, (
-                "429 response must include Retry-After header"
-            )
+            assert "retry-after" in {
+                k.lower() for k in resp.headers
+            }, "429 response must include Retry-After header"
 
     def test_different_users_have_independent_buckets(self):
         """Exhausting user A's limit must not affect user B."""
@@ -103,14 +110,15 @@ class TestReviewStreamRateLimit:
 
         # User B should still be within their limit
         status_b = self._post_stream(headers_b)
-        assert status_b != 429, (
-            f"User B was rate-limited after User A exhausted their bucket (got {status_b})"
-        )
+        assert (
+            status_b != 429
+        ), f"User B was rate-limited after User A exhausted their bucket (got {status_b})"
 
 
 # ---------------------------------------------------------------------------
 # Rate limit — /api/v1/chat
 # ---------------------------------------------------------------------------
+
 
 class TestChatRateLimit:
     """Limit is 5/minute (set via env var above for fast testing)."""
@@ -124,8 +132,12 @@ class TestChatRateLimit:
         return resp.status_code
 
     def test_over_limit_returns_429(self):
+        from unittest.mock import patch, AsyncMock
         headers = _auth_headers("rate-test-chat-001")
-        statuses = [self._post_chat(headers) for _ in range(8)]
+        with patch("app.routers.chat_router.check_contract_ownership", return_value=None):
+            with patch("app.services.app_helpers.handle_chat_text", new_callable=AsyncMock) as mock_handle:
+                mock_handle.return_value = {"answer": "mocked text response"}
+                statuses = [self._post_chat(headers) for _ in range(35)]
         assert 429 in statuses, f"Expected 429 for chat endpoint, got: {statuses}"
 
 
@@ -133,11 +145,11 @@ class TestChatRateLimit:
 # Rate limiter key function unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestRateLimiterKeyFunction:
     """Unit-test the key extraction logic without invoking the full app."""
 
     def _make_request(self, auth_header: str | None = None, ip: str = "1.2.3.4"):
-        from unittest.mock import MagicMock
         req = MagicMock()
         req.headers = {"Authorization": auth_header} if auth_header else {}
         req.client = MagicMock()
@@ -145,8 +157,6 @@ class TestRateLimiterKeyFunction:
         return req
 
     def test_extracts_user_id_from_valid_jwt(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
-        import base64, json
         payload = json.dumps({"sub": "user-123"}).encode()
         b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
         req = self._make_request(auth_header=f"Bearer header.{b64}.sig")
@@ -154,13 +164,11 @@ class TestRateLimiterKeyFunction:
         assert key == "user:user-123"
 
     def test_falls_back_to_ip_on_missing_auth(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
         req = self._make_request(auth_header=None, ip="10.0.0.1")
         key = get_user_id_or_ip(req)
         assert key == "ip:10.0.0.1"
 
     def test_falls_back_to_ip_on_malformed_jwt(self):
-        from src.middleware.rate_limiter import get_user_id_or_ip
         req = self._make_request(auth_header="Bearer not.a.jwt!!!", ip="10.0.0.2")
         key = get_user_id_or_ip(req)
         assert key == "ip:10.0.0.2"

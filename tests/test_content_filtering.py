@@ -1,13 +1,15 @@
 """Unit tests for content filtering mitigation and resilience mechanisms."""
 
+import json
 from unittest.mock import MagicMock
+
 from openai import BadRequestError
 
-from src.services.azure_clients import (
+from ai_service.services.llm_client import (
+    AzureOpenAIWrapper,
+    get_fallback_json_for_prompt,
     is_content_filter_error,
     sanitize_prompt_for_content_filter,
-    get_fallback_json_for_prompt,
-    AzureOpenAIWrapper
 )
 
 
@@ -26,30 +28,27 @@ def test_is_content_filter_error():
     # 2. OpenAI BadRequestError mock
     mock_response = MagicMock()
     mock_response.status_code = 400
-    
+
     # We construct a BadRequestError with content_filter code
     err_body = {
         "error": {
             "message": "Filtered by content policy",
             "code": "content_filter",
-            "innererror": {"code": "ResponsibleAIPolicyViolation"}
+            "innererror": {"code": "ResponsibleAIPolicyViolation"},
         }
     }
-    
+
     e4 = BadRequestError(
         message="The response was filtered due to the prompt triggering content filtering.",
         response=mock_response,
-        body=err_body
+        body=err_body,
     )
     assert is_content_filter_error(e4) is True
 
 
 def test_sanitize_prompt_for_content_filter():
     """Verify that sanitize_prompt_for_content_filter redacts flagged trigger words."""
-    prompt = (
-        "Conduct penetration testing.\n"
-        "Configure the slave database node."
-    )
+    prompt = "Conduct penetration testing.\n" "Configure the slave database node."
     sanitized = sanitize_prompt_for_content_filter(prompt)
 
     # Trigger words must be removed
@@ -66,7 +65,6 @@ def test_get_fallback_json_for_prompt():
     """Verify get_fallback_json_for_prompt generates schema-valid JSON structures."""
     # Risk scorer prompt fallback
     risk_json = get_fallback_json_for_prompt("Assess the risk and severity score.")
-    import json
     data = json.loads(risk_json)
     assert data["overall_risk_level"] == "medium"
     assert isinstance(data["issues"], list)
@@ -88,7 +86,7 @@ def test_chat_complete_content_filter_mitigation():
     wrapper = AzureOpenAIWrapper(
         endpoint="https://test.openai.azure.com/",
         api_key="test_key",
-        deployment_name="test-deployment"
+        deployment_name="test-deployment",
     )
     wrapper.use_openai_fallback = True
 
@@ -101,14 +99,12 @@ def test_chat_complete_content_filter_mitigation():
     filter_error = BadRequestError(
         message="Azure content_filter policy triggered.",
         response=mock_response,
-        body={"error": {"code": "content_filter"}}
+        body={"error": {"code": "content_filter"}},
     )
 
     # Success response mock for retry
     success_response = MagicMock()
-    success_response.choices = [
-        MagicMock(message=MagicMock(content="Successful retry response"))
-    ]
+    success_response.choices = [MagicMock(message=MagicMock(content="Successful retry response"))]
 
     # First call raises error, second returns success
     mock_openai.chat.completions.create.side_effect = [filter_error, success_response]
@@ -127,7 +123,7 @@ def test_chat_complete_repeated_content_filter_failure():
     wrapper = AzureOpenAIWrapper(
         endpoint="https://test.openai.azure.com/",
         api_key="test_key",
-        deployment_name="test-deployment"
+        deployment_name="test-deployment",
     )
     wrapper.use_openai_fallback = True
 
@@ -139,7 +135,7 @@ def test_chat_complete_repeated_content_filter_failure():
     filter_error = BadRequestError(
         message="Azure content_filter policy triggered.",
         response=mock_response,
-        body={"error": {"code": "content_filter"}}
+        body={"error": {"code": "content_filter"}},
     )
 
     # Both original and sanitized retry raise content filter errors
@@ -147,11 +143,9 @@ def test_chat_complete_repeated_content_filter_failure():
 
     # We expect JSON format response
     res = wrapper.chat_complete(
-        prompt="Assess the risk of the contract.",
-        response_format={"type": "json_object"}
+        prompt="Assess the risk of the contract.", response_format={"type": "json_object"}
     )
-    
-    import json
+
     data = json.loads(res)
     assert data["overall_risk_level"] == "medium"
     assert isinstance(data["issues"], list)

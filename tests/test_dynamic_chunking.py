@@ -1,64 +1,71 @@
-from src.agents.clause_extractor import _split_by_sections, _split_by_pages, _token_aware_chunk_plan
+import sys
+from unittest.mock import MagicMock
+from app import config
+from ai_service.utils.chunking import (
+    _extract_protected_blocks,
+    _restore_protected_blocks,
+    split_into_extraction_units,
+    split_oversized_text
+)
 
-def test_split_by_sections():
-    contract_text = (
-        "PREAMBLE\n"
-        "This contract is made between Party A and Party B.\n"
-        "\n"
-        "ARTICLE I\n"
-        "DEFINITIONS\n"
-        "Here are some definitions.\n"
-        "\n"
-        "Section 2.1 Term\n"
-        "This agreement shall run for 3 years.\n"
-        "\n"
-        "3. Governing Law\n"
-        "This agreement is governed by Delaware law.\n"
-        "\n"
-        "MISCELLANEOUS\n"
-        "Some misc terms go here."
+
+def test_markdown_table_and_code_block_protection():
+    """Verify that fenced code blocks and markdown tables are protected and not split."""
+    raw_text = (
+        "Here is some prologue text.\n\n"
+        "```python\n"
+        "def main():\n"
+        "    print('protected code block content')\n"
+        "```\n\n"
+        "And here is a table:\n"
+        "| Col1 | Col2 |\n"
+        "|------|------|\n"
+        "| Val1 | Val2 |\n\n"
+        "Epilogue text."
     )
+    sanitized, protected = _extract_protected_blocks(raw_text)
+    assert len(protected) == 2
     
-    sections = _split_by_sections(contract_text)
-    
-    # Check that we split into multiple sections
-    assert len(sections) >= 3
-    
-    # Check that headings remain at the start of their respective section splits
-    assert sections[0].startswith("PREAMBLE")
-    assert sections[1].startswith("ARTICLE I")
-    assert sections[2].startswith("3. Governing Law")
+    # Check block recovery
+    restored = _restore_protected_blocks(sanitized, protected)
+    assert restored == raw_text
 
 
-def test_page_chunking():
-    text_with_pages = (
-        "Initial metadata\n"
-        "--- PAGE 1 ---\n"
-        "This is content on page 1.\n"
-        "It has some text.\n"
-        "--- PAGE 2 ---\n"
-        "This is content on page 2.\n"
-        "--- PAGE 3 ---\n"
-        "This is content on page 3."
+def test_chunking_overlap_structural_split():
+    """Verify that overlaps are consistently applied at structural split boundaries."""
+    # Temporarily set overlap config
+    config.CLAUSE_EXTRACTOR_CHUNK_OVERLAP = 10
+    config.CLAUSE_EXTRACTOR_CHUNK_SIZE = 50
+    config.CLAUSE_EXTRACTOR_OVERSIZED_SPLIT_TOKENS = 50
+
+    text = (
+        "SECTION 1\n"
+        "This is short sentence A. This is short sentence B. This is short sentence C.\n\n"
+        "SECTION 2\n"
+        "This is short sentence D. This is short sentence E. This is short sentence F.\n\n"
+        "SECTION 3\n"
+        "This is short sentence G. This is short sentence H. This is short sentence I."
     )
+    units = split_into_extraction_units(text, "SaaS Agreement")
+    assert len(units) >= 2
     
-    pages = _split_by_pages(text_with_pages)
-    assert len(pages) == 3
-    assert pages[0] == (1, "Initial metadata\n\nThis is content on page 1.\nIt has some text.")
-    assert pages[1] == (2, "This is content on page 2.")
-    assert pages[2] == (3, "This is content on page 3.")
+    # Verify that the overlap indicator '[CONTEXT OVERLAP]' exists in intermediate chunks
+    overlap_found = False
+    for u in units:
+        if "[CONTEXT OVERLAP]" in u["text"]:
+            overlap_found = True
+            break
+    assert overlap_found
+
+
+def test_hard_ceiling_safety_net():
+    """Verify that a single massive paragraph gets split at character level as fallback."""
+    # Force CLAUSE_EXTRACTOR_MAX_TOKENS low for testing
+    config.CLAUSE_EXTRACTOR_MAX_TOKENS = 10
+    massive_text = "Word " * 150  # Roughly 150 tokens, exceeding the cap of 10
     
-    # Group with small limit (e.g. 5 tokens) to make each page a chunk
-    chunks = _token_aware_chunk_plan(pages, target_chunk_tokens=5)
-    assert len(chunks) == 3
+    result = split_oversized_text(massive_text, "ARTICLE I")
     
-    # Check overlap page inclusion
-    assert "PAGE 1" in chunks[0]
-    assert "PAGE 2" in chunks[0]  # page 2 is appended overlap
-    
-    assert "PAGE 1" in chunks[1]  # page 1 is prepended overlap
-    assert "PAGE 2" in chunks[1]
-    assert "PAGE 3" in chunks[1]  # page 3 is appended overlap
-    
-    assert "PAGE 2" in chunks[2]  # page 2 is prepended overlap
-    assert "PAGE 3" in chunks[2]
+    # Must have forced part suffix indicating a character-level fallback split occurred
+    assert len(result) > 1
+    assert "Forced Part" in result[0]["path"]

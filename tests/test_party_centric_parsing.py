@@ -1,7 +1,7 @@
-import pytest
-from src.models import RiskIssue, RedFlagItem, RiskLevel
-from src.agents.risk_scorer import RiskScorerAgent
-from src.agents.red_flag_detector import _parse_red_flag_response, _normalize_severity
+
+from ai_service.agents.risk_scorer import RiskScorerAgent
+from ai_service.output_schemas import RedFlagItem, RiskIssue, RiskLevel
+
 
 def test_risk_issue_pydantic_fields():
     # Verify that RiskIssue model can be instantiated with new optional fields
@@ -18,7 +18,7 @@ def test_risk_issue_pydantic_fields():
         liability_holder="Vendor (Simform)",
         decision_controller="Mutual",
         vendor_risk_score=0.1,
-        customer_risk_score=0.8
+        customer_risk_score=0.8,
     )
     assert issue.benefiting_party == "Vendor (Simform)"
     assert issue.burdened_party == "Customer (Acme)"
@@ -26,6 +26,7 @@ def test_risk_issue_pydantic_fields():
     assert issue.decision_controller == "Mutual"
     assert issue.vendor_risk_score == 0.1
     assert issue.customer_risk_score == 0.8
+
 
 def test_red_flag_item_pydantic_fields():
     # Verify that RedFlagItem model can be instantiated with new optional fields
@@ -38,12 +39,13 @@ def test_red_flag_item_pydantic_fields():
         benefiting_party="Vendor",
         burdened_party="Customer",
         liability_holder="Unspecified",
-        decision_controller="Vendor"
+        decision_controller="Vendor",
     )
     assert flag.benefiting_party == "Vendor"
     assert flag.burdened_party == "Customer"
     assert flag.liability_holder == "Unspecified"
     assert flag.decision_controller == "Vendor"
+
 
 def test_risk_scorer_agent_parsing():
     agent = RiskScorerAgent()

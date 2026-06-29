@@ -1,5 +1,6 @@
-import pytest
-from src.services.chat_service import ContractChatService
+
+from ai_service.services.chat_service import ContractChatService
+
 
 def test_chat_jailbreak_prevention():
     service = ContractChatService(contract_id="general")

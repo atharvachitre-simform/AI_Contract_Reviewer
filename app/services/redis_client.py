@@ -1,0 +1,94 @@
+"""Async Redis client wrapper for AI Contract Reviewer.
+Provides simple async methods for get, setex, delete, and ping.
+Used by services (e.g., chat_service) to store chat history and summaries.
+"""
+
+import asyncio
+import logging
+import os
+from typing import Any, Optional
+
+from redis.asyncio import Redis as AsyncRedis
+
+logger = logging.getLogger(__name__)
+
+
+class AsyncRedisClient:
+    """Thin async wrapper around redis.asyncio.Redis.
+    It reads the REDIS_URL environment variable and creates a connection.
+    All methods are async and return appropriate types.
+    """
+
+    def __init__(self, url: Optional[str] = None):
+        self.url = url or os.getenv("REDIS_URL", "redis://localhost:6379")
+        self._client: Optional[AsyncRedis] = None
+        self._loop = None
+
+    async def _get_client(self) -> AsyncRedis:
+        current_loop = asyncio.get_running_loop()
+
+        if self._client is None or self._loop is not current_loop:
+            if self.url == "memory://":
+                from unittest.mock import MagicMock
+
+                self._client = MagicMock()
+                self._loop = current_loop
+                return self._client
+            if AsyncRedis is None:
+                raise RuntimeError(
+                    "redis.asyncio is not installed. Install 'redis' package with async support."
+                )
+            # If there was a previous client from a different loop, we can't safely await aclose() here
+            # because we are in a new loop, but we will let garbage collection handle it.
+            self._client = AsyncRedis.from_url(self.url, encoding="utf-8", decode_responses=True)
+            self._loop = current_loop
+
+        return self._client
+
+    async def get(self, key: str) -> Optional[Any]:
+        client = await self._get_client()
+        try:
+            return await client.get(key)
+        except Exception as e:
+            logger.warning(f"Async Redis GET failed for {key}: {e}")
+            return None
+
+    async def setex(self, key: str, ttl: int, value: Any) -> bool:
+        client = await self._get_client()
+        try:
+            await client.setex(key, ttl, value)
+            return True
+        except Exception as e:
+            logger.warning(f"Async Redis SETEX failed for {key}: {e}")
+            return False
+
+    async def set_nx(self, key: str, value: Any, ex: int | None = None) -> bool:
+        """Atomically set key to value ONLY if it does not already exist (Redis SET NX).
+
+        Returns True if the key was newly set, False if the key already existed.
+        Use this for race-free resource ownership claims instead of get + setex.
+        """
+        client = await self._get_client()
+        try:
+            result = await client.set(key, value, nx=True, ex=ex)
+            return bool(result)
+        except Exception as e:
+            logger.warning(f"Async Redis SET NX failed for {key}: {e}")
+            return False
+
+    async def delete(self, key: str) -> bool:
+        client = await self._get_client()
+        try:
+            await client.delete(key)
+            return True
+        except Exception as e:
+            logger.warning(f"Async Redis DELETE failed for {key}: {e}")
+            return False
+
+    async def ping(self) -> bool:
+        client = await self._get_client()
+        try:
+            return await client.ping()
+        except Exception as e:
+            logger.warning(f"Async Redis ping failed: {e}")
+            return False

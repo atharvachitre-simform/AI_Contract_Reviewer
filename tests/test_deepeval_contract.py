@@ -1,17 +1,18 @@
 import os
+
 import pytest
-from deepeval.models import DeepEvalBaseLLM
+from deepeval import assert_test
 from deepeval.metrics import (
     AnswerRelevancyMetric,
     FaithfulnessMetric,
-    SummarizationMetric,
+    GEval,
     HallucinationMetric,
-    GEval
+    SummarizationMetric,
 )
+from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
-from deepeval import assert_test
 
-from src.services.azure_clients import AzureClientFactory
+from ai_service.services.azure_clients import AzureClientFactory
 
 
 # ===========================================================================
@@ -19,10 +20,11 @@ from src.services.azure_clients import AzureClientFactory
 # ===========================================================================
 class AppEvaluatorModel(DeepEvalBaseLLM):
     """DeepEval wrapper to route evaluations through the configured application LLM.
-    
+
     This ensures that evaluations are run using the same Azure OpenAI / Groq / OpenAI
     instance defined in the application's configuration.
     """
+
     def __init__(self):
         try:
             self.factory = AzureClientFactory()
@@ -38,17 +40,22 @@ class AppEvaluatorModel(DeepEvalBaseLLM):
         if self.client and self.client.is_configured():
             return self.client.chat_complete(prompt, temperature=0.0)
         # Safe fallback if API credentials are not set during offline test runs
-        return "Mock evaluation output. Invoices are paid within 30 days with a 15-day grace period."
+        return (
+            "Mock evaluation output. Invoices are paid within 30 days with a 15-day grace period."
+        )
 
     async def a_generate(self, prompt: str) -> str:
         if self.client and self.client.is_configured():
             return self.client.chat_complete(prompt, temperature=0.0)
-        return "Mock evaluation output. Invoices are paid within 30 days with a 15-day grace period."
+        return (
+            "Mock evaluation output. Invoices are paid within 30 days with a 15-day grace period."
+        )
 
     def get_model_name(self) -> str:
         if self.client and self.client.is_configured():
             return self.client.deployment_name or "App-Model"
         return "MockEvaluatorModel"
+
 
 # Instantiate evaluator wrapper (fallback to None will make DeepEval use standard OpenAI evaluator)
 try:
@@ -64,7 +71,7 @@ EVALUATOR_AVAILABLE = (eval_model is not None) or bool(os.getenv("OPENAI_API_KEY
 
 pytestmark = pytest.mark.skipif(
     not EVALUATOR_AVAILABLE,
-    reason="No valid evaluation LLM client configured and OPENAI_API_KEY is not set."
+    reason="No valid evaluation LLM client configured and OPENAI_API_KEY is not set.",
 )
 
 
@@ -79,14 +86,12 @@ def test_contract_chat_quality():
         "this Agreement, up to a maximum cap of $1,000,000."
     ]
     user_input = "Does the contract have a limit on indemnity liability?"
-    
+
     # Simulated output from Chat Service
     actual_output = "Yes, the contract limits the Contractor's indemnity liability to a maximum cap of $1,000,000."
 
     test_case = LLMTestCase(
-        input=user_input,
-        actual_output=actual_output,
-        retrieval_context=retrieval_context
+        input=user_input, actual_output=actual_output, retrieval_context=retrieval_context
     )
 
     relevancy_metric = AnswerRelevancyMetric(threshold=0.6, model=eval_model)
@@ -114,7 +119,7 @@ def test_plain_english_summarization():
         "revenue, data, or use, incurred by either party or any third party, whether in an action "
         "in contract or tort, even if the other party has been advised of the possibility of such damages."
     )
-    
+
     # Simulated output from Plain English Writer
     actual_output = (
         "Under no circumstances will either party be held liable to the other party for any indirect, "
@@ -123,10 +128,7 @@ def test_plain_english_summarization():
         "under contract or tort law, and even if the party was previously advised that such damages could occur."
     )
 
-    test_case = LLMTestCase(
-        input=legalese_text,
-        actual_output=actual_output
-    )
+    test_case = LLMTestCase(input=legalese_text, actual_output=actual_output)
 
     summarization_metric = SummarizationMetric(threshold=0.6, model=eval_model)
     summarization_metric.measure(test_case)
@@ -154,10 +156,7 @@ def test_risk_scorer_reasoning():
         "itself under foreign common law principles without home-court advantage."
     )
 
-    test_case = LLMTestCase(
-        input=clause_context,
-        actual_output=risk_output
-    )
+    test_case = LLMTestCase(input=clause_context, actual_output=risk_output)
 
     # Evaluate the reasoning based on domain-specific guidelines using G-Eval
     g_eval_metric = GEval(
@@ -165,7 +164,7 @@ def test_risk_scorer_reasoning():
         criteria="Evaluate if the risk reasoning is clear, specific to the clause, and details the liability exposure.",
         evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.6,
-        model=eval_model
+        model=eval_model,
     )
     g_eval_metric.measure(test_case)
     print(f"\n[Risk Reasoning G-Eval Score]: {g_eval_metric.score}")
@@ -179,19 +178,13 @@ def test_risk_scorer_reasoning():
 # ===========================================================================
 def test_obligation_hallucination():
     """Verify that the Obligation Finder does not introduce hallucinated terms or penalties."""
-    source_text = (
-        "Payment Terms: Client shall pay all undisputed invoices within thirty (30) days of receipt."
-    )
-    
+    source_text = "Payment Terms: Client shall pay all undisputed invoices within thirty (30) days of receipt."
+
     # Simulated output from Obligation Finder
-    actual_output = (
-        "The Client must pay invoices within 30 days."
-    )
+    actual_output = "The Client must pay invoices within 30 days."
 
     test_case = LLMTestCase(
-        input="Extract the payment obligations.",
-        actual_output=actual_output,
-        context=[source_text]
+        input="Extract the payment obligations.", actual_output=actual_output, context=[source_text]
     )
 
     hallucination_metric = HallucinationMetric(threshold=0.6, model=eval_model)

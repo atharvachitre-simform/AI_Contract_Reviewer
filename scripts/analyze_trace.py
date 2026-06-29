@@ -15,14 +15,15 @@ Reads artifacts/extraction_runs/<contract_id>/ and produces:
 
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from pathlib import Path
 
 ARTIFACT_ROOT = Path("artifacts/extraction_runs")
-FAIL_COLOR = "\033[91m"   # red
-WARN_COLOR = "\033[93m"   # yellow
-OK_COLOR = "\033[92m"     # green
+FAIL_COLOR = "\033[91m"  # red
+WARN_COLOR = "\033[93m"  # yellow
+OK_COLOR = "\033[92m"  # green
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
@@ -94,24 +95,38 @@ def analyze(contract_id: str) -> None:
         p = metrics["preprocess"]
         removed_pct = p.get("removed_pct", 0)
         color = FAIL_COLOR if removed_pct > 20 else OK_COLOR
-        orig_chars = p.get('original_chars')
-        final_chars = p.get('final_chars')
-        sig_chars = p.get('signature_block_chars', 0)
-        att_chars = p.get('attachment_placeholder_chars', 0)
-        rec_chars = p.get('recitals_chars', 0)
-        tokens_saved = p.get('estimated_tokens_saved', 0)
+        orig_chars = p.get("original_chars")
+        final_chars = p.get("final_chars")
+        sig_chars = p.get("signature_block_chars", 0)
+        att_chars = p.get("attachment_placeholder_chars", 0)
+        rec_chars = p.get("recitals_chars", 0)
+        tokens_saved = p.get("estimated_tokens_saved", 0)
 
-        print(f"  Raw chars           : {f'{orig_chars:,}' if isinstance(orig_chars, (int, float)) else orig_chars}")
-        print(f"  Processed chars     : {f'{final_chars:,}' if isinstance(final_chars, (int, float)) else final_chars}")
+        print(
+            f"  Raw chars           : {f'{orig_chars:,}' if isinstance(orig_chars, (int, float)) else orig_chars}"
+        )
+        print(
+            f"  Processed chars     : {f'{final_chars:,}' if isinstance(final_chars, (int, float)) else final_chars}"
+        )
         print(f"  Removed             : {_c(color, f'{removed_pct:.1f}%')}")
-        print(f"  Signature block     : {f'{sig_chars:,}' if isinstance(sig_chars, (int, float)) else sig_chars} chars")
-        print(f"  Attachment pages    : {f'{att_chars:,}' if isinstance(att_chars, (int, float)) else att_chars} chars")
-        print(f"  Recitals            : {f'{rec_chars:,}' if isinstance(rec_chars, (int, float)) else rec_chars} chars")
+        print(
+            f"  Signature block     : {f'{sig_chars:,}' if isinstance(sig_chars, (int, float)) else sig_chars} chars"
+        )
+        print(
+            f"  Attachment pages    : {f'{att_chars:,}' if isinstance(att_chars, (int, float)) else att_chars} chars"
+        )
+        print(
+            f"  Recitals            : {f'{rec_chars:,}' if isinstance(rec_chars, (int, float)) else rec_chars} chars"
+        )
         print(f"  XRef defs removed   : {p.get('pure_xref_definitions_removed', 0)} definitions")
         print(f"  Redactions collapsed: {p.get('redaction_tokens_collapsed', 0)}")
-        print(f"  Est. tokens saved   : {f'{tokens_saved:,}' if isinstance(tokens_saved, (int, float)) else tokens_saved}")
+        print(
+            f"  Est. tokens saved   : {f'{tokens_saved:,}' if isinstance(tokens_saved, (int, float)) else tokens_saved}"
+        )
         if not has_raw:
-            print(f"  {WARN_COLOR}[!] 01_raw_text.txt not found — contract went through bypass path{RESET}")
+            print(
+                f"  {WARN_COLOR}[!] 01_raw_text.txt not found — contract went through bypass path{RESET}"
+            )
         if not has_preprocessed:
             print(f"  {WARN_COLOR}[!] 02_preprocessed.txt not found{RESET}")
     else:
@@ -141,7 +156,11 @@ def analyze(contract_id: str) -> None:
         print(f"  Filtered (type)     : {rag.get('filtered', 0)}")
         print(f"  Used                : {_c(color, str(used))}")
         for ex in rag.get("examples", []):
-            status = f"{OK_COLOR}ACCEPTED{RESET}" if ex.get("accepted") else f"{WARN_COLOR}REJECTED ({ex.get('rejected_reason', '')}){RESET}"
+            status = (
+                f"{OK_COLOR}ACCEPTED{RESET}"
+                if ex.get("accepted")
+                else f"{WARN_COLOR}REJECTED ({ex.get('rejected_reason', '')}){RESET}"
+            )
             print(f"    [{status}] type={ex.get('contract_type','?')} score={ex.get('score','?')}")
     else:
         print(f"  {WARN_COLOR}No retrieval data captured{RESET}")
@@ -150,7 +169,9 @@ def analyze(contract_id: str) -> None:
     print(f"\n{BOLD}[5] LLM EXTRACTION — Per-Chunk Yield{RESET}")
     if llm_raw:
         total_clauses = 0
-        print(f"  {'Chunk':<6} {'In(t)':<8} {'Out(t)':<8} {'Clauses':<9} {'Density/1k':<12} {'Categories'}")
+        print(
+            f"  {'Chunk':<6} {'In(t)':<8} {'Out(t)':<8} {'Clauses':<9} {'Density/1k':<12} {'Categories'}"
+        )
         print(f"  {'-'*75}")
         for entry in llm_raw:
             idx = entry.get("chunk_idx", "?")
@@ -196,7 +217,6 @@ def analyze(contract_id: str) -> None:
     csv_path = run_dir / "coverage.csv"
     print(f"\n{BOLD}[8] COVERAGE MAP — Zero-Clause Sections (top 10){RESET}")
     if csv_path.exists():
-        import csv
         zero_rows = []
         with csv_path.open(encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -222,13 +242,17 @@ def analyze(contract_id: str) -> None:
     if metrics and "preprocess" in metrics:
         rp = metrics["preprocess"].get("removed_pct", 0)
         if rp > 20:
-            stage_losses.append(("PREPROCESSING", rp, f"{rp:.1f}% of content removed before LLM ever sees it"))
+            stage_losses.append(
+                ("PREPROCESSING", rp, f"{rp:.1f}% of content removed before LLM ever sees it")
+            )
 
     # Stage B: Chunking
     if metrics and "chunking" in metrics:
         mt = metrics["chunking"].get("max_tokens_est", 0)
         if mt > 12000:
-            stage_losses.append(("CHUNKING", mt / 1000, f"Largest chunk ~{mt:,} tokens — may exceed context budget"))
+            stage_losses.append(
+                ("CHUNKING", mt / 1000, f"Largest chunk ~{mt:,} tokens — may exceed context budget")
+            )
 
     # Stage C: LLM Extraction
     llm_total = 0
@@ -240,24 +264,36 @@ def analyze(contract_id: str) -> None:
                 llm_zero_chunks += 1
         if llm_zero_chunks > 0:
             stage_losses.append(
-                ("LLM_EXTRACTION", llm_zero_chunks,
-                 f"{llm_zero_chunks} chunk(s) returned 0 clauses — "
-                 "model confusion, bad section, or context overflow"))
+                (
+                    "LLM_EXTRACTION",
+                    llm_zero_chunks,
+                    f"{llm_zero_chunks} chunk(s) returned 0 clauses — "
+                    "model confusion, bad section, or context overflow",
+                )
+            )
 
     # Stage D: Dedup
     if postproc:
         drop = postproc.get("drop_pct", 0)
         if drop > 10:
             stage_losses.append(
-                ("POSTPROCESSING_DEDUP", drop,
-                 f"{drop:.1f}% of clauses removed in dedup — Jaccard threshold too aggressive?"))
+                (
+                    "POSTPROCESSING_DEDUP",
+                    drop,
+                    f"{drop:.1f}% of clauses removed in dedup — Jaccard threshold too aggressive?",
+                )
+            )
 
     # Stage E: RAG
     if rag and rag.get("used", 0) == 0:
-        stage_losses.append(("RAG_RETRIEVAL", 0, "No RAG examples used — model has zero few-shot context"))
+        stage_losses.append(
+            ("RAG_RETRIEVAL", 0, "No RAG examples used — model has zero few-shot context")
+        )
 
     if not stage_losses:
-        print(f"  {OK_COLOR}No obvious single bottleneck detected. Losses distributed across stages.{RESET}")
+        print(
+            f"  {OK_COLOR}No obvious single bottleneck detected. Losses distributed across stages.{RESET}"
+        )
     else:
         stage_losses.sort(key=lambda x: -x[1])
         print(f"  {'Stage':<22} {'Severity':<12} {'Explanation'}")
@@ -271,21 +307,31 @@ def analyze(contract_id: str) -> None:
     print(f"\n{BOLD}[10] ROOT CAUSE VERDICT{RESET}")
     _verdict_lines = []
     if llm_zero_chunks and llm_zero_chunks >= (len(llm_raw) // 2 if llm_raw else 1):
-        _verdict_lines.append(f"{FAIL_COLOR}PRIMARY:{RESET} LLM extraction — model returns zero clauses on majority of chunks. "
-                               "Cause: prompt confusion, definition-skip rule too aggressive, or output truncation.")
+        _verdict_lines.append(
+            f"{FAIL_COLOR}PRIMARY:{RESET} LLM extraction — model returns zero clauses on majority of chunks. "
+            "Cause: prompt confusion, definition-skip rule too aggressive, or output truncation."
+        )
     elif llm_zero_chunks > 0:
-        _verdict_lines.append(f"{WARN_COLOR}PRIMARY:{RESET} LLM extraction — model drops clauses on {llm_zero_chunks} specific chunk(s). "
-                               "Cause likely: those chunks are definition-heavy sections the model skips.")
+        _verdict_lines.append(
+            f"{WARN_COLOR}PRIMARY:{RESET} LLM extraction — model drops clauses on {llm_zero_chunks} specific chunk(s). "
+            "Cause likely: those chunks are definition-heavy sections the model skips."
+        )
     if postproc and postproc.get("drop_pct", 0) > 10:
-        _verdict_lines.append(f"{WARN_COLOR}SECONDARY:{RESET} Dedup removes >{postproc['drop_pct']:.0f}% of extracted clauses. "
-                               "Jaccard 0.75 is collapsing overlapping chunks that contain distinct subclauses.")
+        _verdict_lines.append(
+            f"{WARN_COLOR}SECONDARY:{RESET} Dedup removes >{postproc['drop_pct']:.0f}% of extracted clauses. "
+            "Jaccard 0.75 is collapsing overlapping chunks that contain distinct subclauses."
+        )
     if rag and rag.get("used", 0) == 0:
-        _verdict_lines.append(f"{WARN_COLOR}SECONDARY:{RESET} No RAG examples — classification-recall lower without few-shot anchors.")
+        _verdict_lines.append(
+            f"{WARN_COLOR}SECONDARY:{RESET} No RAG examples — classification-recall lower without few-shot anchors."
+        )
 
     if not _verdict_lines:
         final_count = len(final.get("clauses", [])) if final else 0
-        _verdict_lines.append(f"{OK_COLOR}Extraction appears healthy ({final_count} clauses). "
-                               "If recall is still low, the contract may need a gold-standard comparison.{RESET}")
+        _verdict_lines.append(
+            f"{OK_COLOR}Extraction appears healthy ({final_count} clauses). "
+            "If recall is still low, the contract may need a gold-standard comparison.{RESET}"
+        )
 
     for line in _verdict_lines:
         print(f"  {line}")

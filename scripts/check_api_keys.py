@@ -9,6 +9,7 @@ Usage:
     uv run python scripts/check_api_keys.py --skip-blob
     uv run python scripts/check_api_keys.py --skip-openai --skip-search
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,8 +29,10 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.indexes import SearchIndexClient
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
+
 try:
     from supabase import create_client
+
     HAS_SUPABASE = True
 except ImportError:
     create_client = None
@@ -185,7 +188,9 @@ def check_azure_blob_storage() -> CheckResult:
     status, body = request_json(url, headers=headers)
     if status == 200:
         extra = f" Container={container!r}." if container else ""
-        return CheckResult(name="Azure Blob Storage", ok=True, message=f"Connected successfully.{extra}")
+        return CheckResult(
+            name="Azure Blob Storage", ok=True, message=f"Connected successfully.{extra}"
+        )
     return CheckResult(name="Azure Blob Storage", ok=False, message=f"HTTP {status}: {body[:200]}")
 
 
@@ -232,7 +237,9 @@ def check_redis() -> CheckResult:
 
 def check_supabase() -> CheckResult:
     if not HAS_SUPABASE:
-        return CheckResult(name="Supabase", ok=True, message="Skipped (supabase client package not installed).")
+        return CheckResult(
+            name="Supabase", ok=True, message="Skipped (supabase client package not installed)."
+        )
     url = get_env("SUPABASE_URL")
     key = get_env("SUPABASE_KEY")
     try:
@@ -283,7 +290,9 @@ def check_langfuse() -> CheckResult:
                 ),
             )
 
-    return CheckResult(name="Langfuse", ok=False, message="Could not reach a known Langfuse health endpoint.")
+    return CheckResult(
+        name="Langfuse", ok=False, message="Could not reach a known Langfuse health endpoint."
+    )
 
 
 def run_checks(skip_blob: bool) -> list[CheckResult]:

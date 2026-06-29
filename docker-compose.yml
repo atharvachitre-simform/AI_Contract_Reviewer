@@ -8,7 +8,7 @@ services:
     image: contract-reviewer:latest
     container_name: contract_reviewer_backend
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     env_file:
       - .env
     environment:
@@ -42,7 +42,7 @@ services:
     container_name: contract_reviewer_frontend
     command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     ports:
-      - "8501:8501"
+      - "${FRONTEND_PORT:-8501}:8501"
     env_file:
       - .env
     environment:
@@ -65,7 +65,7 @@ services:
     container_name: contract_reviewer_redis
     command: redis-server --save 60 1 --loglevel warning
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -80,8 +80,8 @@ services:
     image: qdrant/qdrant:latest
     container_name: contract_reviewer_qdrant
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
@@ -107,7 +107,7 @@ services:
       dockerfile: docker/Dockerfile
     image: contract-reviewer:latest
     command: >
-      celery -A src.worker.celery_app worker
+      celery -A worker.celery_app worker
       --loglevel=info
       --queues=contract_review
       --autoscale=${CELERY_WORKER_MAX_CONCURRENCY:-4},${CELERY_WORKER_MIN_CONCURRENCY:-1}
@@ -130,7 +130,7 @@ services:
         limits:
           memory: 2048M
     healthcheck:
-      test: ["CMD", "celery", "-A", "src.worker.celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD", "celery", "-A", "worker.celery_app", "inspect", "ping", "--timeout=5"]
       interval: 30s
       timeout: 10s
       retries: 3
