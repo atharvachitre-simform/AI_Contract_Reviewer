@@ -114,6 +114,22 @@ uv run celery -A worker.celery_app worker --loglevel=info
 ### 3. Containerized Setup (Docker - Recommended)
 Spin up the complete stack in isolated containers using the [Makefile](Makefile):
 
+### 6. Plain English Writer
+* **Model**: `GPT-4o-mini`
+* **Rationale**: Translating legal terminology into natural, accessible summaries is a language generation task where lightweight models shine. `GPT-4o-mini` provides **high-speed translation** without consuming large token budgets.
+
+### 7. Report Assembler
+* **Model**: `GPT-4o`
+* **Rationale**: The assembler synthesizes outputs from all preceding agents, resolves conflicting scores, notes missing clauses, and outputs the final verdict. Doing this coherently requires **complex semantic synthesis** to make the final report unified and clear.
+
+---
+
+## ⚡ Setup & Run Instructions
+
+Ensure your local virtual environment is prepared using `uv` (or standard `pip` as a fallback).
+
+### 1. Environment Configuration
+Copy the template configuration file:
 ```bash
 # Build multi-stage Docker image
 make build
@@ -130,6 +146,7 @@ make down
 # Clean up volumes and containers
 make clean
 ```
+Open `.env` and fill in your Azure endpoints, search credentials, and optional DeepEval keys.
 
 Services started:
 - **API** (port 8000) — FastAPI + LangGraph orchestration
@@ -184,6 +201,11 @@ uv run pytest tests/integration/ -v --timeout=120
 
 ## 📂 Project Structure
 
+# Watch container logs in real time
+make logs
+
+# Shut down all services
+make down
 ```
 AI_Contract_Reviewer/
 ├── ai_service/                    # Core AI service layer
