@@ -176,7 +176,15 @@ def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
             with open(tmp_path, "rb") as f:
                 files = {"file": (file_name, f, "application/pdf")}
                 response = httpx.post(f"{api_url}/api/v1/review/extract", files=files, headers=headers, timeout=900.0)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as err:
+                    detail = ""
+                    try:
+                        detail = response.json().get("detail", "")
+                    except Exception:
+                        detail = response.text
+                    raise RuntimeError(f"Server returned error ({response.status_code}): {detail}") from err
                 return response.json()["text"]
         finally:
             tmp_path.unlink(missing_ok=True)
