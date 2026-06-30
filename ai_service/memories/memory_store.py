@@ -45,7 +45,7 @@ class MemoryStore:
         if not self.redis:
             return False
         try:
-            return bool(self.redis.ping())
+            return self.redis.ping()
         except Exception:
             return False
 
@@ -117,7 +117,7 @@ class MemoryStore:
     def save_short_term_memory(
         self, session_id: str, payload: dict[str, Any], ttl_seconds: int = config.REDIS_TTL_SECONDS
     ) -> None:
-        if self.is_redis_available():
+        if self.redis and self.is_redis_available():
             try:
                 self.redis.setex(
                     f"{self.SHORT_TERM_PREFIX}{session_id}",
@@ -131,7 +131,7 @@ class MemoryStore:
         self._save_local_fallback(session_id, payload)
 
     def load_short_term_memory(self, session_id: str) -> dict[str, Any] | None:
-        if self.is_redis_available():
+        if self.redis and self.is_redis_available():
             try:
                 raw = self.redis.get(f"{self.SHORT_TERM_PREFIX}{session_id}")
                 if raw:
@@ -176,7 +176,7 @@ class MemoryStore:
         if not self.azure_factory.qdrant_client:
             return
 
-        version_ts = datetime.datetime.utcnow().timestamp()
+        version_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
         # Index page captions if pdf_bytes is provided and STORE_PAGE_IMAGES is enabled
         if pdf_bytes and getattr(config, "STORE_PAGE_IMAGES", True):
@@ -347,7 +347,7 @@ class MemoryStore:
 
         # Embed and prepare points
         points = []
-        version_ts = datetime.datetime.utcnow().timestamp()
+        version_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
         for unit in units:
             text = unit.get("text", "")

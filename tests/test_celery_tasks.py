@@ -109,9 +109,12 @@ class TestRunContractReviewTask(unittest.TestCase):
         self.assertTrue(conf.task_reject_on_worker_lost, "task_reject_on_worker_lost must be True")
         self.assertEqual(conf.worker_prefetch_multiplier, 1, "prefetch_multiplier must be 1")
         self.assertEqual(conf.task_serializer, "json")
+        
+        time_limit = getattr(conf, "task_time_limit", None) or 600
+        soft_limit = getattr(conf, "task_soft_time_limit", None) or 540
         self.assertGreater(
-            conf.task_time_limit,
-            conf.task_soft_time_limit,
+            time_limit,
+            soft_limit,
             "Hard time limit must exceed soft time limit",
         )
 

@@ -22,6 +22,7 @@ from ai_service.agents.report_assembler import assemble_report
 from ai_service.agents.risk_scorer import score_risks
 from ai_service.utils.contract_analysis import filter_boilerplate_clauses
 from ai_service.utils.tracing import trace_step
+from ai_service.utils.agent_output_persistence import persist_agent_output
 from ai_service.output_schemas import ContractReviewState, ProcessingStatus
 from ai_service.services.langfuse_tracer import LangFuseTracer
 
@@ -119,10 +120,12 @@ class ContractReviewWorkflow:
             )
         except Exception as e:
             logger.error("Clause extraction agent failed: %s", str(e), exc_info=True)
+            persist_agent_output(state.contract_id, "clause_extractor", None, error=str(e))
             state.status = ProcessingStatus.FAILED
             raise e
         state.clause_extraction = clause_extraction
         state.metadata = clause_extraction.metadata
+        persist_agent_output(state.contract_id, "clause_extractor", clause_extraction)
         state.api_trace[-1]["status"] = "completed"
         self._trace(
             "clause_extraction",
@@ -198,6 +201,7 @@ class ContractReviewWorkflow:
                 )
 
                 state.obligation_finding = obligation_future.result()
+                persist_agent_output(state.contract_id, "obligation_finder", state.obligation_finding)
                 state.api_trace.append(
                     {
                         "step": "obligation_finding",
@@ -219,6 +223,7 @@ class ContractReviewWorkflow:
                 )
 
                 state.red_flag_detection = red_flag_future.result()
+                persist_agent_output(state.contract_id, "red_flag_detector", state.red_flag_detection)
                 state.api_trace.append(
                     {
                         "step": "red_flag_detection",
@@ -240,6 +245,7 @@ class ContractReviewWorkflow:
                 )
 
                 state.risk_scoring = risk_future.result()
+                persist_agent_output(state.contract_id, "risk_scorer", state.risk_scoring)
                 state.api_trace.append(
                     {
                         "step": "risk_scoring",
@@ -265,6 +271,7 @@ class ContractReviewWorkflow:
                 )
         except Exception as e:
             logger.error("Error during parallel agent execution: %s", str(e), exc_info=True)
+            persist_agent_output(state.contract_id, "parallel_analysis", None, error=str(e))
             state.status = ProcessingStatus.FAILED
             raise e
 
@@ -303,8 +310,10 @@ class ContractReviewWorkflow:
             )
         except Exception as e:
             logger.error("Plain English writer agent failed: %s", str(e), exc_info=True)
+            persist_agent_output(state.contract_id, "plain_english_writer", None, error=str(e))
             state.status = ProcessingStatus.FAILED
             raise e
+        persist_agent_output(state.contract_id, "plain_english_writer", state.plain_english)
         state.api_trace.append(
             {
                 "step": "plain_english",
@@ -344,8 +353,10 @@ class ContractReviewWorkflow:
             )
         except Exception as e:
             logger.error("Report assembler agent failed: %s", str(e), exc_info=True)
+            persist_agent_output(state.contract_id, "report_assembler", None, error=str(e))
             state.status = ProcessingStatus.FAILED
             raise e
+        persist_agent_output(state.contract_id, "report_assembler", state.final_report)
         if state.final_report and state.final_report.warnings:
             state.warnings.extend(state.final_report.warnings)
 

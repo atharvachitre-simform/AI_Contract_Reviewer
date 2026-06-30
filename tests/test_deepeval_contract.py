@@ -10,7 +10,7 @@ from deepeval.metrics import (
     SummarizationMetric,
 )
 from deepeval.models import DeepEvalBaseLLM
-from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from deepeval.test_case import LLMTestCase, SingleTurnParams
 
 from ai_service.services.azure_clients import AzureClientFactory
 
@@ -162,7 +162,7 @@ def test_risk_scorer_reasoning():
     g_eval_metric = GEval(
         name="Risk Reasoning Clarity",
         criteria="Evaluate if the risk reasoning is clear, specific to the clause, and details the liability exposure.",
-        evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
+        evaluation_params=[SingleTurnParams.INPUT, SingleTurnParams.ACTUAL_OUTPUT],
         threshold=0.6,
         model=eval_model,
     )

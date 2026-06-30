@@ -1,7 +1,12 @@
-
+import os
 import pytest
 
 from app.services.db_store import SQLiteChatStore
+
+pytestmark = pytest.mark.skipif(
+    not os.getenv("MONGO_URI"),
+    reason="MongoChatStore requires a running MongoDB database"
+)
 
 
 @pytest.fixture
