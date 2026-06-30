@@ -10,10 +10,15 @@ def test_mongo_checkpointer_store_save_load_delete():
     # Mock MongoClient
     with patch("checkpointing.mongo_checkpointer.MongoClient") as mock_client_class:
         mock_client = MagicMock()
+        mock_collection = MagicMock()
+        mock_db = MagicMock()
+        mock_client.__getitem__.return_value = mock_db
+        mock_db.__getitem__.return_value = mock_collection
         mock_client_class.return_value = mock_client
 
         # Instantiate store
         store = MongoCheckpointerStore(uri="mongodb://localhost:27017")
+        store.collection = mock_collection
         assert store.is_connected() is True
 
         # Test save_checkpoint

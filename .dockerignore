@@ -59,3 +59,10 @@ Makefile
 .flake8
 .pre-commit-config.yaml
 .python-version
+
+# Sensitive Keys and Certs
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

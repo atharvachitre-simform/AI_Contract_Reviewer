@@ -18,7 +18,7 @@ def test_config_defaults(monkeypatch):
         assert config.CLAUSE_TEXT_TRUNCATION == 1200
         assert config.RISK_THRESHOLD_HIGH == 0.6
         assert config.RISK_THRESHOLD_MEDIUM == 0.3
-        assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 12000
+        assert config.CLAUSE_EXTRACTOR_MAX_TOKENS == 4000
         assert config.OBLIGATION_FINDER_MAX_TOKENS == 6000
         assert config.RED_FLAG_DETECTOR_MAX_TOKENS == 8000
         assert config.RISK_SCORER_MAX_TOKENS == 6000

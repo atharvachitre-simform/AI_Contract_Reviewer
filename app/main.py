@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from fastapi import FastAPI
@@ -24,12 +25,14 @@ from app.routers import (
     trace_router,
 )
 
-app = FastAPI(title="Contract Reviewer")
 
-
-@app.on_event("startup")
-async def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> Any:
     asyncio.create_task(start_periodic_cleanup_job())
+    yield
+
+
+app = FastAPI(title="Contract Reviewer", lifespan=lifespan)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

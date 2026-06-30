@@ -169,14 +169,22 @@ def process_uploaded_file(file_bytes: bytes, file_name: str) -> str:
             tmp.write(file_bytes)
             tmp_path = Path(tmp.name)
         try:
-            api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+            api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
             headers = {}
             if st.session_state.get("auth_token"):
                 headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
             with open(tmp_path, "rb") as f:
                 files = {"file": (file_name, f, "application/pdf")}
                 response = httpx.post(f"{api_url}/api/v1/review/extract", files=files, headers=headers, timeout=900.0)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as err:
+                    detail = ""
+                    try:
+                        detail = response.json().get("detail", "")
+                    except Exception:
+                        detail = response.text
+                    raise RuntimeError(f"Server returned error ({response.status_code}): {detail}") from err
                 return response.json()["text"]
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -216,7 +224,7 @@ def load_text_from_upload(uploaded_file) -> str:
                 cleared_any = True
 
         for key in list(st.session_state.keys()):
-            if key.startswith("history_") or key == "chat_session_id" or key == "last_contract_id":
+            if isinstance(key, str) and (key.startswith("history_") or key == "chat_session_id" or key == "last_contract_id"):
                 del st.session_state[key]
                 cleared_any = True
 
@@ -263,7 +271,7 @@ def render_api_trace(api_trace: list[Any]) -> None:
         st.table(raw_trace)
 
 
-def render_clause_extraction(output: object) -> None:
+def render_clause_extraction(output: Any) -> None:
     with st.expander("Clause Extractor", expanded=True):
         if not output:
             st.write("No clauses were extracted.")
@@ -303,7 +311,7 @@ def render_clause_extraction(output: object) -> None:
             )
 
 
-def render_risk_scoring(output: object) -> None:
+def render_risk_scoring(output: Any) -> None:
     with st.expander("Risk Scorer", expanded=True):
         if not output:
             st.write("No risk scoring output available.")
@@ -385,7 +393,7 @@ def render_risk_scoring(output: object) -> None:
                 st.info(suggestion)
 
 
-def render_obligation_finding(output: object) -> None:
+def render_obligation_finding(output: Any) -> None:
     with st.expander("Obligation Finder", expanded=True):
         if not output:
             st.write("No obligations detected.")
@@ -418,7 +426,7 @@ def render_obligation_finding(output: object) -> None:
             )
 
 
-def render_red_flag_detection(output: object) -> None:
+def render_red_flag_detection(output: Any) -> None:
     with st.expander("Red Flag Detector", expanded=True):
         if not output:
             st.write("No red flags detected.")
@@ -464,7 +472,7 @@ def render_red_flag_detection(output: object) -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_plain_english(output: object) -> None:
+def render_plain_english(output: Any) -> None:
     with st.expander("Plain English Writer", expanded=True):
         if not output:
             st.write("No plain English output available.")
@@ -517,7 +525,7 @@ def render_plain_english(output: object) -> None:
                 st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_report_assembler(output: object) -> None:
+def render_report_assembler(output: Any) -> None:
     with st.expander("Report Assembler", expanded=True):
         if not output:
             st.write("No report output available.")
@@ -608,7 +616,7 @@ def render_chat_tab(contract_id: str) -> None:
 
     session_id = contract_id
 
-    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+    api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
     headers = {}
     if st.session_state.get("auth_token"):
         headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
@@ -817,7 +825,7 @@ def render_chat_tab(contract_id: str) -> None:
                                         st.markdown(conf_badge_html, unsafe_allow_html=True)
 
 
-def render_full_review(state: object) -> None:
+def render_full_review(state: Any) -> None:
     st.subheader("Final Contract Review")
     if getattr(state, "trace_id", None):
         st.markdown(f"**Trace ID:** `{state.trace_id}`")
@@ -845,6 +853,7 @@ def render_full_review(state: object) -> None:
         st.subheader("📥 Export & Share Report")
 
         # Convert DictToObject to ContractReviewState for proper typed export
+        export_state: Any
         try:
             export_state = ContractReviewState.model_validate(state._data)
         except Exception:
@@ -918,7 +927,7 @@ def _clear_localstorage_session() -> None:
 
 @st.cache_data(ttl=300)
 def get_trace_cost_metrics(trace_id: str) -> dict:
-    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+    api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
     headers = {}
     if st.session_state.get("auth_token"):
         headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
@@ -1197,7 +1206,7 @@ def main() -> None:
 
         # --- 1. Load Past Reviewed Contracts Section ---
         st.header("Past Reviewed Contracts")
-        api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+        api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
         headers = {}
         if st.session_state.get("auth_token"):
             headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
@@ -1365,7 +1374,7 @@ def main() -> None:
         try:
             with st.spinner("Running contract review..."):
                 if selected_model == "Full Contract Review Pipeline":
-                    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+                    api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
                     headers = {}
                     if st.session_state.get("auth_token"):
                         headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"
@@ -1388,14 +1397,16 @@ def main() -> None:
                             st.session_state["review_state"] = state
 
                             # Render clause crops if PDF bytes exist in session state
-                            if st.session_state.get("uploaded_pdf_bytes") and state.contract_id:
+                            contract_id_val = getattr(state, "contract_id", None)
+                            if st.session_state.get("uploaded_pdf_bytes") and contract_id_val:
                                 pdf_bytes = st.session_state["uploaded_pdf_bytes"]
                                 if getattr(state, "clause_extraction", None) and getattr(
                                     state.clause_extraction, "clauses", None
                                 ):
+                                    contract_id_str = str(contract_id_val)
                                     render_clause_crops(
                                         pdf_bytes,
-                                        state.contract_id,
+                                        contract_id_str,
                                         state.clause_extraction.clauses,
                                         dpi=300,
                                     )
@@ -1404,7 +1415,7 @@ def main() -> None:
                     except Exception as e:
                         st.error(f"Error calling review API: {e}")
                 else:
-                    api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+                    api_url = os.getenv("API_URL") or os.getenv("BACKEND_URL") or "http://127.0.0.1:8000"
                     headers = {}
                     if st.session_state.get("auth_token"):
                         headers["Authorization"] = f"Bearer {st.session_state['auth_token']}"

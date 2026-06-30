@@ -110,6 +110,9 @@ def run_contract_review_task(
         logger.warning("Failed to check run counter for %s: %s", contract_id, counter_err)
         run_count = 1
 
+    if run_count is None:
+        run_count = 1
+
     if run_count > RUN_CAP:
         logger.error(
             "Aborting task for contract %s: exceeded %d total runs (run_count=%d). Possible poison pill.",
