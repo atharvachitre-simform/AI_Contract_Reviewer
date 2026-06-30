@@ -3,9 +3,14 @@
 import os
 
 os.environ["REDIS_URL"] = "memory://"
+os.environ["CELERY_BROKER_URL"] = "memory://"
+os.environ["CELERY_RESULT_URL"] = "memory://"
 os.environ["RATE_LIMIT_REVIEW_STREAM"] = "3/minute"
 os.environ["RATE_LIMIT_CHAT"] = "5/minute"
 os.environ["RATE_LIMIT_GLOBAL"] = "10/minute"
+os.environ["RERANK_COSINE_WEIGHT"] = "0.7"
+os.environ["RERANK_KEYWORD_WEIGHT"] = "0.3"
+os.environ["ENABLE_SENSITIVE_MASKING"] = "false"
 
 import pytest
 

@@ -92,7 +92,7 @@ def test_qdrant_atomic_index_swap_purge():
     assert filter_must[0].key == "contract_id"
     assert filter_must[0].match.value == "test-contract-999"
     assert filter_must[1].key == "created_at"
-    assert "lt" in filter_must[1].range
+    assert filter_must[1].range.lt is not None
 
 
 @pytest.mark.asyncio
@@ -181,21 +181,37 @@ async def test_dynamic_top_k_and_reranking(mock_dedup, mock_expand, mock_hyde):
     mock_azure.qdrant_client = mock_qdrant_client
 
     # Return results that have different keyword match overlap ratios
-    mock_points = [
-        MagicMock(payload={"text": "This clause deals with indemnity caps and liability limits."}, score=0.7),
-        MagicMock(payload={"text": "Governing law clause."}, score=0.9),  # higher cosine, but no keywords
-    ]
-    mock_result = MagicMock()
-    mock_result.points = mock_points
-    mock_qdrant_client.query_points.return_value = mock_result
+    with (
+        patch("ai_service.services.chat_retrieval.config") as mock_config,
+    ):
+        mock_config.RERANK_COSINE_WEIGHT = 0.7
+        mock_config.RERANK_KEYWORD_WEIGHT = 0.3
+        mock_config.CHAT_DEDUP_ENABLED = False
+        mock_config.CHAT_PARENT_EXPANSION = False
+        mock_config.ENABLE_MULTIMODAL_RETRIEVAL = False
+        mock_config.QDRANT_COLLECTION_NAME = "contracts-memory"
+        mock_config.CHAT_TOP_K_CLAUSES = 5
+        mock_config.CHAT_TOP_K_MAX = 20
 
-    # Query with trigger word "summarize" to test dynamic top-k multiplication
-    sources = await retrieve_clauses(mock_chat_service, "summarize liability limits", top_k=5)
-    
-    # Reranking should have placed the clause containing "liability limits" first
-    # due to the 0.3 keyword overlap score boost overriding the 0.2 cosine difference
-    assert len(sources) == 2
-    assert "liability limits" in sources[0]["text"]
+        mock_points = [
+        MagicMock(payload={"text": "This clause deals with indemnity caps and liability limits.", "contract_id": "test-contract-123"}),
+        MagicMock(payload={"text": "Governing law clause.", "contract_id": "test-contract-123"}),  # higher cosine, but no keywords
+    ]
+        # Set scores specifically to test combined score logic
+        mock_points[0].score = 0.7
+        mock_points[1].score = 0.9
+
+        mock_result = MagicMock()
+        mock_result.points = mock_points
+        mock_qdrant_client.query_points.return_value = mock_result
+
+        # Query with trigger word "summarize" to test dynamic top-k multiplication
+        sources = await retrieve_clauses(mock_chat_service, "summarize liability limits", top_k=5)
+        
+        # Reranking should have placed the clause containing "liability limits" first
+        # due to the 0.3 keyword overlap score boost overriding the 0.2 cosine difference
+        assert len(sources) == 2
+        assert "liability limits" in sources[0]["text"]
 
 
 @pytest.mark.asyncio

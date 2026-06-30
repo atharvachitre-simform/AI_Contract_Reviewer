@@ -112,12 +112,13 @@ ADMINISTRATIVE_CLAUSE_TYPES = set()
 # the LLM context window constraints.
 CLAUSE_EXTRACTOR_CHUNK_SIZE = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_SIZE", "3500"))
 # Enforced across all chunking paths (structural split and page-fallback) to keep context overlap.
-CLAUSE_EXTRACTOR_CHUNK_OVERLAP = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "3000"))
+# 500 tokens overlap = 14.3% redundancy (vs previous 85.7%), ensuring new content >> overlap.
+CLAUSE_EXTRACTOR_CHUNK_OVERLAP = int(os.getenv("CLAUSE_EXTRACTOR_CHUNK_OVERLAP", "500"))
 # Token budget for splitting a single oversized section/clause into retrieval-sized
-# pieces. Smaller than CHUNK_SIZE (2000 tokens) on purpose so long clauses become precise vector units
-# without exceeding LLM context window constraints during retrieval augmentation.
+# pieces. Set to 500 tokens for precise vector units: ensures 7 children per parent (3500 / 500 = 7.0)
+# and maintains clean integer divisions across all parent chunks without exceeding LLM context constraints.
 CLAUSE_EXTRACTOR_OVERSIZED_SPLIT_TOKENS = int(
-    os.getenv("CLAUSE_EXTRACTOR_OVERSIZED_SPLIT_TOKENS", "2000")
+    os.getenv("CLAUSE_EXTRACTOR_OVERSIZED_SPLIT_TOKENS", "500")
 )
 # When true, oversized clauses/sections are split on sentence boundaries (never
 # mid-sentence) instead of only on blank lines. Fixes the \n\n hard-cut defect for
@@ -165,3 +166,7 @@ TRUNCATION_SCAN_FACTOR = float(os.getenv("TRUNCATION_SCAN_FACTOR", "0.85"))
 DEFAULT_CONFIDENCE_SCORE = float(os.getenv("DEFAULT_CONFIDENCE_SCORE", "0.5"))
 BATCH_TTL_SECONDS = int(os.getenv("BATCH_TTL_SECONDS", "86400"))
 LLM_HTTP_TIMEOUT = int(os.getenv("LLM_HTTP_TIMEOUT", "120"))
+
+# --- Celery Integration Settings ---
+CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+CELERY_RESULT_URL = os.getenv("REDIS_URL", "redis://localhost:6379")

@@ -69,9 +69,12 @@ def test_gating_fallback_to_groq_on_429():
         )
         wrapper.openai_client = MagicMock()
         wrapper.use_openai_fallback = True
-        wrapper.openai_client.chat.completions.create.side_effect = MockRateLimitError(
-            "Rate limit exceeded"
-        )
+        
+        class RateLimitError(Exception):
+            pass
+        
+        mock_rate_limit_exc = RateLimitError("Rate limit exceeded")
+        wrapper.openai_client.chat.completions.create.side_effect = mock_rate_limit_exc
 
         with (
             patch(
@@ -119,13 +122,14 @@ def test_sources_persisted_in_history():
     ]
     service._retrieve_clauses = AsyncMock(return_value=mock_sources)
 
-    async def mock_relevancy_check(question):
+    async def mock_relevancy_check(question, azure):
         return True
 
-    service.transient_relevancy_check = mock_relevancy_check
-
-    with patch(
-        "ai_service.services.azure_clients.AzureClientFactory.get_openai_client", return_value=mock_wrapper
+    with (
+        patch("ai_service.services.chat_service.transient_relevancy_check", mock_relevancy_check),
+        patch(
+            "ai_service.services.azure_clients.AzureClientFactory.get_openai_client", return_value=mock_wrapper
+        ),
     ):
         res = asyncio.run(service.ask("What is the liability cap?"))
 

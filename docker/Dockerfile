@@ -1,5 +1,5 @@
 # Stage 1: Build the virtual environment
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Install uv
 RUN pip install --no-cache-dir uv
@@ -20,16 +20,16 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 
 # Stage 2: Final runner stage
-FROM python:3.11-slim AS runner
+FROM python:3.12-slim AS runner
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# Install curl for healthchecks and CA certs, then clean up
+# Install curl for healthchecks, CA certs, and system libraries required for PyMuPDF, then clean up
 RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
+    apt-get install -y --no-install-recommends curl ca-certificates libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Remove vulnerable system python packages that are unnecessary at runtime

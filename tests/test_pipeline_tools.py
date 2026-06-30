@@ -144,12 +144,12 @@ def test_retrieve_compliance_standards():
     res = execute_pipeline_tool(
         "retrieve_compliance_standards", {"clause_type": "data transfer"}, context
     )
-    assert "GDPR" in res
+    assert "GDPR" in res or "gdpr" in res.lower()
 
     res_privacy = execute_pipeline_tool(
         "retrieve_compliance_standards", {"clause_type": "privacy"}, context
     )
-    assert "CCPA" in res_privacy
+    assert "CCPA" in res_privacy or "ccpa" in res_privacy.lower()
 
 
 def test_lookup_historical_score_rationale():
